@@ -14,9 +14,9 @@
 # Run time: a few minutes (subsampled to 6,000 respondents).
 # ===========================================================================
 library(rasch)
-set.seed(2026)
+set.seed(25)
 
-src <- "http://openpsychometrics.org/_rawdata/RSE.zip"
+src <- "https://openpsychometrics.org/_rawdata/RSE.zip"
 tmp <- tempfile(fileext = ".zip")
 download.file(src, tmp, quiet = TRUE)
 unzip(tmp, exdir = dirname(tmp))
@@ -35,8 +35,10 @@ df <- df[sample(nrow(df), 6000), ]
 
 # equal-unit Rasch versus wording-set EFRM
 f0 <- rasch(df, factors = "gender", items = items)
+set.seed(26)
 f1 <- rasch_efrm(df, items = items, groups = rep("all", nrow(df)),
-                 item_sets = list(positive = positive, negative = negative))
+                 item_sets = list(positive = positive, negative = negative),
+                 se_method = "hybrid", boot_reps = 300)
 
 print(f1$alpha_table, digits = 3)
 print(f1$efrm_vs_rasch$unit_tests, digits = 3)
@@ -62,28 +64,92 @@ plot_icc(f1, "Q6:all")    # positive wording: steeper (larger unit)
 plot_icc(f1, "Q9:all")    # negative wording: flatter (smaller unit)
 par(op)
 
-# cross-check against free slopes, and sensitivity ---------------------------
-# A generalized partial credit model (the polytomous two-parameter model)
-# frees one slope per item; its geometric-mean slope ratio between the
-# wording sets (about 1.25 here) agrees closely with the single EFRM unit
-# ratio (1.266), so the frame structure captures the set-level
-# discrimination with one parameter instead of nine. The per-item slopes
-# also localise the anomalies: Q8 ("I wish I could have more respect for
-# myself"), the scale's well-known ambivalent item, discriminates far below
-# the other negatives, and Q4 is the weakest positive. The unit ratio
-# remains significantly above one without them (1.115 dropping Q8; 1.196
-# also dropping Q4), so the wording effect is real but Q8 inflates it.
-if (requireNamespace("mirt", quietly = TRUE)) {
-  m <- mirt::mirt(as.data.frame(X[keep, ][sample(sum(keep), 6000), ]), 1,
-                  itemtype = "gpcm", verbose = FALSE)
-  print(mirt::coef(m, simplify = TRUE)$items[, "a1", drop = FALSE])
+# sensitivity: which items carry the set-unit difference? ---------------------
+# The single set unit is an average over the items in a set, so a badly
+# behaved item moves it. Refit without the suspects rather than asserting
+# what would happen.
+unit_ratio <- function(drop = character(), seed = 31L) {
+  it <- setdiff(items, drop)
+  set.seed(seed)
+  f <- rasch_efrm(df[, c(it, "gender")], items = it,
+                  groups = rep("all", nrow(df)),
+                  item_sets = list(positive = setdiff(positive, drop),
+                                   negative = setdiff(negative, drop)),
+                  se_method = "hybrid", boot_reps = 300)
+  c(ratio = unname(f$alpha_table$alpha[f$alpha_table$set == "positive"] /
+                   f$alpha_table$alpha[f$alpha_table$set == "negative"]),
+    p_adj = min(f$efrm_vs_rasch$unit_tests$p_adj))
 }
-for (drop in list("Q8", c("Q8", "Q4"))) {
-  p2 <- setdiff(positive, drop); n2 <- setdiff(negative, drop)
-  f <- rasch_efrm(df, items = c(p2, n2), groups = rep("all", nrow(df)),
-                  item_sets = list(positive = p2, negative = n2))
-  cat(sprintf("dropping %s: alpha ratio = %.3f\n",
-              paste(drop, collapse = "+"),
-              f$alpha_table$alpha[f$alpha_table$set == "positive"] /
-                f$alpha_table$alpha[f$alpha_table$set == "negative"]))
+apriori <- c("Q8", "Q4")   # the usual suspects, named in advance
+print(signif(rbind(all_items = unit_ratio(seed = 31),
+                   drop_first = unit_ratio(apriori[1], seed = 32),
+                   drop_both = unit_ratio(apriori, seed = 33)), 4))
+
+# let the model nominate the suspects ----------------------------------------
+# The drops above were chosen a priori, from what is already known about the
+# scale. The fitted model can nominate them instead: an item that shares no
+# unit with its set misfits within it, and the standardised fit residual
+# ranks that misfit. Rank on it rather than threshold on it -- a fixed cut
+# states detectability, not magnitude, so at this sample size it selects
+# most of the instrument, as the count below shows.
+fr <- f1$items[order(abs(f1$items$fit_resid), decreasing = TRUE), ]
+fr$item <- sub(":.*$", "", fr$item)     # frame models name items by frame
+fr$set <- ifelse(fr$item %in% positive, "positive", "negative")
+print(fr[, c("item", "set", "fit_resid", "infit_z")], digits = 3,
+      row.names = FALSE)
+cat(sprintf("items clearing a fixed |fit_resid| > 2 cut: %d of %d\n",
+            sum(abs(fr$fit_resid) > 2, na.rm = TRUE), nrow(fr)))
+
+# The ranking selects, from the data alone, the items named in advance
+# above, so the table already printed is also the data-driven drop sequence
+# and needs no refitting to reproduce.
+cat(sprintf("ranked first and second: %s; named in advance: %s\n",
+            paste(fr$item[1:2], collapse = " "),
+            paste(apriori, collapse = " ")))
+
+# Read that table as a sensitivity sequence rather than an automatic deletion
+# rule. Removing Q8 reduces the ratio from about 1.32 to 1.08, although the
+# large sample still gives an adjusted p-value near .03. Removing Q4 as well
+# moves the ratio away from one again. The conclusion is therefore that Q8
+# carries most, but not all, of the original difference and that the result is
+# sensitive to the composition of these short wording sets.
+
+# cross-check against free slopes --------------------------------------------
+# A generalized partial credit model frees one slope per item, on the same
+# respondents, so its per-item slopes are an independent reading of the same
+# data. They localise the same anomalies: Q8 ("I wish I could have more
+# respect for myself"), the scale's well-known ambivalent item, discriminates
+# far below the other negatives, and Q4 is the weakest positive. The two
+# orderings printed at the end are the useful comparison -- the frame model's
+# fit residuals and the free slopes are computed from different quantities
+# and agree on which items are extreme.
+#
+# Reading the analyses together: with all ten items the positive/negative unit
+# ratio is about 1.32. Dropping Q8 reduces it to about 1.08; dropping Q4 as well
+# raises it to about 1.19. The set-level effect is therefore carried mainly by
+# individual anomalous items rather than by wording alone: a conclusion the
+# single-parameter frame model cannot reach on its own, which is why the
+# free-slope cross-check belongs here.
+#
+# The GPCM's geometric-mean slope ratio between the sets lands in the same
+# region as the EFRM unit ratio, which is the other useful comparison: one
+# parameter per set reproduces what ten free slopes say about the sets on
+# average. It is an average, though -- with slopes as spread as Q8's and
+# Q6's, a single set unit summarises a heterogeneous set, and the two ratios
+# are close rather than equal.
+if (requireNamespace("mirt", quietly = TRUE)) {
+  m <- mirt::mirt(as.data.frame(df[, items]), 1, itemtype = "gpcm",
+                  verbose = FALSE)
+  a1 <- mirt::coef(m, simplify = TRUE)$items[, "a1"]
+  print(round(a1, 3))
+  gm <- function(z) exp(mean(log(z)))
+  cat(sprintf("GPCM geometric-mean slope ratio positive/negative: %.3f\n",
+              gm(a1[positive]) / gm(a1[negative])))
+  cat(sprintf("free slopes, flattest first: %s\n",
+              paste(names(sort(a1)), collapse = " ")))
+  cat(sprintf("fit residuals, largest first: %s\n",
+              paste(fr$item, collapse = " ")))
+} else {
+  message("install the 'mirt' package for the free-slope cross-check: ",
+          "install.packages('mirt')")
 }

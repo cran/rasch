@@ -2,13 +2,14 @@
 % Please edit documentation in R/compare.R
 \name{lr_test}
 \alias{lr_test}
-\title{Likelihood-ratio test of the partial credit against the rating scale model}
+\title{Compare the partial credit and rating scale models}
 \usage{
 lr_test(fit, maxit = 60, tol = 1e-08)
 }
 \arguments{
-\item{fit}{A \code{"PCM"} fit from \code{\link{rasch}} with equal maximum
-scores across items (the rating parameterisation requires them).}
+\item{fit}{An unrestricted, unanchored \code{"PCM"} fit from
+\code{\link{rasch}} with equal maximum scores across items (the rating
+parameterisation requires them).}
 
 \item{maxit, tol}{Passed to the rating-scale refit.}
 }
@@ -19,31 +20,27 @@ A list of class \code{"rasch_lr"}: raw \code{chisq}, \code{df},
   rating-scale refit (\code{fit_rsm}).
 }
 \description{
-A likelihood-ratio test in the tradition of Andersen (1973): an
-unrestricted (partial credit)
-analysis is compared with the rating re-parameterisation of the same
-model on the same data. Twice the difference in the pairwise conditional
-log-likelihoods is referred to a chi-square on the difference in the
-number of threshold parameters. A non-significant outcome supports
-adopting the simpler rating parameterisation.
+Compares a fitted partial credit model with the rating scale
+reparameterisation of the same data. Both raw and composite-likelihood
+adjusted statistics are returned.
 }
 \details{
-The likelihood here is the pairwise composite
-likelihood, not a full likelihood, and twice its difference is not
-chi-square distributed: each response enters every pair its item forms,
-so the raw statistic is inflated. Two statistics are therefore reported.
-\code{chisq} is the raw composite value with its naive \code{p}, the
-conventional display. The limiting
-law of the raw statistic is \eqn{\sum_j \lambda_j \chi^2_1} (Kent 1982;
-Varin, Reid and Firth 2011) with \eqn{\lambda_j} the eigenvalues of
-\eqn{(C'H^{-1}C)^{-1}\,C'H^{-1}JH^{-1}C} over the \eqn{r} constrained
-directions \eqn{C} (the part of the partial-credit threshold space
-outside the rating subspace), estimated from the same Godambe \eqn{H}
-and \eqn{J} matrices that supply the sandwich standard errors; matching
-the mean gives \code{chisq_adj} \eqn{= r W / \sum_j \lambda_j} on
-\eqn{r} degrees of freedom. Use \code{p_adj} for inference; the naive
-\code{p} is severely anticonservative and kept only for comparability
-with conventional software displays.
+The pairwise conditional likelihood is a composite likelihood: each
+response contributes to every item pair in which it appears. Consequently,
+the raw statistic \eqn{W=2(cl_{PCM}-cl_{RSM})} does not have an ordinary
+chi-square reference distribution. Its limiting distribution is
+\eqn{\sum_j\lambda_j\chi^2_1} (Kent 1982; Varin, Reid and Firth 2011), where
+the \eqn{\lambda_j} are obtained from the sensitivity matrix \eqn{H},
+variability matrix \eqn{J}, and the constraints defining the RSM. The
+mean-matched statistic is
+\deqn{W_{adj}=rW/\sum_j\lambda_j,}
+with \eqn{r} degrees of freedom.
+
+Use \code{p_adj} for inference. The unadjusted \code{p} is retained for
+descriptive comparison with conventional displays. The adjustment is a
+first-order approximation and can be mildly anti-conservative in small
+samples with long polytomous tests. Interpret values near the nominal
+level cautiously in such designs.
 }
 \examples{
 set.seed(1)

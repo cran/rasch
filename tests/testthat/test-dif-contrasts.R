@@ -50,8 +50,8 @@ test_that("stacked designs use person-level scores and detect drift over time", 
   X <- rbind(gen(0), gen(0.6)); colnames(X) <- paste0("I", 1:8)
   dat <- data.frame(X, time = rep(c("1", "2"), each = n),
                     gender = rep(gender, 2))
-  fit <- rasch(dat, factors = c("time", "gender"))
   id <- rep(sprintf("P%03d", 1:n), 2)
+  fit <- rasch(dat, factors = c("time", "gender"), id = id)
   dc <- dif_contrasts(fit, items = c("I4", "I6"), id = id)
 
   # time varies within id, so it is detected as within-subject
@@ -59,16 +59,100 @@ test_that("stacked designs use person-level scores and detect drift over time", 
   expect_true(dc$paired)
   t <- dc$table
   w4 <- t[t$item == "I4" & t$contrast == "time: 2 - 1", ]
-  # paired t (df = persons - 1), significant, positive drift, sign-aligned
-  expect_equal(w4$df, n - 1)
+  # The time contrast is paired within person and marginalised over gender;
+  # its nuisance-cell means use a Welch--Satterthwaite reference.
+  expect_gt(w4$df, n - 10)
+  expect_lt(w4$df, n)
   expect_true(w4$significant && w4$estimate > 0.4 && w4$statistic > 0)
+  expect_true(all(is.na(t$se)))
+  expect_true(all(is.na(t$lower)) && all(is.na(t$upper)))
   # clean item, null gender effect, null interaction all stay quiet
   expect_false(any(t$significant[t$item == "I6"]))
   expect_false(t$significant[t$item == "I4" & t$contrast == "gender: m - f"])
   expect_false(t$significant[t$item == "I4" &
                              t$contrast == "time(2 - 1) x gender(m - f)"])
-  # within requires id
-  expect_error(dif_contrasts(fit, items = "I4", within = "time"), "id")
+  # The resolved point size remains available, but its row-independent
+  # calibration covariance is not a repeated-person sampling covariance.
+  ds <- dif_size(fit, "I4", by = "time")
+  expect_true(any(abs(ds$pairs$difference) > 0.3))
+  expect_true(all(is.na(ds$levels$se)))
+  expect_true(all(is.na(ds$pairs$se)) && all(is.na(ds$pairs$significant)))
+  expect_match(paste(ds$notes, collapse = " "), "sampling SEs")
+  # the fitted identifier is used automatically when it is not repeated in
+  # the call
+  auto <- dif_contrasts(fit, items = "I4", within = "time")
+  expect_true(auto$paired)
+  expect_identical(auto$within, "time")
+  expect_equal(auto$table$df[auto$table$contrast == "time: 2 - 1"], w4$df)
+  expect_error(dif_contrasts(fit, items = "I4", within = "time",
+                             id = seq_len(10)), "one value per")
+})
+
+test_that("within-person follow-ups marginalise nuisance cells consistently", {
+  set.seed(91)
+  n_a <- 100L; n_b <- 900L; n <- n_a + n_b
+  h <- factor(c(rep("a", n_a), rep("b", n_b)))
+  time <- rep(c("t1", "t2"), each = n)
+  id <- rep(sprintf("P%04d", seq_len(n)), 2)
+  theta <- rnorm(n)
+  difficulty <- seq(-1, 1, length.out = 5)
+  make_wave <- function()
+    matrix(rbinom(n * 5, 1, plogis(outer(theta, difficulty, "-"))), n, 5)
+  X <- rbind(make_wave(), make_wave())
+  colnames(X) <- paste0("I", seq_len(ncol(X)))
+  dat <- data.frame(X, time = time, h = rep(h, 2))
+  fit <- rasch(dat, factors = c("time", "h"), id = id)
+
+  # The equally weighted time contrast is +1 in nuisance cell a and -1 in b,
+  # hence zero after marginalising equally over the two cells. A shortcut that
+  # averages people instead would target 0.1(+1) + 0.9(-1) = -0.8.
+  eps <- ave(rnorm(n, 0, 0.2), h, FUN = function(x) x - mean(x))
+  delta <- ifelse(h == "a", 1, -1) + eps
+  fit$residuals[, 1] <- c(-delta / 2, delta / 2)
+
+  dc <- dif_contrasts(fit, items = "I1", within = "time")
+  row <- dc$table[dc$table$contrast == "time: t2 - t1", ]
+  expect_equal(row$statistic, 0, tolerance = 1e-10)
+  expect_equal(row$p, 1, tolerance = 1e-10)
+
+  # dif_posthoc() uses the same marginal comparison.
+  ph <- dif_posthoc(fit, "I1", "time", within = "time")
+  expect_equal(ph$table$statistic, row$statistic, tolerance = 1e-10)
+  expect_equal(ph$table$p, row$p, tolerance = 1e-10)
+})
+
+test_that("mixed follow-ups retain equal margins over an imbalanced nuisance factor", {
+  set.seed(92)
+  n_s1 <- 120L; n_s2 <- 1080L; n <- n_s1 + n_s2
+  site <- factor(c(rep("s1", n_s1), rep("s2", n_s2)))
+  group <- factor(unlist(lapply(c(n_s1, n_s2), function(nn)
+    rep(c("A", "B"), each = nn / 2))))
+  id <- rep(sprintf("P%03d", seq_len(n)), 2)
+  time <- factor(rep(c("t1", "t2"), each = n))
+  theta <- rnorm(n)
+  difficulty <- seq(-1, 1, length.out = 4)
+  make_wave <- function()
+    matrix(rbinom(n * 4, 1, plogis(outer(theta, difficulty, "-"))), n, 4)
+  X <- rbind(make_wave(), make_wave())
+  colnames(X) <- paste0("I", seq_len(ncol(X)))
+  dat <- data.frame(X, time = time, group = rep(group, 2),
+                    site = rep(site, 2))
+  fit <- rasch(dat, factors = c("time", "group", "site"), id = id)
+
+  # The time-by-group contrast is +1 at site s1 and -1 at site s2. Its
+  # equal-site marginal value is therefore zero, although a person-frequency
+  # shortcut would target 0.1(+1) + 0.9(-1) = -0.8.
+  eps <- ave(rnorm(n, 0, 0.2), interaction(site, group),
+             FUN = function(x) x - mean(x))
+  site_effect <- ifelse(site == "s1", 1, -1)
+  delta <- eps + ifelse(group == "B", site_effect, 0)
+  fit$residuals[, 1] <- c(-delta / 2, delta / 2)
+
+  ph <- dif_posthoc(fit, "I1", term = c("time", "group"),
+                    within = "time")
+  expect_equal(nrow(ph$table), 1L)
+  expect_equal(ph$table$statistic, 0, tolerance = 1e-10)
+  expect_equal(ph$table$p, 1, tolerance = 1e-10)
 })
 
 test_that("custom cell-weight contrasts are accepted and normalised", {
@@ -87,4 +171,37 @@ test_that("custom cell-weight contrasts are accepted and normalised", {
   expect_error(dif_contrasts(fit, items = "I2",
                              contrasts = list(bad = c(x = 1, y = -1))),
                "design cells")
+})
+
+test_that("DIF post-hocs give marginal pairs and pure interaction magnitudes", {
+  set.seed(31); n <- 1800
+  g1 <- factor(rep(c("a", "b", "c"), each = n / 3))
+  g2 <- factor(rep(rep(c("x", "y", "z"), each = n / 9), 3))
+  d <- seq(-1.3, 1.3, length.out = 6)
+  shift <- ifelse(g1 == "c" & g2 == "z", 1.0, 0)
+  X <- matrix(rbinom(n * 6, 1,
+    plogis(outer(rnorm(n), d, "-") - outer(shift, c(0, 1, 0, 0, 0, 0)))),
+    n, 6)
+  colnames(X) <- paste0("I", 1:6)
+  fit <- rasch(data.frame(X, g1 = g1, g2 = g2),
+               factors = c("g1", "g2"))
+
+  main <- dif_posthoc(fit, "I2", "g1")
+  expect_s3_class(main, "rasch_dif_posthoc")
+  expect_equal(nrow(main$table), choose(3, 2))
+  expect_true(all(main$table$p_adj >= main$table$p - 1e-12))
+
+  intr <- dif_posthoc(fit, "I2", "g1:g2")
+  expect_equal(nrow(intr$table), choose(3, 2)^2)
+  expect_identical(intr$type, "interaction magnitude")
+
+  # The c-a by z-x row is the difference-in-differences of the jointly
+  # resolved cell locations, not merely the largest pair of cell means.
+  cells <- dif_size(fit, "I2", by = c("g1", "g2"))$levels
+  loc <- setNames(cells$location, cells$level)
+  manual <- (loc[["c:z"]] - loc[["a:z"]]) -
+    (loc[["c:x"]] - loc[["a:x"]])
+  row <- intr$table[intr$table$contrast == "c - a x z - x", ]
+  expect_equal(row$estimate, manual, tolerance = 1e-8)
+  expect_gt(abs(row$estimate), 0.6)
 })

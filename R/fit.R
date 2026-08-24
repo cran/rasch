@@ -83,8 +83,8 @@
 # over the class intervals. Under fit the interval means share a common
 # zero mean, so the between-interval F on (G - 1, n - G) degrees of freedom
 # tests the same item-trait interaction as the chi-square but through the
-# ANOVA calibration. Reported with Benjamini-Hochberg (false discovery
-# rate) and Bonferroni (familywise) adjustments across items.
+# ANOVA calibration. Reported with Holm and Bonferroni familywise
+# adjustments across items.
 .item_anova <- function(Z, ci, extreme, ci_list = NULL) {
   L <- ncol(Z)
   out <- data.frame(item = colnames(Z), F_anova = NA_real_, df1 = NA_integer_,
@@ -106,19 +106,26 @@
     out$df1[i] <- G - 1L; out$df2[i] <- n - G
     out$p[i] <- pf(out$F_anova[i], G - 1, n - G, lower.tail = FALSE)
   }
-  out$p_adj <- p.adjust(out$p, method = "BH")
-  out$p_bonf <- p.adjust(out$p, method = "bonferroni")
+  usable <- is.finite(out$p)
+  out$p_adj <- out$p_bonf <- rep(NA_real_, nrow(out))
+  out$p_adj[usable] <- p.adjust(out$p[usable], method = "holm")
+  out$p_bonf[usable] <- p.adjust(out$p[usable], method = "bonferroni")
   out
 }
 
-# Item fit from per-person model moments (observed cells only).
-.item_fit <- function(X, Z, mo, disc = NULL) {
+# Item fit from per-person model moments (observed cells only). Extreme-score
+# persons are excluded: their measures are at a boundary, so their residuals
+# are structurally near zero and would deflate the mean-squares toward
+# apparent fit -- the same convention the log-of-mean-square fit residual and
+# the item-fit ANOVA already use, and standard in Rasch fit reporting.
+.item_fit <- function(X, Z, mo, disc = NULL, extreme = NULL) {
   L <- ncol(X)
+  if (is.null(extreme)) extreme <- rep(FALSE, nrow(X))
   E2 <- .z2_expectation(mo, Z, disc)
   out <- data.frame(item = colnames(X), infit_ms = NA_real_, outfit_ms = NA_real_,
                     infit_z = NA_real_, outfit_z = NA_real_, n = NA_integer_)
   for (i in seq_len(L)) {
-    ok <- which(!is.na(Z[, i]))
+    ok <- which(!is.na(Z[, i]) & !extreme)
     if (length(ok) < 3) next
     z2 <- Z[ok, i]^2
     V <- mo$V[ok, i]; C4 <- mo$M4[ok, i]; n <- length(ok)
@@ -135,14 +142,18 @@
 }
 
 # Person fit residuals: each person's standardised residuals across their
-# observed items, summarised exactly as for items.
-.person_fit <- function(X, Z, mo, disc = NULL) {
+# observed items, summarised exactly as for items. Items with an extreme
+# (minimum- or maximum-possible) total are excluded, mirroring the exclusion
+# of extreme persons from item fit: their locations are at a boundary and
+# their residuals are structurally near zero.
+.person_fit <- function(X, Z, mo, disc = NULL, item_extreme = NULL) {
   N <- nrow(X)
+  if (is.null(item_extreme)) item_extreme <- rep(FALSE, ncol(X))
   E2 <- .z2_expectation(mo, Z, disc)
   out <- data.frame(infit_ms = rep(NA_real_, N), outfit_ms = NA_real_,
                     outfit_z = NA_real_)
   for (n in seq_len(N)) {
-    ok <- which(!is.na(Z[n, ]))
+    ok <- which(!is.na(Z[n, ]) & !item_extreme)
     if (length(ok) < 3) next
     z2 <- Z[n, ok]^2
     V <- mo$V[n, ok]; C4 <- mo$M4[n, ok]; k <- length(ok)
@@ -171,7 +182,10 @@
 .ci_allocate <- function(th, n_groups) {
   ut <- sort(unique(th))
   if (length(ut) <= n_groups) return(match(th, ut))
-  cnt <- as.integer(table(factor(th, levels = ut)))
+  # tabulate(match()) not table(factor()): two distinct doubles can share a
+  # printed representation, and factor(levels = ut) then dies on
+  # "duplicated" levels (person-mean locations from tapply hit this)
+  cnt <- tabulate(match(th, ut), nbins = length(ut))
   cum <- cumsum(cnt)
   n <- length(th)
   b <- integer(n_groups - 1L)
@@ -191,6 +205,10 @@
 .class_intervals <- function(theta, extreme, n_groups = NULL) {
   g <- rep(NA_integer_, length(theta))
   use <- which(!is.na(theta) & !extreme)
+  if (!length(use)) {
+    attr(g, "n_groups") <- 0L
+    return(g)
+  }
   if (is.null(n_groups)) n_groups <- .default_n_groups(length(use))
   g[use] <- .ci_allocate(theta[use], n_groups)
   attr(g, "n_groups") <- max(g[use], na.rm = TRUE)
@@ -243,9 +261,12 @@
   n_used <- sum(!is.na(ci))
   if (!is.na(adjust_N)) chi <- chi * (adjust_N / n_used)
   p <- pchisq(chi, df_i, lower.tail = FALSE)
-  p_adj <- p.adjust(p, method = "BH")
+  usable <- is.finite(p)
+  p_adj <- p_bonf <- rep(NA_real_, length(p))
+  p_adj[usable] <- p.adjust(p[usable], method = "holm")
+  p_bonf[usable] <- p.adjust(p[usable], method = "bonferroni")
   data.frame(item = colnames(X), chisq = chi, df = df_i, p = p,
-             p_adj = p_adj, p_bonf = p.adjust(p, method = "bonferroni"))
+             p_adj = p_adj, p_bonf = p_bonf)
 }
 
 # Correlation that degrades to NA (rather than erroring) when fewer than 3
@@ -366,13 +387,32 @@ chisq_detail <- function(fit, item) {
 .alpha <- function(X) {
   Xc <- X[stats::complete.cases(X), , drop = FALSE]
   applicable <- nrow(Xc) == nrow(X)
-  if (nrow(Xc) < 3 || ncol(Xc) < 2) return(list(alpha = NA_real_, n = nrow(Xc),
-                                                applicable = applicable))
+  if (nrow(Xc) < 3 || ncol(Xc) < 2) return(list(
+    alpha = NA_real_, n = nrow(Xc), applicable = applicable,
+    design_applicable = TRUE))
   L <- ncol(Xc); vi <- apply(Xc, 2, var); vt <- var(rowSums(Xc))
   if (!is.finite(vt) || vt <= 0)          # constant total score: undefined
-    return(list(alpha = NA_real_, n = nrow(Xc), applicable = applicable))
+    return(list(alpha = NA_real_, n = nrow(Xc), applicable = applicable,
+                design_applicable = TRUE))
   list(alpha = L / (L - 1) * (1 - sum(vi) / vt), n = nrow(Xc),
-       applicable = applicable)
+       applicable = applicable, design_applicable = TRUE)
+}
+
+# Whether a structural fit reduces to one observable response cell per item.
+# Current fits record this in alpha$design_applicable. The map fallback keeps
+# projects saved before that field was introduced safe: an absent flag is not
+# permission unless the fitted response cells can be matched one-to-one to
+# items.
+.classical_design_applicable <- function(fit) {
+  structural <- inherits(fit, c("rasch_mfrm", "rasch_efrm"))
+  if (!structural) return(TRUE)
+  vm <- fit$virtual_map
+  if (is.null(vm) || !all(c("vkey", "item") %in% names(vm)) ||
+      is.null(colnames(fit$X))) return(FALSE)
+  item_names <- vm$item[match(colnames(fit$X), vm$vkey)]
+  map_ok <- !anyNA(item_names) && !anyDuplicated(item_names)
+  recorded <- fit$alpha$design_applicable
+  if (length(recorded)) isTRUE(recorded) && map_ok else map_ok
 }
 
 # Qualitative power-of-test-of-fit assessment, driven by the PSI.
@@ -397,14 +437,122 @@ chisq_detail <- function(fit, item) {
        prop_above = mean(th > max(thresholds$tau)))
 }
 
+# Administrable virtual-item blocks of a fit: one per design a person
+# could actually take. Ordinary fits: the whole test. EFRM: one block per
+# person group AND per item-set administration pattern observed in that
+# group. MFRM: one block per set of facet conditions observed together for
+# a person. Shared by
+# test_information() and the test-level curve plots so they cannot
+# disagree.
+.design_blocks <- function(fit) {
+  L <- length(fit$tau_list)
+  blocks <- list(test = seq_len(L))
+  if (inherits(fit, "rasch_efrm")) {
+    # a group's virtual block can span item sets that were only PARTIALLY
+    # administered within the group (a linking design: most persons take
+    # one set, a linking subsample takes several). Summing all the group's
+    # sets would describe a form nobody in the majority sub-population
+    # ever took, understating their SEM -- so split each group by the
+    # distinct set-administration patterns actually observed
+    vm <- fit$virtual_map
+    blocks <- list(); labels <- character(0)
+    for (g in unique(vm$group)) {
+      gcols <- which(vm$group == g)
+      grows <- rowSums(!is.na(fit$X[, gcols, drop = FALSE])) > 0
+      if (!any(grows)) next
+      sets_of_col <- vm$set[gcols]
+      # per person: which of the group's sets they answered at all
+      gsets <- sort(unique(sets_of_col))
+      answered <- !is.na(fit$X[grows, gcols, drop = FALSE])
+      present <- vapply(gsets, function(s)
+        rowSums(answered[, sets_of_col == s, drop = FALSE]) > 0L,
+        logical(sum(grows)))
+      if (is.null(dim(present))) present <- matrix(present, ncol = 1L)
+      pat <- .factor_keys(as.data.frame(present, check.names = FALSE))
+      for (p in unique(pat)) {
+        first <- match(p, pat)
+        psets <- gsets[present[first, ]]
+        key <- .factor_keys(data.frame(group = g, pattern = p,
+                                       stringsAsFactors = FALSE))
+        blocks[[key]] <- gcols[sets_of_col %in% psets]
+        labels[key] <- paste0("group=", g, if (length(unique(vm$set)) > 1L)
+          paste0(", sets=", paste(psets, collapse = "+")) else "")
+      }
+    }
+    # Readable labels are for display only. If literal group or set names make
+    # two labels look the same, retain both designs and mark them distinctly.
+    lab <- unname(labels[names(blocks)])
+    if (anyDuplicated(lab)) {
+      dup <- duplicated(lab) | duplicated(lab, fromLast = TRUE)
+      lab[dup] <- paste0(lab[dup], " [design ", seq_along(lab)[dup], "]")
+    }
+    names(blocks) <- lab
+  } else if (inherits(fit, "rasch_mfrm")) {
+    vm <- fit$virtual_map
+    fs <- fit$facet_spec
+    cell <- .factor_keys(vm[, fs, drop = FALSE])
+    cells <- unique(cell)
+    cell_lab <- stats::setNames(vapply(cells, function(k) {
+      i <- match(k, cell)
+      paste(paste0(fs, "=", unlist(vm[i, fs, drop = FALSE])),
+            collapse = ", ")
+    }, ""), cells)
+    observed <- !is.na(fit$X)
+    present <- vapply(cells, function(k)
+      rowSums(observed[, cell == k, drop = FALSE]) > 0L,
+      logical(nrow(fit$X)))
+    if (is.null(dim(present))) present <- matrix(present, ncol = 1L)
+    pattern <- .factor_keys(as.data.frame(present, check.names = FALSE))
+    blocks <- list()
+    for (p in unique(pattern)) {
+      first <- match(p, pattern)
+      active <- cells[present[first, ]]
+      blocks[[p]] <- which(cell %in% active)
+    }
+    labs <- vapply(unique(pattern), function(p) {
+      first <- match(p, pattern)
+      active <- cells[present[first, ]]
+      paste(unname(cell_lab[active]), collapse = " + ")
+    }, "")
+    if (anyDuplicated(labs)) {
+      dup <- duplicated(labs) | duplicated(labs, fromLast = TRUE)
+      labs[dup] <- paste0(labs[dup], " [design ", seq_along(labs)[dup], "]")
+    }
+    names(blocks) <- labs
+  }
+  blocks
+}
+
 #' Test information function
 #'
-#' Fisher information of the whole test over a grid of person locations, with
-#' the corresponding standard error of measurement.
+#' Fisher information over a grid of person locations, with the corresponding
+#' standard error of measurement. Ordinary Rasch fits return one whole-test
+#' curve. EFRM fits return one curve per person group and per item-set
+#' administration pattern actually observed within that group (in a linking
+#' design, persons who took only the core set get a core-only curve, and the
+#' linking subsample gets the pooled one). MFRM fits return one curve per set
+#' of facet conditions observed together for a person, so ratings that jointly
+#' inform the same person measure are added and mutually exclusive designs
+#' remain separate.
+#'
+#' @details
+#' For an administrable block \eqn{\mathcal A}, the information and standard
+#' error of measurement are
+#' \deqn{I(\theta)=\sum_{i\in\mathcal A}d_i^2
+#' \operatorname{Var}(X_i\mid\theta),\qquad
+#' \operatorname{SEM}(\theta)=I(\theta)^{-1/2},}
+#' where \eqn{d_i} is the frame unit or discrimination multiplier. For an
+#' ordinary Rasch fit, \eqn{d_i=1}.
 #'
 #' @param fit A fitted object from \code{\link{rasch}}.
 #' @param grid Logit grid over which to evaluate the information.
-#' @return A data frame with \code{theta}, \code{info}, and \code{sem}.
+#' @return A data frame with \code{theta}, \code{info}, and \code{sem}. For
+#'   EFRM and MFRM fits it also contains a \code{design} column identifying
+#'   the administrable frame or facet design.
+#' @references
+#' Andrich, D. and Marais, I. (2019). A Course in Rasch Measurement Theory:
+#' Measuring in the Educational, Social and Health Sciences. Springer.
+#' @seealso \code{\link{targeting_table}} and \code{\link{plot_tif}}.
 #' @examples
 #' set.seed(1)
 #' d <- seq(-1.5, 1.5, length.out = 6)
@@ -413,10 +561,69 @@ chisq_detail <- function(fit, item) {
 #' head(test_information(rasch(X)))
 #' @export
 test_information <- function(fit, grid = seq(-6, 6, by = 0.1)) {
+  if (!inherits(fit, "rasch")) stop("test_information needs a rasch fit")
+  if (!is.numeric(grid) || !length(grid) || any(!is.finite(grid)))
+    stop("grid must contain finite numeric person locations")
   L <- length(fit$tau_list)
   disc <- if (is.null(fit$disc)) rep(1, L) else fit$disc
-  info <- vapply(grid, function(th)
-    sum(vapply(seq_len(L), function(i)
-      disc[i]^2 * item_moments(th, fit$tau_list[[i]], disc = disc[i])$V, 0)), 0)
-  data.frame(theta = grid, info = info, sem = 1 / sqrt(info))
+  blocks <- .design_blocks(fit)
+  ans <- lapply(seq_along(blocks), function(j) {
+    ii <- blocks[[j]]
+    info <- vapply(grid, function(th)
+      sum(vapply(ii, function(i)
+        disc[i]^2 * item_moments(th, fit$tau_list[[i]],
+                                 disc = disc[i])$V, 0)), 0)
+    out <- data.frame(theta = grid, info = info, sem = 1 / sqrt(info))
+    if (length(blocks) > 1L || names(blocks)[j] != "test")
+      out$design <- names(blocks)[j]
+    out
+  })
+  out <- do.call(rbind, ans)
+  rownames(out) <- NULL
+  out
+}
+
+# ---------------------------------------------------------------------------
+# Estimated item discrimination
+# ===========================================================================
+# The slope that maximises an item's own likelihood with the person measures
+# and the item's thresholds held at the values the Rasch model gave them.
+# One free parameter per item, fitted one item at a time, so it is a
+# description of how steeply an item sorts the people the model has already
+# located -- not a two-parameter estimate, which would relocate everything at
+# once. Reported for polytomous items as well: item_moments() carries the
+# discrimination through the partial credit structure, so the same slope
+# multiplies every threshold of the item.
+#
+# Efficiency: the likelihood only needs the DISTINCT person measures, of which
+# there are at most one per raw score under complete data, so each evaluation
+# costs far less than a pass over the sample.
+# ---------------------------------------------------------------------------
+.item_discrim <- function(theta, X, tau_list, extreme, bounds = c(0.05, 5)) {
+  ok <- !extreme & is.finite(theta)
+  if (sum(ok) < 3L) return(rep(NA_real_, length(tau_list)))
+  th <- theta[ok]
+  Xo <- X[ok, , drop = FALSE]
+  ut <- sort(unique(th))
+  idx <- match(th, ut)
+  vapply(seq_along(tau_list), function(i) {
+    y <- Xo[, i]
+    g <- !is.na(y)
+    # an item with no variation among the non-extreme persons has no slope
+    if (sum(g) < 3L || length(unique(y[g])) < 2L) return(NA_real_)
+    tau <- tau_list[[i]]
+    m <- length(tau)
+    cnt <- table(factor(idx[g], levels = seq_along(ut)),
+                 factor(y[g], levels = 0:m))
+    keep <- rowSums(cnt) > 0
+    cnt <- matrix(cnt[keep, ], nrow = sum(keep))
+    uth <- ut[keep]
+    nll <- function(a) {
+      lp <- vapply(uth, function(t)
+        log(pmax(item_moments(t, tau, disc = a)$P, 1e-300)), numeric(m + 1L))
+      -sum(cnt * t(lp))
+    }
+    o <- tryCatch(stats::optimize(nll, bounds), error = function(e) NULL)
+    if (is.null(o)) NA_real_ else o$minimum
+  }, 0)
 }

@@ -20,30 +20,20 @@ A list of class \code{"rasch_btl_info"}: \code{objects} (per
   flag; and \code{notes}.
 }
 \description{
-The paired-comparison analogue of the test-information function. The
-Fisher information a single comparison carries about the location
-difference \code{d = beta_a - beta_b} is, in this exponential family, the
-variance of its score -- \code{P(1 - P)} for the dichotomous choice and
-the graded response variance \code{V} for the ordinal extension (the
-score is the sufficient statistic for \code{d}, so its variance is the
-information). Weighted by each comparison's replication count and summed
-over the comparisons the design actually contains, this gives a
-\emph{design information} for every object: how much the observed
-comparisons pin its location down, the counterpart of an item's
-contribution to test information. Because the information peaks at gap
-zero and falls away with the location gap, near-neighbour contests are
-the informative ones.
+Calculates the Fisher information supplied by the observed comparison
+design. For location difference \eqn{d=\beta_a-\beta_b}, one dichotomous
+comparison contributes
+\deqn{I(d)=P(a\succ b)\{1-P(a\succ b)\}.}
+For an ordered comparison, the contribution is the variance of the response
+score. Information is summed over the comparisons involving each object,
+including replication counts.
 }
 \details{
-The design information inverts to \code{se_naive = 1 / sqrt(information)}:
-the error the object's comparisons would give if its location were the
-ONLY free parameter -- a single-parameter lower bound, useful for reading
-which objects the design serves well. It is not the model's standard
-error even with independent comparisons (every location is estimated
-jointly with the others, and the fit's own \code{se} is additionally the
-judge-clustered Godambe sandwich), so \code{se} sits above
-\code{se_naive} as a rule; treat their ratio as descriptive, not as a
-clustering test.
+\code{se_naive = 1/sqrt(information)} treats each object's comparisons in
+isolation. It is a description of the design, not the fitted standard error
+or a bound on it. The fitted standard error also reflects joint estimation,
+the identifying constraint, and judge clustering. The fitted model must
+have converged.
 }
 \examples{
 set.seed(1)

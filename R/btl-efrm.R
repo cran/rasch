@@ -36,7 +36,8 @@
 # reading of it is Humphry's. The paired-comparison form fitted here is this
 # package's extension, stated for dichotomous winner data.
 #
-# Estimation is in two conditional stages, mirroring rasch_efrm():
+# Estimation is in two likelihood stages, mirroring the staged structure of
+# rasch_efrm() but not its person-distribution link:
 #
 # Stage 1 (within frames): for each set the within-set comparisons, pooled
 # over panels, fit the bilinear model logit = rho_{gs} (b_a - b_b) with
@@ -140,10 +141,23 @@
   # judge-clustered Godambe sandwich (unclustered when every judge appears once)
   J <- design(cur); u <- y - cur$p; av <- cur$p * (1 - cur$p)
   Fi <- crossprod(J, J * av)
+  # rank of the UNRIDGED information: panels that observe disjoint object
+  # pairs leave the (location, log rho) system underdetermined -- the
+  # ridged solve then lands somewhere on the flat manifold with a small
+  # gradient, which the convergence criterion cannot distinguish from a
+  # genuine optimum
+  rc1 <- tryCatch(rcond(Fi), error = function(e) 0)
+  rank_ok <- is.finite(rc1) && rc1 > 1e-10
   bread <- tryCatch(solve(Fi), error = function(e) solve(Fi + diag(1e-8, np)))
   Sr <- J * u
   Sc <- rowsum(Sr, jd)
-  cov_theta <- bread %*% crossprod(Sc) %*% bread
+  nc <- nrow(Sc)
+  cluster_ok <- nc >= 10L && nc > np
+  cov_theta <- if (nc > 1L) {
+    bread %*% (crossprod(Sc) * nc / (nc - 1)) %*% bread
+  } else {
+    matrix(NA_real_, np, np)
+  }
   # scale-free convergence: the gradient per comparison, invariant to the
   # number of comparisons -- an absolute threshold flags converged fits as
   # unconverged on large R (and would then misroute them into the screen);
@@ -153,6 +167,7 @@
 
   cov_bb <- B %*% cov_theta[seq_len(K - 1L), seq_len(K - 1L), drop = FALSE] %*% t(B)
   se_beta <- sqrt(pmax(diag(cov_bb), 0))
+  if (!cluster_ok) se_beta[] <- NA_real_
   rho_p <- if (is.null(rho_fixed)) setNames(rep(1, length(present)), present)
            else rho_fixed[present]
   cov_lrho <- matrix(0, Gf, Gf, dimnames = list(free, free))
@@ -160,11 +175,13 @@
     li <- (K - 1L) + seq_len(Gf)
     rho_p[free] <- exp(theta[li])
     cov_lrho <- cov_theta[li, li, drop = FALSE]
+    if (!cluster_ok) cov_lrho[] <- NA_real_
     dimnames(cov_lrho) <- list(free, free)
   }
   list(beta = cur$beta, se_beta = se_beta, p = cur$p, ll = cur$ll,
        ref = ref, panels = present, rho = rho_p, free = free,
-       cov_lrho = cov_lrho, converged = conv)
+       cov_lrho = cov_lrho, converged = conv, rank_ok = rank_ok,
+       n_clusters = nc, n_parameters = np, cluster_ok = cluster_ok)
 }
 
 # Reconcile the per-set panel ratios into one set of panel units phi with
@@ -181,7 +198,9 @@
   if (G == 1L)
     return(list(phi = setNames(1, panels_u),
                 se_log_phi = setNames(NA_real_, panels_u),
-                lphi = setNames(0, panels_u)))
+                lphi = setNames(0, panels_u),
+                cov_log_phi = matrix(0, 1L, 1L,
+                  dimnames = list(panels_u, panels_u))))
   # flatten the per-set blocks into one observation vector, design and
   # block-diagonal covariance
   y <- numeric(0); pan <- ref <- character(0)
@@ -227,7 +246,7 @@
   cov_c <- A %*% cov_full %*% t(A)
   list(phi = setNames(exp(lphi_c), panels_u),
        se_log_phi = setNames(sqrt(pmax(diag(cov_c), 0)), panels_u),
-       lphi = setNames(lphi_c, panels_u))
+       lphi = setNames(lphi_c, panels_u), cov_log_phi = cov_c)
 }
 
 # Stage 2: cross-set linking. With the frame locations beta and panel units
@@ -262,159 +281,272 @@
     D
   }
 
-  theta <- numeric(np); cur <- eval_th(theta)
-  for (it in seq_len(maxit)) {
-    D <- design(cur); u <- y - cur$p; av <- cur$p * (1 - cur$p)
-    g <- crossprod(D, u); Fi <- crossprod(D, D * av)
-    step <- tryCatch(solve(Fi, g),
-                     error = function(e) solve(Fi + diag(1e-8, np), g))
-    lam <- 1; moved <- FALSE
-    for (half in 1:30) {
-      cand <- theta + lam * as.numeric(step); c2 <- eval_th(cand)
-      if (is.finite(c2$ll) && c2$ll >= cur$ll - 1e-12) {
-        theta <- cand; cur <- c2; moved <- TRUE; break
+  solve_masked <- function(mask) {
+    theta <- numeric(np); cur <- eval_th(theta)
+    for (it in seq_len(maxit)) {
+      Dm <- design(cur)[, mask, drop = FALSE]
+      u <- y - cur$p; av <- cur$p * (1 - cur$p)
+      g <- crossprod(Dm, u); Fi <- crossprod(Dm, Dm * av)
+      sm <- tryCatch(solve(Fi, g),
+                     error = function(e) solve(Fi + diag(1e-8, sum(mask)), g))
+      step <- numeric(np); step[mask] <- as.numeric(sm)
+      lam <- 1; moved <- FALSE
+      for (half in 1:30) {
+        cand <- theta + lam * step; c2 <- eval_th(cand)
+        if (is.finite(c2$ll) && c2$ll >= cur$ll - 1e-12) {
+          theta <- cand; cur <- c2; moved <- TRUE; break
+        }
+        lam <- lam / 2
       }
-      lam <- lam / 2
+      if (!moved) break
+      if (max(abs(lam * step)) < tol) break
     }
-    if (!moved) break
-    if (max(abs(lam * step)) < tol) break
+    cur
+  }
+  obs_info <- function(cur) {
+    # observed information; the la-diagonal carries the curvature
+    # d2 eta / d la^2
+    D <- design(cur); u <- y - cur$p; av <- cur$p * (1 - cur$p)
+    H <- crossprod(D, D * av)
+    for (j in seq_len(nf)) {
+      sj <- free[j]; aj <- cur$alpha[[sj]]
+      onA <- !is.na(fa) & fa == j; onB <- !is.na(fb) & fb == j
+      curv <- phg * (onA * aj * ba - onB * aj * bb)
+      H[j, j] <- H[j, j] - sum(u * curv)
+    }
+    list(H = H, D = D, u = u)
   }
 
-  # observed information: the la-diagonal carries the curvature d2 eta / d la^2
-  D <- design(cur); u <- y - cur$p; av <- cur$p * (1 - cur$p)
-  H <- crossprod(D, D * av)
-  for (j in seq_len(nf)) {
-    s <- free[j]; aj <- cur$alpha[[s]]
-    onA <- !is.na(fa) & fa == j; onB <- !is.na(fb) & fb == j
-    curv <- phg * (onA * aj * ba - onB * aj * bb)
-    H[j, j] <- H[j, j] - sum(u * curv)
+  cur <- solve_masked(rep(TRUE, np))
+  oi <- obs_info(cur)
+
+  # identification, classified by WHERE the information fails. A flat
+  # direction confined to log-alpha columns is the degenerate-unit case:
+  # the set's within-set locations are (near) indistinguishable, so its
+  # unit has nothing to scale, but its origin kappa -- and with it the
+  # placement of its objects -- is still identified. Refit with those
+  # units fixed at the conventional 1 and report their alpha as NA. A
+  # flat direction that loads on a kappa column means the set cannot be
+  # PLACED at all: that is a structural failure of the cross-set design.
+  alpha_unident <- setNames(rep(FALSE, nf), free)
+  rank_ok <- TRUE; separated <- FALSE
+  # Complete / quasi-complete separation of the cross-set comparisons:
+  # every outcome is fitted at the boundary (p -> 0 or 1), so the
+  # likelihood is unbounded and kappa / log-alpha run to the trust region
+  # while the observed information stays finite -- the eigenvalue and rcond
+  # checks below cannot see it (nothing is singular at the stopping point).
+  # Detect it directly from the fitted probabilities: near-deterministic
+  # prediction of essentially every cross-set outcome means the sets are
+  # ordered by an unbounded margin and cannot be placed on a common scale.
+  if (length(y) && mean(pmin(cur$p, 1 - cur$p) < 1e-4) > 0.99) {
+    separated <- TRUE; rank_ok <- FALSE
   }
-  cov <- tryCatch(solve(H), error = function(e)
-    solve(crossprod(D, D * av) + diag(1e-8, np)))
+  eh <- eigen(oi$H, symmetric = TRUE)
+  flat <- abs(eh$values) < max(abs(eh$values)) * 1e-10
+  if (!separated && any(flat)) {
+    V <- eh$vectors[, flat, drop = FALSE]
+    la_load <- sqrt(rowSums(V[seq_len(nf), , drop = FALSE]^2))
+    ka_load <- sqrt(rowSums(V[nf + seq_len(nf), , drop = FALSE]^2))
+    if (any(ka_load > 1e-2)) rank_ok <- FALSE
+    else {
+      alpha_unident[la_load > 1e-2] <- TRUE
+      mask <- rep(TRUE, np); mask[which(alpha_unident)] <- FALSE
+      cur <- solve_masked(mask)
+      oi <- obs_info(cur)
+      kept <- which(mask)
+      rc <- tryCatch(rcond(oi$H[kept, kept, drop = FALSE]),
+                     error = function(e) 0)
+      if (!(is.finite(rc) && rc > 1e-10)) rank_ok <- FALSE
+    }
+  }
+  if (rank_ok) {
+    rc <- tryCatch(rcond(oi$H), error = function(e) 0)
+    if (!any(alpha_unident) && !(is.finite(rc) && rc > 1e-10))
+      rank_ok <- FALSE
+  }
+
+  # covariance over the estimated parameters; fixed-by-convention units
+  # carry zero rows (their uncertainty is not defined, and the reported
+  # se_log_alpha is NA)
+  kept <- which(!c(alpha_unident, rep(FALSE, nf)))
+  cov <- matrix(0, np, np)
+  cov[kept, kept] <- tryCatch(solve(oi$H[kept, kept, drop = FALSE]),
+    error = function(e) {
+      Dk <- oi$D[, kept, drop = FALSE]
+      av <- cur$p * (1 - cur$p)
+      solve(crossprod(Dk, Dk * av) + diag(1e-8, length(kept)))
+    })
   # scale-free per-comparison gradient criterion (see .btlef_stage1)
-  conv <- isTRUE(max(abs(crossprod(D, u))) < 1e-6 * length(y))
+  conv <- isTRUE(max(abs(crossprod(oi$D[, kept, drop = FALSE], oi$u))) <
+                   1e-6 * length(y))
   se <- sqrt(pmax(diag(cov), 0))
-  list(alpha = cur$alpha, kappa = cur$kappa, p = cur$p, ll = cur$ll,
-       cov = cov, se_log_alpha = setNames(se[seq_len(nf)], free),
+  if (!rank_ok) se[] <- NA_real_
+  alpha_rep <- cur$alpha
+  alpha_rep[names(which(alpha_unident))] <- NA_real_
+  se_la <- setNames(se[seq_len(nf)], free)
+  se_la[alpha_unident] <- NA_real_
+  list(alpha = alpha_rep, alpha_use = cur$alpha, kappa = cur$kappa,
+       p = cur$p, ll = cur$ll, cov = cov,
+       se_log_alpha = se_la,
        se_kappa = setNames(se[nf + seq_len(nf)], free),
-       free = free, converged = conv)
+       free = free, converged = conv, rank_ok = rank_ok,
+       separated = separated, alpha_unident = alpha_unident)
 }
 
 # pooled log-of-mean-square fit residual over a set of comparisons, using the
 # frame model's fitted probabilities (the paired-comparison residual logic of
 # btl(): z = (y - p) / sqrt(p(1-p)), Andrich and Marais 2019 ch. 23)
-.btlef_frame_fit <- function(y, p) {
+.btlef_frame_fit <- function(y, p, f_cell = 1) {
   n <- length(y)
-  if (n < 3L) return(NA_real_)
+  if (n < 3L) return(list(fit_resid = NA_real_, df = NA_real_))
   V <- pmax(p * (1 - p), 1e-12)
   z2 <- (y - p)^2 / V
   mu4 <- p * (1 - p)^4 + (1 - p) * p^4
   c4v <- mu4 / V^2 - 1
-  y2 <- sum(z2); f <- n; v <- sum(c4v)
-  if (v > 1e-8 && y2 > 0) f * (log(y2) - log(f)) / sqrt(v) else NA_real_
+  y2 <- sum(z2); f <- f_cell * n; v <- sum(c4v)
+  list(fit_resid = if (v > 1e-8 && y2 > 0 && f > 0)
+         f * (log(y2) - log(f)) / sqrt(v) else NA_real_, df = f)
+}
+
+# Core diagnostics on the fitted frame probabilities. These are calculated
+# here, rather than borrowed from a single-unit BTL fit, so object and judge
+# fit update when the frame structure updates the common-scale locations.
+.btlef_diagnostics <- function(a, b, y, jd, pan, sa, sb, p, phi, alpha,
+                               objects, n_parameters) {
+  objs <- objects$object
+  K <- length(objs)
+  ia <- match(a, objs); ib <- match(b, objs)
+  p <- pmin(pmax(as.numeric(p), 1e-12), 1 - 1e-12)
+  V <- p * (1 - p)
+  z2 <- (y - p)^2 / V
+  mu4 <- p * (1 - p)^4 + (1 - p) * p^4
+  c4v <- mu4 / V^2 - 1
+  f_cell <- max((length(y) - n_parameters) / length(y), 0)
+  pool <- function(sel) {
+    n <- sum(sel)
+    if (n < 3L || f_cell <= 0)
+      return(list(infit_ms = NA_real_, outfit_ms = NA_real_,
+                  fit_resid = NA_real_, df = NA_real_, n = n))
+    y2 <- sum(z2[sel]); f <- f_cell * n
+    wv <- sum(V[sel])
+    infit <- if (wv > 1e-12) sum(z2[sel] * V[sel]) / (f_cell * wv)
+             else NA_real_
+    vv <- sum(c4v[sel])
+    fr <- if (vv > 1e-8 && y2 > 0 && f > 0)
+      f * (log(y2) - log(f)) / sqrt(vv) else NA_real_
+    list(infit_ms = infit, outfit_ms = y2 / f, fit_resid = fr,
+         df = f, n = n)
+  }
+
+  ofit <- lapply(seq_len(K), function(k) pool(ia == k | ib == k))
+  wins <- vapply(seq_len(K), function(k)
+    sum(y[ia == k]) + sum(1 - y[ib == k]), 0)
+  objects$comparisons <- vapply(ofit, `[[`, 0, "n")
+  objects$wins <- wins
+  objects$infit_ms <- vapply(ofit, `[[`, 0, "infit_ms")
+  objects$outfit_ms <- vapply(ofit, `[[`, 0, "outfit_ms")
+  objects$fit_resid <- vapply(ofit, `[[`, 0, "fit_resid")
+  objects$df_fit <- vapply(ofit, `[[`, 0, "df")
+
+  ju <- sort(unique(jd))
+  jfit <- lapply(ju, function(j) pool(jd == j))
+  judges <- data.frame(
+    judge = ju, n = vapply(jfit, `[[`, 0, "n"),
+    infit_ms = vapply(jfit, `[[`, 0, "infit_ms"),
+    outfit_ms = vapply(jfit, `[[`, 0, "outfit_ms"),
+    fit_resid = vapply(jfit, `[[`, 0, "fit_resid"),
+    df_fit = vapply(jfit, `[[`, 0, "df"), stringsAsFactors = FALSE)
+
+  lo_first <- ia < ib
+  key <- paste(pmin(ia, ib), pmax(ia, ib))
+  obs_lo <- ifelse(lo_first, y, 1 - y)
+  exp_lo <- ifelse(lo_first, p, 1 - p)
+  n_pair <- tapply(rep(1, length(y)), key, sum)
+  obs_m <- tapply(obs_lo, key, mean)
+  exp_m <- tapply(exp_lo, key, mean)
+  v_pair <- tapply(V, key, sum)
+  zp <- tapply(obs_lo - exp_lo, key, sum) / sqrt(pmax(v_pair, 1e-12))
+  idx <- do.call(rbind, strsplit(names(n_pair), " "))
+  pairs <- data.frame(
+    object_a = objs[as.integer(idx[, 1])],
+    object_b = objs[as.integer(idx[, 2])], n = as.numeric(n_pair),
+    obs_prop = as.numeric(obs_m), exp_prop = as.numeric(exp_m),
+    residual = as.numeric(zp), chisq = as.numeric(zp)^2,
+    stringsAsFactors = FALSE)
+  used <- pairs$n >= 2L
+  total_df <- sum(used) - n_parameters
+  total_chisq <- if (total_df >= 1L) sum(pairs$chisq[used]) else NA_real_
+  if (total_df < 1L) total_df <- NA_integer_
+
+  # d eta / d(v_a - v_b): within-set comparisons use phi/alpha because
+  # v = alpha * beta + kappa; cross-set comparisons use phi directly.
+  slope <- unname(phi[pan])
+  within <- sa == sb
+  slope[within] <- slope[within] / unname(alpha[sa[within]])
+  comparisons <- data.frame(
+    object_a = a, object_b = b, response = y, weight = 1,
+    judge = jd, panel = pan, set_a = sa, set_b = sb,
+    expected = p, frame_slope = slope,
+    information = slope^2 * V, stringsAsFactors = FALSE)
+
+  list(objects = objects, judges = judges, pairs = pairs,
+       comparisons = comparisons, total_chisq = total_chisq,
+       total_df = total_df,
+       total_p = if (is.finite(total_chisq))
+         stats::pchisq(total_chisq, total_df, lower.tail = FALSE) else NA_real_)
 }
 
 #' Fit the extended frame of reference model for paired comparisons
 #'
-#' Estimates object locations from paired comparisons when the unit of the
-#' latent scale differs across frames -- judge-panel by object-set cells -- an
-#' extension of Humphry's (2005) extended frame of reference model to the
-#' Bradley-Terry-Luce family. Objects are partitioned into sets and judges into
-#' panels. Each object has a common-scale value \code{v_k = alpha_s beta_k +
-#' kappa_s}, with \code{beta_k} the within-set calibration location,
-#' \code{alpha_s > 0} the set unit and \code{kappa_s} the set origin; a
-#' comparison judged in panel \code{g} carries the panel unit \code{phi_g}.
-#' Within a set the comparison logit is \code{phi_g (beta_a - beta_b)} (the set
-#' origin cancels and the set unit is confounded with the spread of
-#' \code{beta}, so neither is identified within a set); across sets it is
-#' \code{phi_g (v_a - v_b)}, which places the sets on one common scale.
+#' Fits paired comparisons when judges belong to panels and objects belong to
+#' linked sets whose units or origins can differ. It combines the
+#' Bradley--Terry--Luce model with Humphry's extended frame of reference
+#' structure.
 #'
-#' One modelling convention deserves plain statement. Rewritten with a single
-#' latent value per object, the model says within-set-\code{s} contests are
-#' judged at discrimination \code{phi_g / alpha_s} while every cross-set
-#' contest is judged at exactly \code{phi_g}: the common scale is
-#' \emph{defined} as the scale of between-frame judgement. That is an
-#' assumption about how discriminal dispersion behaves when unlike objects
-#' meet (a Thurstonian question with no assumption-free answer), not a
-#' consequence of the theory; the per-frame fit residuals in \code{frames}
-#' are where a violation would show.
+#' @details
+#' For object \eqn{k} in set \eqn{s}, let
+#' \deqn{v_k=\alpha_s\beta_k+\kappa_s,}
+#' where \eqn{\beta_k} is its within-set location, \eqn{\alpha_s>0} is the set
+#' unit, and \eqn{\kappa_s} is the set origin. A comparison in panel \eqn{g}
+#' has logit
+#' \deqn{\phi_g(\beta_a-\beta_b)}
+#' for objects in the same set, and
+#' \deqn{\phi_g(v_a-v_b)}
+#' for objects in different sets. Cross-set comparisons identify the common
+#' scale. The first set fixes \eqn{\alpha=1} and \eqn{\kappa=0}; panel units
+#' have geometric mean one.
 #'
-#' Estimation follows \code{\link{rasch_efrm}} in two conditional stages. In
-#' stage one the within-set comparisons of each set, pooled over panels, fit
-#' the bilinear model \code{logit = rho_{gs} (b_a - b_b)} with \code{b}
-#' sum-zero and the most-used panel fixed at \code{rho = 1}; the ratios
-#' \code{rho_{gs} = phi_g / phi_{ref(s)}} estimate the panel units up to each
-#' set's reference panel and are reconciled across sets by a precision-weighted
-#' least squares over the panel-by-set linking graph, then normalised to
-#' geometric mean one. In stage two the cross-set comparisons are a
-#' low-dimensional maximum likelihood in \code{(log alpha, kappa)} for the
-#' non-reference sets, with \code{alpha_1 = 1} and \code{kappa_1 = 0} fixing
-#' the reference set (the first, alphabetically).
+#' Estimation has two stages. Within-set comparisons estimate object locations
+#' and panel-unit ratios. Weighted least squares reconciles the ratios over the
+#' panel-by-set linking graph. Cross-set comparisons then estimate the set
+#' units and origins. Unlike the person-by-item EFRM, this linking step uses
+#' only comparison outcomes and does not require a distribution of persons.
+#' The paired-comparison form is an extension of Humphry's model implemented in
+#' this package.
 #'
-#' The set units are identified here WITHIN the conditional framework: the
-#' cross-set linking uses only comparison outcomes and makes no distributional
-#' assumption about the objects. This is the substantive difference from the
-#' persons-by-items EFRM, whose item-set units can only be identified from the
-#' person side -- that is, from the distribution of the persons over the linked
-#' sets. The paired-comparison design supplies its own conditional link, so no
-#' such distributional step is needed. See Humphry (2005) and Humphry and
-#' Andrich (2008) for the theory of the unit, and Thurstone (1927) and David
-#' (1988) for the varying-discriminal-dispersion lineage from which the
-#' frame-dependent unit descends. The paired-comparison form is this package's
-#' extension of Humphry's model.
+#' The default judge bootstrap resamples judges within panels and refits both
+#' stages. The parametric bootstrap draws independent outcomes from the fitted
+#' probabilities and uses normal and chi-square reference distributions.
+#' \code{se_method = "conditional"} uses analytic stage-one
+#' errors and conditions the linking errors on stage one; it is intended for
+#' preliminary inspection. Its unit probabilities and omnibus tests are
+#' withheld because it does not propagate stage-one uncertainty. Bootstrap
+#' failures and boundary estimates are reported in \code{notes}.
 #'
-#' The ESTIMATES are always the staged conditional estimator: the within-frame
-#' calibrations are invariant to the linking data (the frame-of-reference
-#' property), a deliberate trade of some efficiency for invariance, exactly as
-#' anchored equating trades. Inference defaults to a parametric bootstrap of
-#' the whole pipeline (\code{se_method = "bootstrap"}): winners are resampled
-#' from the fitted probabilities and both stages refitted, so the standard
-#' errors of \code{phi}, \code{alpha}, \code{kappa}, \code{beta} and the
-#' common-scale \code{v} carry every stage's sampling variability -- verified
-#' by simulation to restore nominal coverage where the conditional errors
-#' cover at a third of their nominal rate on linked designs. The
-#' \code{"conditional"} option keeps the fast analytic errors (judge-clustered
-#' sandwich for stage one, inverse observed information for stage two,
-#' conditional on stage one) for quick inspection; its \code{alpha} and
-#' \code{kappa} errors understate, and the fit says so.
-#'
-#' Two honesty notes on the bootstrap. The default is model-based:
-#' replicates are drawn as independent Bernoulli outcomes at the fitted
-#' probabilities, which is self-consistent (the model has no judge
-#' parameter) but does not carry extra-model dependence within judges. When
-#' judges plausibly carry idiosyncratic preferences across their
-#' comparisons, use \code{se_method = "judge_bootstrap"}: judges are
-#' redrawn with replacement within each panel and the whole pipeline is
-#' refitted, so the errors carry both the stage-one uncertainty and the
-#' within-judge dependence (it needs enough judges per panel to resample
-#' stably; failed replicates are counted and reported). And a parameter that reaches
-#' its boundary in some replicates (a set unit driven to zero when a resampled
-#' within-set order flips against the cross-set evidence, the signature of a
-#' two-object set with a near-even internal pair) has no normal sampling
-#' distribution: its standard error is reported as \code{NA} and a note names
-#' the parameter and the boundary count rather than manufacturing a number.
-#' Relatedly, a set whose within-set contests are all near-even (or all
-#' one-sided) carries no stable information about the panel-unit ratios; such
-#' sets are screened out of the \code{phi} reconciliation, refit with the
-#' panel units held at the reconciled \code{phi} (which the frame model says
-#' apply to them regardless), and named in a note.
-#'
-#' A single set (\code{S = 1}) reduces the model to panel units alone; stage
-#' two is skipped and the print states the panel-units model. When
-#' additionally \code{G = 1} the fit reduces exactly to \code{\link{btl}} on
-#' the same data. The equal-unit (single-unit) comparison refits plain
-#' \code{\link{btl}} on all comparisons pooled and reports the descriptive
-#' composite log-likelihood difference against the frames model; because that
-#' comparison is a composite likelihood, the inference on the units is carried
-#' by the Wald tests on \code{log phi_g} and \code{log alpha_s} in
-#' \code{phi_table} and \code{alpha_table}.
+#' With one set, the model contains panel units only. With one set and one
+#' panel, it reduces to \code{\link{btl}}. Omnibus Wald tests provide inference
+#' for the unit families; individual contrasts are Holm-adjusted follow-ups.
+#' Judge-bootstrap probabilities require at least six judges and 5.5 effective
+#' judges in every contributing panel, and eight of each on a set link. The
+#' support is returned in \code{unit_support}; estimates remain descriptive
+#' when a probability is withheld.
 #'
 #' @param data A data frame with one comparison per row.
 #' @param object_a,object_b Names of the columns holding the two compared
 #'   objects.
-#' @param winner Name of the column holding the winner; its value must equal
-#'   the row's \code{object_a} or \code{object_b} entry, \code{"tie"} or
-#'   \code{"draw"} marks a tie, and anything else is treated as missing.
+#' @param winner Name of the winner column. A value must match one of the two
+#'   objects in that row. \code{"tie"} and \code{"draw"} mark ties; other
+#'   values are treated as missing.
 #' @param judge Name of the judge column (clusters the stage-one standard
 #'   errors and defines the panels when \code{panels} is a judge attribute).
 #' @param panels Either the name of a judge-attribute column in \code{data} or
@@ -427,45 +559,59 @@
 #' @param min_link Minimum number of cross-set comparisons a set pair must
 #'   supply to be used for linking; sets not reachable from the reference set
 #'   through sufficient cross-set pairs raise an error.
-#' @param se_method \code{"bootstrap"} (the default): a parametric bootstrap;
-#'   \code{"judge_bootstrap"}: judges resampled with replacement within
-#'   panels, carrying within-judge dependence;
-#'   of the ENTIRE two-stage pipeline -- winners resampled from the fitted
-#'   probabilities, both stages refitted \code{boot_reps} times -- so the
-#'   reported standard errors carry every source of sampling variability,
-#'   including the stage-one uncertainty that flows into the linking.
-#'   \code{"conditional"}: the fast analytic errors, exact for \code{beta} and
-#'   \code{phi} but conditional on stage one for \code{alpha} and
-#'   \code{kappa}, which they therefore UNDERSTATE (verified by simulation);
-#'   for quick inspection only.
-#' @param boot_reps Bootstrap replicates for \code{se_method = "bootstrap"}.
+#' @param se_method Method used for standard errors. The default,
+#'   \code{"judge_bootstrap"}, resamples judges within panels and retains
+#'   dependence among a judge's comparisons. \code{"bootstrap"} instead
+#'   draws independent outcomes from fitted probabilities. Both stages are
+#'   refitted. \code{"conditional"} uses
+#'   analytic stage-one standard errors for \code{beta} and \code{phi}, and
+#'   inverse observed information for \code{alpha} and \code{kappa}
+#'   conditional on the stage-one estimates. It is faster, but does not
+#'   propagate stage-one uncertainty into the linking parameters; unit
+#'   probabilities and omnibus tests are therefore withheld.
+#' @param boot_reps Number of replicates for \code{se_method = "bootstrap"}
+#'   or \code{"judge_bootstrap"}; at least 30 are required.
+#' @param workers Number of judge-bootstrap workers. The default is four,
+#'   reduced when the system limit is lower. The parametric bootstrap remains
+#'   serial because its refits are inexpensive.
+#' @param seed Optional bootstrap seed. The caller's random-number state is
+#'   restored when estimation finishes.
+#' @param progress Optional function called as \code{progress(stage, current,
+#'   total)} during estimation.
+#' @param cancel Optional zero-argument function checked between bootstrap
+#'   batches. Returning \code{TRUE} stops with a \code{rasch_cancelled}
+#'   condition.
 #' @param maxit,tol Newton iteration cap and convergence tolerance.
-#' @return An object of class \code{"rasch_btl_efrm"}: \code{objects} (object,
-#'   set, \code{beta_set} and its standard error, common-scale \code{v} and its
-#'   standard error), \code{phi_table} (panel units with Wald tests against
-#'   \code{log phi = 0}), \code{alpha_table} and \code{kappa_table} (set units
-#'   and origins with Wald tests; the reference set carries \code{alpha = 1},
-#'   \code{kappa = 0} with no standard error), \code{frames} (panel by set:
-#'   unit \code{rho = phi alpha}, comparison count, pooled fit residual),
-#'   \code{equal_unit} (the descriptive single-unit comparison), \code{n_cross}
-#'   (cross-set comparison counts per set pair), \code{notes} and
-#'   \code{converged}.
-#' @references Bradley, R. A. and Terry, M. E. (1952). Rank analysis of
+#' @return An object of class \code{"rasch_btl_efrm"}. It contains the object
+#'   estimates, group- and set-unit tables, origin shifts, omnibus unit tests,
+#'   unit-specific judge support, frame definitions, convergence information,
+#'   and analysis notes.
+#' @references Andrich, D. (1978). Relationships between the Thurstone and
+#'   Rasch approaches to item scaling. Applied Psychological Measurement,
+#'   2(3), 451--462.
+#'
+#'   Bradley, R. A. and Terry, M. E. (1952). Rank analysis of
 #'   incomplete block designs: I. The method of paired comparisons.
-#'   Biometrika, 39, 324-345.
+#'   Biometrika, 39, 324--345.
 #'
 #'   David, H. A. (1988). The Method of Paired Comparisons (2nd ed.). Griffin.
 #'
 #'   Humphry, S. M. (2005). Maintaining a common arbitrary unit in social
 #'   measurement. PhD thesis, Murdoch University.
 #'
-#'   Humphry, S. M. and Andrich, D. (2008). Understanding the unit in the
-#'   Rasch model. Journal of Applied Measurement, 9(3), 249-264.
+#'   Humphry, S. M. (2012). Item set discrimination and the unit in the
+#'   Rasch model. Journal of Applied Measurement, 13(2), 165--180.
 #'
-#'   Luce, R. D. (1959). Individual Choice Behavior. Wiley.
+#'   Humphry, S. M. and Andrich, D. (2008). Understanding the unit in the
+#'   Rasch model. Journal of Applied Measurement, 9(3), 249--264.
+#'
+#'   Luce, R. D. (1959). Individual Choice Behavior: A Theoretical
+#'   Analysis. Wiley.
 #'
 #'   Thurstone, L. L. (1927). A law of comparative judgment. Psychological
-#'   Review, 34, 273-286.
+#'   Review, 34, 273--286.
+#' @seealso \code{\link{btl}}, \code{\link{rasch_efrm}},
+#'   \code{\link{plot_btl_units}}, and \code{\link{simulate_btl_efrm}}.
 #' @examples
 #' \donttest{
 #' d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
@@ -473,22 +619,61 @@
 #'                        seed = 1)
 #' fit <- btl_efrm(d, "object_a", "object_b", winner = "winner",
 #'                 judge = "judge", panels = "panel",
-#'                 object_sets = attr(d, "truth")$object_sets)
+#'                 object_sets = attr(d, "truth")$object_sets,
+#'                 se_method = "conditional")
 #' fit$alpha_table
 #' }
 #' @export
 btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
                      object_sets, response = NULL,
                      ties = c("drop", "error"), min_link = 20,
-                     se_method = c("bootstrap", "judge_bootstrap",
+                     se_method = c("judge_bootstrap", "bootstrap",
                                    "conditional"),
-                     boot_reps = 60, maxit = 60, tol = 1e-8) {
+                     boot_reps = 200, workers = 4L, seed = NULL,
+                     progress = NULL, cancel = NULL,
+                     maxit = 60, tol = 1e-8) {
+  .check_column_names(data)
   ties <- match.arg(ties)
   se_method <- match.arg(se_method)
+  if (length(boot_reps) != 1L || !is.finite(boot_reps) || boot_reps < 0L ||
+      boot_reps != floor(boot_reps))
+    stop("boot_reps must be one non-negative whole number")
+  boot_reps <- as.integer(boot_reps)
+  if (se_method %in% c("bootstrap", "judge_bootstrap") && boot_reps < 30L)
+    stop("BTL-EFRM bootstrap inference needs at least 30 replicates")
+  if (length(workers) != 1L || !is.finite(workers) || workers < 1L ||
+      workers != floor(workers))
+    stop("workers must be one positive whole number")
+  workers <- as.integer(workers)
+  workers <- if (se_method == "judge_bootstrap")
+    min(workers, .rasch_available_workers(), boot_reps) else 1L
+  if (workers > 1L &&
+      !file.exists(system.file("DESCRIPTION", package = "rasch")))
+    stop("parallel BTL-EFRM workers require an installed package; install ",
+         "rasch before using workers above one")
+  if (!is.null(progress) && !is.function(progress))
+    stop("progress must be NULL or a function")
+  if (!is.null(cancel) && !is.function(cancel))
+    stop("cancel must be NULL or a function")
+  if (!is.null(seed)) {
+    if (length(seed) != 1L || !is.finite(seed) || seed < 0 ||
+        seed != floor(seed) || seed > .Machine$integer.max)
+      stop("seed must be NULL or one non-negative whole number within the integer range")
+    seed <- as.integer(seed)
+    old_seed <- .sim_seed_capture()
+    on.exit(.sim_seed_restore(old_seed), add = TRUE)
+    set.seed(seed)
+  }
+  report <- function(stage, current, total) {
+    if (is.function(cancel) && isTRUE(cancel()))
+      .rasch_cancelled("BTL-EFRM estimation")
+    if (is.function(progress)) progress(stage, current, total)
+    invisible(NULL)
+  }
   if (!is.null(response))
     stop("btl_efrm fits dichotomous winner data only in this first ",
-         "implementation; a graded `response` is not supported. Reduce the ",
-         "graded margins to a winner, or use btl() for a single-frame graded ",
+         "implementation; a polytomous `response` is not supported. Reduce the ",
+         "polytomous margins to a winner, or use btl() for a single-frame polytomous ",
          "analysis.")
   data <- as.data.frame(data)
   for (col in c(object_a, object_b, winner, judge))
@@ -595,10 +780,11 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
     if (!length(cross))
       stop("no cross-set comparisons: the sets cannot be linked to a common ",
            "scale (set units alpha and origins kappa are unidentified)")
-    key <- ifelse(sa[cross] < sb[cross], paste(sa[cross], sb[cross]),
-                  paste(sb[cross], sa[cross]))
+    isa <- match(sa[cross], sets_u); isb <- match(sb[cross], sets_u)
+    key <- paste(pmin(isa, isb), pmax(isa, isb))
     tab <- table(key); parts <- do.call(rbind, strsplit(names(tab), " ", fixed = TRUE))
-    n_cross <- data.frame(set_a = parts[, 1], set_b = parts[, 2],
+    n_cross <- data.frame(set_a = sets_u[as.integer(parts[, 1])],
+                          set_b = sets_u[as.integer(parts[, 2])],
                           n = as.integer(tab), stringsAsFactors = FALSE)
     rownames(n_cross) <- NULL
     used <- n_cross$n >= min_link
@@ -611,9 +797,34 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
            "' through cross-set pairs with at least min_link = ", min_link,
            " comparisons: ", paste(sets_u[comp != ref_comp], collapse = ", "),
            " (increase the cross-set data or lower min_link)")
+    # a set's UNIT alpha is identified by how its internal spread shows in
+    # cross-set outcomes: cross-set comparisons touching only one of its
+    # objects identify the origin kappa but leave alpha riding on nothing
+    for (s in sets_u[-1]) {
+      touched <- unique(c(a[cross][sa[cross] == s], b[cross][sb[cross] == s]))
+      if (length(touched) < 2L)
+        stop("cross-set comparisons touch only ", length(touched),
+             " object(s) of set '", s, "': its unit (alpha) is ",
+             "unidentified -- add cross-set comparisons involving at ",
+             "least two of its objects")
+    }
+  }
+  # within each set, the object comparison graph must be connected, or the
+  # relative locations inside the set are unidentified (the stage-1 Newton
+  # would land wherever the ridge sends it, exactly as in pcml())
+  for (s in sets_u) {
+    rows_s <- which(within & sa == s)
+    os_s <- sort(names(set_of)[set_of == s])
+    ia_s <- match(a[rows_s], os_s); ib_s <- match(b[rows_s], os_s)
+    comp_s <- .btlef_components(length(os_s), cbind(ia_s, ib_s))
+    if (length(unique(comp_s)) > 1L)
+      stop("the within-set comparison graph of set '", s, "' is not ",
+           "connected: relative locations are unidentified between {",
+           paste(tapply(os_s, comp_s, paste, collapse = ", "),
+                 collapse = "} and {"), "}")
   }
 
-  # --- the staged conditional estimator, callable on any outcome vector -----
+  # --- the two-stage estimator, callable on any outcome vector ---------------
   # (one function for the observed data and for every bootstrap replicate, so
   # the resampled pipeline is identical to the reported one)
   fit_once <- function(yy) {
@@ -633,6 +844,12 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
              "each object needs at least one comparison inside its own set")
       fit1 <- .btlef_stage1(ia, ib, yy[rows], pan[rows], jd[rows], Ks, maxit, tol)
       s1[[s]] <- list(fit = fit1, rows = rows, os = os, ia = ia, ib = ib)
+      if (length(fit1$free) && !isTRUE(fit1$cluster_ok))
+        stop("set '", s, "' has ", fit1$n_clusters,
+             " independent judge clusters for ", fit1$n_parameters,
+             " stage-one parameters. Estimating and precision-weighting its ",
+             "panel-unit ratio needs at least 10 judges and more judges than ",
+             "parameters; add independent judges or simplify the frame design")
       # A set carries information about the panel-unit ratios only through its
       # internal separation: when its within-set contests are all near-even
       # (or one-sided), the ratio log rho_gs is the quotient of two near-zero
@@ -641,11 +858,16 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
       # than let them poison it; the set is refit below at the reconciled
       # units, which the frame model says apply to it regardless.
       lr <- log(fit1$rho[fit1$free])
-      usable <- isTRUE(fit1$converged) &&
+      usable <- isTRUE(fit1$converged) && isTRUE(fit1$rank_ok) &&
         (!length(fit1$free) ||
            (all(is.finite(lr)) && max(abs(lr)) < 4 &&
             all(is.finite(fit1$cov_lrho)) && all(diag(fit1$cov_lrho) > 0)))
       if (!usable && length(fit1$free)) { dropped <- c(dropped, s); next }
+      if (!isTRUE(fit1$rank_ok))
+        stop("the within-set information of set '", s, "' is singular: ",
+             "its object locations are unidentified even with the panel ",
+             "units fixed -- the within-set comparisons do not span the ",
+             "objects")
       blocks[[s]] <- list(ref = fit1$ref, free = fit1$free,
                           lrho = setNames(lr, fit1$free),
                           cov = fit1$cov_lrho)
@@ -654,8 +876,10 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
       if (length(dropped))
         stop(conditionMessage(e), "\n  (set(s) ", paste(dropped, collapse = ", "),
              " were excluded from the panel-unit reconciliation because their ",
-             "within-set comparisons carry no stable panel-ratio information)",
-             call. = FALSE)
+             "within-set comparisons carry no stable panel-ratio information ",
+             "-- their contests are near-even or one-sided, or their panels ",
+             "observe disjoint object pairs, leaving the ratio ",
+             "rank-deficient)", call. = FALSE)
       stop(e)
     })
     phi <- rec$phi
@@ -667,6 +891,10 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
         fit1 <- .btlef_stage1(s1[[s]]$ia, s1[[s]]$ib, yy[rows], pan[rows],
                               jd[rows], length(os), maxit, tol,
                               rho_fixed = phi)
+        if (!isTRUE(fit1$rank_ok))
+          stop("set '", s, "': object locations are unidentified even ",
+               "with the panel units held fixed -- the within-set ",
+               "comparisons do not span the objects")
         s1[[s]]$fit <- fit1
         bhat[os] <- fit1$beta; se_bhat[os] <- fit1$se_beta
       } else {
@@ -683,35 +911,72 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
     within_p[within] <- plogis(phi[pan[within]] * (bhat[a[within]] - bhat[b[within]]))
 
     alpha <- setNames(rep(1, S), sets_u); kappa <- setNames(rep(0, S), sets_u)
+    alpha_use <- alpha
+    s2_alpha_unident <- setNames(logical(0), character(0))
     se_log_alpha <- setNames(rep(NA_real_, S), sets_u)
     se_kappa <- setNames(rep(NA_real_, S), sets_u)
-    cov2 <- NULL; s2_conv <- TRUE; ll_cross <- 0
+    cov2 <- NULL; s2_conv <- TRUE; ll_cross <- 0; s2_rank_ok <- TRUE
+    s2_separated <- FALSE
     p_all <- within_p
     if (S > 1L) {
       st2 <- .btlef_stage2(a[cross], b[cross], yy[cross], phi[pan[cross]],
                            sa[cross], sb[cross], bhat, sets_u, maxit, tol)
-      alpha <- st2$alpha; kappa <- st2$kappa; cov2 <- st2$cov
+      alpha <- st2$alpha; alpha_use <- st2$alpha_use
+      kappa <- st2$kappa; cov2 <- st2$cov
+      s2_alpha_unident <- st2$alpha_unident
       se_log_alpha[st2$free] <- st2$se_log_alpha
       se_kappa[st2$free] <- st2$se_kappa
-      s2_conv <- st2$converged; ll_cross <- st2$ll
+      s2_conv <- st2$converged && st2$rank_ok; ll_cross <- st2$ll
+      s2_rank_ok <- st2$rank_ok; s2_separated <- st2$separated
       p_all[cross] <- st2$p
     }
-    v <- alpha[set_of[objs_all]] * bhat[objs_all] + kappa[set_of[objs_all]]
+    v <- alpha_use[set_of[objs_all]] * bhat[objs_all] +
+      kappa[set_of[objs_all]]
     list(bhat = bhat, se_bhat = se_bhat, phi = phi,
-         se_log_phi = rec$se_log_phi, ref_of_set = ref_of_set,
-         alpha = alpha, kappa = kappa, cov2 = cov2,
+         se_log_phi = rec$se_log_phi, cov_log_phi = rec$cov_log_phi,
+         ref_of_set = ref_of_set,
+         alpha = alpha, alpha_use = alpha_use, kappa = kappa, cov2 = cov2,
+         s2_alpha_unident = s2_alpha_unident,
          se_log_alpha = se_log_alpha, se_kappa = se_kappa, v = v,
          within_p = within_p, p_all = p_all,
          ll_within = ll_within, ll_cross = ll_cross,
-         dropped = dropped,
+         dropped = dropped, s2_rank_ok = s2_rank_ok,
+         s2_separated = s2_separated,
          converged = isTRUE(s1_conv && s2_conv))
   }
 
+  report("two-stage fit", 0L, 1L)
   fit0 <- fit_once(y)
+  report("two-stage fit", 1L, 1L)
+  if (S > 1L && isTRUE(fit0$s2_separated))
+    stop("the cross-set comparisons are (quasi-)completely separated: one ",
+         "set beats the other in essentially every cross-set comparison, so ",
+         "the sets are ordered by an unbounded margin and cannot be placed ",
+         "on one scale (the set units alpha and origins kappa have no finite ",
+         "estimate). Collect cross-set comparisons that some objects of the ",
+         "weaker set sometimes win", call. = FALSE)
+  if (S > 1L && !isTRUE(fit0$s2_rank_ok))
+    stop("the cross-set information matrix is singular or ill-conditioned: ",
+         "the cross-set comparisons cannot place the sets on one scale ",
+         "(a flat direction of the information loads on a set origin ",
+         "kappa) -- add cross-set comparisons that link every set")
+  if (!isTRUE(fit0$converged))
+    warning("BTL-EFRM estimation did NOT converge; increase maxit or inspect ",
+            "the within- and cross-set comparison design", call. = FALSE)
+  if (any(fit0$s2_alpha_unident))
+    notes <- c(notes, paste0(
+      "set unit(s) unidentified for ",
+      paste(names(which(fit0$s2_alpha_unident)), collapse = ", "),
+      ": their within-set locations are indistinguishable, so the unit ",
+      "has nothing to scale; alpha is reported NA (fixed at 1 by ",
+      "convention in the linked values) and the objects are placed ",
+      "through the origin kappa alone"))
   bhat <- fit0$bhat; se_bhat <- fit0$se_bhat
   phi <- fit0$phi; ref_of_set <- fit0$ref_of_set
-  alpha <- fit0$alpha; kappa <- fit0$kappa; cov2 <- fit0$cov2
+  alpha <- fit0$alpha; alpha_use <- fit0$alpha_use
+  kappa <- fit0$kappa; cov2 <- fit0$cov2
   se_log_phi <- fit0$se_log_phi
+  cov_log_phi <- fit0$cov_log_phi
   se_log_alpha <- fit0$se_log_alpha; se_kappa <- fit0$se_kappa
   v <- fit0$v; within_p <- fit0$within_p
   ll_within <- fit0$ll_within; ll_cross <- fit0$ll_cross
@@ -723,16 +988,24 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
     s <- set_of[[o]]; if (s == sets_u[1]) next
     j <- match(s, free); idx <- c(j, (S - 1L) + j)
     C2 <- cov2[idx, idx, drop = FALSE]
-    gvec <- c(alpha[[s]] * bhat[[o]], 1)                # d v / d(log alpha, kappa)
+    gvec <- c(alpha_use[[s]] * bhat[[o]], 1)            # d v / d(log alpha, kappa)
     var_link <- drop(t(gvec) %*% C2 %*% gvec)
-    se_v[[o]] <- sqrt(pmax(alpha[[s]]^2 * se_bhat[[o]]^2 + var_link, 0))
+    se_v[[o]] <- sqrt(pmax(alpha_use[[s]]^2 * se_bhat[[o]]^2 + var_link, 0))
   }
 
-  # --- parametric bootstrap of the whole pipeline (default) -----------------
-  # winners resampled from the fitted probabilities, both stages refitted:
-  # the SEs then carry stage-one uncertainty into the linking, which the
-  # conditional errors omit (and demonstrably understate)
+  # --- bootstrap inference ---------------------------------------------------
+  # Both bootstrap modes refit the full pipeline, carrying stage-one
+  # uncertainty into the linking. Judge resampling is the default; the
+  # parametric outcome bootstrap remains a model-based sensitivity analysis.
   boot_fail <- 0L
+  cov_v <- NULL
+  cov_draws <- function(D, idx) {
+    V <- matrix(NA_real_, length(idx), length(idx))
+    ok <- vapply(idx, function(j) all(is.finite(D[, j])), TRUE)
+    if (any(ok))
+      V[ok, ok] <- stats::cov(D[, idx[ok], drop = FALSE])
+    V
+  }
   if (se_method == "judge_bootstrap") {
     # resample JUDGES with replacement within each panel (the panel design
     # is fixed; judges are the sampling units), relabel the copies so
@@ -751,10 +1024,17 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
     if (nj_min < 5L)
       notes <- c(notes, sprintf(
         "judge bootstrap: smallest panel has only %d judges; resampling so few is unstable and the SEs are rough", nj_min))
-    draws <- list()
+    report("judge bootstrap", 0L, boot_reps)
+    takes <- vector("list", boot_reps)
     for (bb in seq_len(boot_reps)) {
-      take <- unlist(lapply(judges_by_panel, function(js)
+      if (is.function(cancel) && isTRUE(cancel()))
+        .rasch_cancelled("BTL-EFRM estimation")
+      takes[[bb]] <- unlist(lapply(judges_by_panel, function(js)
         sample(js, length(js), replace = TRUE)), use.names = FALSE)
+    }
+    exp_ok <- is.finite(c(log(phi), log(alpha), kappa))
+    one_judge_boot <- function(bb) {
+      take <- takes[[bb]]
       idx <- unlist(jd_rows[take], use.names = FALSE)
       jd_new <- rep(paste0(take, "#", seq_along(take)),
                     lengths(jd_rows[take]))
@@ -763,31 +1043,65 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
                          judge = jd_new, stringsAsFactors = FALSE)
       pmap_b <- setNames(pan[idx][!duplicated(jd_new)], unique(jd_new))
       fb <- tryCatch(suppressWarnings(
-        btl_efrm(df_b, "oa", "ob", "win", "judge", panels = pmap_b,
-                 object_sets = object_sets, ties = "drop",
-                 min_link = min_link, se_method = "conditional",
-                 maxit = maxit, tol = tol)), error = function(e) NULL)
-      if (is.null(fb) || !isTRUE(fb$converged)) { boot_fail <- boot_fail + 1L; next }
+        utils::getFromNamespace("btl_efrm", "rasch")(
+          df_b, "oa", "ob", "win", "judge", panels = pmap_b,
+          object_sets = object_sets, ties = "drop",
+          min_link = min_link, se_method = "conditional", workers = 1L,
+          maxit = maxit, tol = tol)),
+        error = function(e) list(.refit_error = conditionMessage(e)))
+      if (!is.null(fb$.refit_error)) return(fb)
+      if (!isTRUE(fb$converged)) return(list(.nonconverged = TRUE))
       lphi_b <- log(fb$phi_table$phi)[match(panels_u, fb$phi_table$panel)]
       la_b <- log(fb$alpha_table$alpha)[match(sets_u, fb$alpha_table$set)]
       ka_b <- fb$kappa_table$kappa[match(sets_u, fb$kappa_table$set)]
       bh_b <- fb$objects$beta_set[match(objs_all, fb$objects$object)]
       v_b <- fb$objects$v[match(objs_all, fb$objects$object)]
-      if (anyNA(c(lphi_b, la_b, ka_b))) { boot_fail <- boot_fail + 1L; next }
-      draws[[length(draws) + 1L]] <- c(lphi_b, la_b, ka_b, bh_b, v_b)
+      # a unit the OBSERVED fit already reports NA (unidentified) is NA in
+      # replicates too; only unexpected NAs mark a failed replicate
+      if (anyNA(c(lphi_b, la_b, ka_b)[exp_ok]))
+        return(list(.nonconverged = TRUE))
+      c(lphi_b, la_b, ka_b, bh_b, v_b)
     }
-    if (length(draws) < max(20L, ceiling(boot_reps / 2)))
-      stop("judge bootstrap failed on ", boot_fail, " of ", boot_reps,
-           " replicates; too few judges per panel for stable resampling -- ",
-           "use se_method = 'bootstrap' or 'conditional'")
+    ans <- .rasch_boot_apply(
+      boot_reps, one_judge_boot, workers,
+      progress = function(current, total)
+        report("judge bootstrap", current, total),
+      cancel = cancel, label = "BTL-EFRM judge-bootstrap")
+    refit_error <- vapply(ans, function(z)
+      is.list(z) && !is.null(z$.refit_error), logical(1))
+    nonconverged <- vapply(ans, function(z)
+      is.list(z) && isTRUE(z$.nonconverged), logical(1))
+    good_draw <- !(refit_error | nonconverged)
+    boot_fail <- sum(!good_draw)
+    draws <- ans[good_draw]
+    if (length(draws) < max(20L, ceiling(boot_reps / 2))) {
+      detail <- if (any(refit_error)) {
+        msg <- unique(vapply(ans[refit_error], `[[`, "", ".refit_error"))
+        paste0("; refit error: ", msg[1L],
+               ". Check that every worker loads this version of rasch")
+      } else paste0("; the resampled fits did not converge, which usually ",
+                    "indicates weak panel or set-link support")
+      stop("judge bootstrap produced only ", length(draws), " usable fits of ",
+           boot_reps, detail, "; use workers = 1 to diagnose the same ",
+           "resamples, or use se_method = 'bootstrap' or 'conditional'")
+    }
     D <- do.call(rbind, draws)
     colnames(D) <- c(paste0("log phi[", panels_u, "]"),
                      paste0("log alpha[", sets_u, "]"),
                      paste0("kappa[", sets_u, "]"),
                      paste0("beta[", objs_all, "]"), paste0("v[", objs_all, "]"))
-    n_inf <- colSums(!is.finite(D))
+    known_na <- !is.finite(c(log(phi), log(alpha), kappa,
+                             bhat[objs_all], v))
+    D[, known_na] <- NA_real_
+    cov_log_phi <- cov_draws(D, seq_len(G))
+    if (S > 1L) {
+      i2 <- c(G + match(free, sets_u),
+              G + S + match(free, sets_u))
+      cov2 <- cov_draws(D, i2)
+    }
+    n_inf <- colSums(!is.finite(D)) * !known_na
     sds <- rep(NA_real_, ncol(D))
-    ok_col <- n_inf == 0L
+    ok_col <- n_inf == 0L & !known_na
     sds[ok_col] <- apply(D[, ok_col, drop = FALSE], 2, sd)
     if (any(n_inf > 0L))
       notes <- c(notes, paste0(
@@ -796,6 +1110,9 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
                                      length(draws)), collapse = "; "),
         "; the parameter is weakly identified and its SE is reported as NA"))
     nO <- length(objs_all)
+    iv <- G + 2L * S + nO + seq_len(nO)
+    cov_v <- cov_draws(D, iv)
+    dimnames(cov_v) <- list(objs_all, objs_all)
     se_log_phi <- setNames(sds[seq_len(G)], panels_u)
     se_log_alpha <- setNames(sds[G + seq_len(S)], sets_u)
     se_kappa <- setNames(sds[G + S + seq_len(S)], sets_u)
@@ -807,17 +1124,30 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
       notes <- c(notes, sprintf(
         "judge bootstrap: %d of %d replicates failed and were skipped",
         boot_fail, boot_reps))
+    if (any(nonconverged))
+      notes <- c(notes, sprintf(
+        "judge bootstrap: %d resampled fit(s) did not converge",
+        sum(nonconverged)))
+    if (any(refit_error)) {
+      msg <- unique(vapply(ans[refit_error], `[[`, "", ".refit_error"))
+      notes <- c(notes, sprintf(
+        "judge bootstrap: %d refit error(s); first error: %s",
+        sum(refit_error), msg[1L]))
+    }
   }
   if (se_method == "bootstrap") {
     p_hat <- pmin(pmax(fit0$p_all, 1e-8), 1 - 1e-8)
     draws <- list()
+    report("parametric bootstrap", 0L, boot_reps)
     for (bb in seq_len(boot_reps)) {
+      report("parametric bootstrap", bb - 1L, boot_reps)
       yb <- rbinom(length(p_hat), 1L, p_hat)
       fb <- tryCatch(fit_once(yb), error = function(e) NULL)
       if (is.null(fb) || !isTRUE(fb$converged)) { boot_fail <- boot_fail + 1L; next }
       draws[[length(draws) + 1L]] <- c(log(fb$phi), log(fb$alpha), fb$kappa,
                                        fb$bhat, fb$v)
     }
+    report("parametric bootstrap", boot_reps, boot_reps)
     if (length(draws) < max(20L, ceiling(boot_reps / 2)))
       stop("parametric bootstrap failed on ", boot_fail, " of ", boot_reps,
            " replicates; the design is too sparse for stable resampling -- ",
@@ -827,13 +1157,25 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
                      paste0("log alpha[", sets_u, "]"),
                      paste0("kappa[", sets_u, "]"),
                      paste0("beta[", objs_all, "]"), paste0("v[", objs_all, "]"))
+    # a unit already reported NA in the observed fit (unidentified) is NA
+    # in every replicate by the same logic: exclude it from the boundary
+    # accounting so its absence is not misreported as boundary behaviour
+    known_na <- !is.finite(c(log(phi), log(alpha), kappa,
+                             bhat[objs_all], v))
+    D[, known_na] <- NA_real_
+    cov_log_phi <- cov_draws(D, seq_len(G))
+    if (S > 1L) {
+      i2 <- c(G + match(free, sets_u),
+              G + S + match(free, sets_u))
+      cov2 <- cov_draws(D, i2)
+    }
     # a parameter that reaches its boundary in some replicates (a set unit
     # driven to zero when a resampled within-set order flips against the
     # cross-set evidence) has no normal sampling distribution: report NA
     # rather than a standard deviation over infinite draws
-    n_inf <- colSums(!is.finite(D))
+    n_inf <- colSums(!is.finite(D)) * !known_na
     sds <- rep(NA_real_, ncol(D))
-    ok_col <- n_inf == 0L
+    ok_col <- n_inf == 0L & !known_na
     sds[ok_col] <- apply(D[, ok_col, drop = FALSE], 2, sd)
     if (any(n_inf > 0L))
       notes <- c(notes, paste0(
@@ -842,6 +1184,9 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
                                      length(draws)), collapse = "; "),
         "; the parameter is weakly identified and its SE is reported as NA"))
     nO <- length(objs_all)
+    iv <- G + 2L * S + nO + seq_len(nO)
+    cov_v <- cov_draws(D, iv)
+    dimnames(cov_v) <- list(objs_all, objs_all)
     se_log_phi <- setNames(sds[seq_len(G)], panels_u)
     se_log_alpha <- setNames(sds[G + seq_len(S)], sets_u)
     se_kappa <- setNames(sds[G + S + seq_len(S)], sets_u)
@@ -856,6 +1201,7 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
   }
 
   # --- equal-unit (single-unit) comparison ----------------------------------
+  npar_frame <- (length(objs_all) - S) + (G - 1L) + 2L * (S - 1L)
   ll_frames <- ll_within + ll_cross
   single <- tryCatch(
     .btlef_stage1(match(a, objs_all), match(b, objs_all), y,
@@ -865,27 +1211,199 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
   equal_unit <- list(
     loglik_frames = ll_frames, loglik_single = ll_single,
     difference = if (is.na(ll_single)) NA_real_ else ll_frames - ll_single,
+    two_delta_ll = if (is.na(ll_single)) NA_real_ else
+      2 * (ll_frames - ll_single),
+    parameters_frames = npar_frame,
+    parameters_single = length(objs_all) - 1L,
     note = paste("descriptive composite-likelihood difference;",
-                 "the Wald tests on log phi and log alpha carry the inference"))
+                 "the omnibus Wald tests on the unit families carry the inference"))
 
   # --- structural tables ----------------------------------------------------
+  # Judge-bootstrap inference is limited by the judges who contribute to the
+  # particular unit. Count both raw and Kish-effective judges from their
+  # comparison workloads. Sparse panels or cross-set links cannot borrow
+  # denominator degrees of freedom from judges who informed other units.
+  judge_support <- function(rows) {
+    ww <- table(jd[rows]); ww <- as.numeric(ww[ww > 0])
+    c(n_judges = length(ww), effective_judges = if (length(ww))
+      sum(ww)^2 / sum(ww^2) else 0)
+  }
+  panel_support <- do.call(rbind, lapply(panels_u, function(g) {
+    z <- judge_support(within & pan == g)
+    data.frame(panel = g, n_judges = z[1L], effective_judges = z[2L],
+               stringsAsFactors = FALSE)
+  }))
+  pa <- pmin(sa, sb); pb <- pmax(sa, sb)
+  edge_key <- paste(pa, pb, sep = "\r")
+  edge_levels <- unique(edge_key[!within])
+  edge_support <- do.call(rbind, lapply(edge_levels, function(e) {
+    z <- judge_support(!within & edge_key == e)
+    ab <- strsplit(e, "\r", fixed = TRUE)[[1L]]
+    data.frame(set_a = ab[1L], set_b = ab[2L], n_judges = z[1L],
+               effective_judges = z[2L], stringsAsFactors = FALSE)
+  }))
+  if (is.null(edge_support)) edge_support <- data.frame(
+    set_a = character(), set_b = character(), n_judges = numeric(),
+    effective_judges = numeric())
+  set_support <- do.call(rbind, lapply(sets_u, function(s) {
+    rr <- edge_support$set_a == s | edge_support$set_b == s
+    data.frame(set = s,
+      n_judges = if (any(rr)) min(edge_support$n_judges[rr]) else 0,
+      effective_judges = if (any(rr))
+        min(edge_support$effective_judges[rr]) else 0,
+      stringsAsFactors = FALSE)
+  }))
+  panel_ok <- panel_support$n_judges >= 6L &
+    panel_support$effective_judges >= 5.5 - sqrt(.Machine$double.eps)
+  set_ok <- set_support$n_judges >= 8L &
+    set_support$effective_judges >= 8 - sqrt(.Machine$double.eps)
+  if (se_method == "judge_bootstrap" && any(!panel_ok))
+    notes <- c(notes, paste0(
+      "panel-unit inference is withheld because panel(s) ",
+      paste(panel_support$panel[!panel_ok], collapse = ", "),
+      " have fewer than six judges or 5.5 effective judges"))
+  if (se_method == "judge_bootstrap" && length(free) &&
+      (any(!panel_ok) || any(!set_ok[set_support$set %in% free])))
+    notes <- c(notes, paste0(
+      "set-unit and set-origin inference is withheld because a contributing ",
+      "panel has fewer than six judges or 5.5 effective judges, or a link ",
+      "has fewer than eight"))
+  if (se_method == "judge_bootstrap") {
+    pc <- panel_ok & panel_support$effective_judges < 8
+    sc <- set_ok & set_support$effective_judges < 9.5 &
+      set_support$set %in% free
+    if (any(pc)) notes <- c(notes, paste0(
+      "panel(s) ", paste(panel_support$panel[pc], collapse = ", "),
+      " have 5.5--7.9 effective judges; interpret unit inference cautiously"))
+    if (any(sc)) notes <- c(notes, paste0(
+      "set link(s) ", paste(set_support$set[sc], collapse = ", "),
+      " have 8.0--9.4 effective judges; interpret unit inference cautiously"))
+  }
+  # Judge-resampling inference uses a finite-sample t reference because the
+  # judges are the independent sampling units. The parametric bootstrap draws
+  # comparison outcomes independently conditional on the fitted design, so a
+  # judge-based denominator is not its reference distribution.
+  df_phi <- if (se_method == "judge_bootstrap" && all(panel_ok))
+    max(floor(sum(panel_support$effective_judges)) - 1L, 1L)
+    else if (se_method == "judge_bootstrap") NA_real_ else Inf
   z_phi <- log(phi) / se_log_phi
   phi_table <- data.frame(panel = panels_u, phi = unname(phi),
                           se_log_phi = unname(se_log_phi),
-                          z = unname(z_phi), p = unname(2 * pnorm(-abs(z_phi))),
+                          t = unname(z_phi), df = df_phi,
+                          p = unname(2 * pt(-abs(z_phi), df_phi)),
                           stringsAsFactors = FALSE)
+  df_set <- if (se_method == "judge_bootstrap") {
+    z <- pmax(floor(set_support$effective_judges) - 1L, 1L)
+    z[!set_ok | !all(panel_ok)] <- NA_real_; setNames(z, set_support$set)
+  } else setNames(rep(Inf, S), sets_u)
   z_al <- log(alpha) / se_log_alpha
   alpha_table <- data.frame(set = sets_u, alpha = unname(alpha),
                             se_log_alpha = unname(se_log_alpha),
-                            z = unname(z_al), p = unname(2 * pnorm(-abs(z_al))),
+                            t = unname(z_al), df = unname(df_set[sets_u]),
+                            p = unname(2 * pt(-abs(z_al), df_set[sets_u])),
                             stringsAsFactors = FALSE)
   z_ka <- kappa / se_kappa
   kappa_table <- data.frame(set = sets_u, kappa = unname(kappa),
                             se_kappa = unname(se_kappa),
-                            z = unname(z_ka), p = unname(2 * pnorm(-abs(z_ka))),
+                            t = unname(z_ka), df = unname(df_set[sets_u]),
+                            p = unname(2 * pt(-abs(z_ka), df_set[sets_u])),
                             stringsAsFactors = FALSE)
+  adjust_unit_table <- function(tab) {
+    tab$p_adj <- NA_real_
+    usable <- is.finite(tab$p)
+    tab$p_adj[usable] <- stats::p.adjust(tab$p[usable], method = "holm")
+    tab$significant <- ifelse(is.na(tab$p_adj), NA, tab$p_adj < 0.05)
+    tab
+  }
+  phi_table <- adjust_unit_table(phi_table)
+  alpha_table <- adjust_unit_table(alpha_table)
+  kappa_table <- adjust_unit_table(kappa_table)
+  if (identical(se_method, "conditional")) {
+    # Conditional linking errors omit stage-one uncertainty. Null simulation
+    # rejected 17.5% (phi) and 35.5% (alpha) at nominal 5%, so ordinary-looking
+    # probabilities are not defensible. Retain estimates and their explicitly
+    # conditional SEs for preliminary inspection, but withhold inference.
+    withhold <- function(tab) {
+      tab$t <- NA_real_; tab$df <- NA_real_; tab$p <- NA_real_
+      tab$p_adj <- NA_real_; tab$significant <- NA
+      tab
+    }
+    phi_table <- withhold(phi_table)
+    alpha_table <- withhold(alpha_table)
+    kappa_table <- withhold(kappa_table)
+    notes <- c(notes, paste0(
+      "unit probabilities and omnibus tests withheld for conditional standard ",
+      "errors, which do not propagate stage-one uncertainty; use the judge ",
+      "bootstrap for inference"))
+  }
+
+  # Hotelling-style F reference with judges as the independent units: the
+  # unit covariances are judge-limited (the bootstrap resamples ~10-20
+  # judges), and a chi-square reference on a covariance estimated from n
+  # units rejects a true null at ~8.7% for the set origins in simulation
+  # (550 replicates, 12 judges); W * (n - q) / (q (n - 1)) ~ F(q, n - q)
+  # restores the nominal rate, exactly as for the MFRM interaction omnibus.
+  wald_unit <- function(est, V, term, n_units = Inf, available = TRUE) {
+    if (!length(est) || is.null(V)) return(NULL)
+    ok <- is.finite(est) & is.finite(diag(V))
+    if (!any(ok)) return(NULL)
+    est <- est[ok]; V <- V[ok, ok, drop = FALSE]
+    if (any(!is.finite(V))) return(NULL)
+    ee <- eigen((V + t(V)) / 2, symmetric = TRUE)
+    cutoff <- max(abs(ee$values)) * 1e-8
+    use <- ee$values > cutoff
+    if (!any(use)) return(NULL)
+    Vinv <- ee$vectors[, use, drop = FALSE] %*%
+      (t(ee$vectors[, use, drop = FALSE]) / ee$values[use])
+    W <- drop(t(est) %*% Vinv %*% est)
+    q <- sum(use)
+    if (!available) {
+      data.frame(term = term, df = q, df2 = NA_real_, wald = W,
+                 f = NA_real_, p = NA_real_)
+    } else if (is.infinite(n_units)) {
+      data.frame(term = term, df = q, df2 = Inf, wald = W,
+                 f = W / q,
+                 p = stats::pchisq(W, q, lower.tail = FALSE))
+    } else if (n_units > q) {
+      Fs <- W * (n_units - q) / (q * (n_units - 1))
+      data.frame(term = term, df = q, df2 = n_units - q, wald = W,
+                 f = Fs, p = stats::pf(Fs, q, n_units - q,
+                                       lower.tail = FALSE))
+    } else
+      data.frame(term = term, df = q, df2 = NA_real_, wald = W,
+                 f = NA_real_, p = NA_real_)
+  }
+  omni_parts <- list()
+  if (G > 1L) omni_parts[[length(omni_parts) + 1L]] <- wald_unit(
+    log(phi), cov_log_phi, "panel units (phi)",
+    n_units = if (se_method == "judge_bootstrap")
+      floor(sum(panel_support$effective_judges)) else Inf,
+    available = se_method != "judge_bootstrap" || all(panel_ok))
+  if (S > 1L) {
+    set_n <- if (se_method == "judge_bootstrap")
+      floor(min(set_support$effective_judges[
+        match(free, set_support$set)])) else Inf
+    set_available <- se_method != "judge_bootstrap" ||
+      (all(panel_ok) && all(set_ok[match(free, set_support$set)]))
+    omni_parts[[length(omni_parts) + 1L]] <- wald_unit(
+      log(alpha[free]),
+      cov2[seq_along(free), seq_along(free), drop = FALSE],
+      "set units (alpha)", n_units = set_n, available = set_available)
+    omni_parts[[length(omni_parts) + 1L]] <- wald_unit(
+      kappa[free],
+      cov2[length(free) + seq_along(free),
+           length(free) + seq_along(free), drop = FALSE],
+      "set origins (kappa)", n_units = set_n, available = set_available)
+  }
+  unit_omnibus <- do.call(rbind, Filter(Negate(is.null), omni_parts))
+  if (identical(se_method, "conditional") && !is.null(unit_omnibus)) {
+    unit_omnibus$df2 <- NA_real_
+    unit_omnibus$f <- NA_real_
+    unit_omnibus$p <- NA_real_
+  }
 
   objects <- data.frame(object = objs_all, set = unname(set_of[objs_all]),
+                        location = unname(v), se = unname(se_v),
                         beta_set = unname(bhat[objs_all]),
                         se_beta = unname(se_bhat[objs_all]),
                         v = unname(v), se_v = unname(se_v),
@@ -894,17 +1412,29 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
 
   # frames: one row per panel-by-set cell holding within-set comparisons
   fr <- list()
+  f_cell <- max((length(y) - npar_frame) / length(y), 0)
   for (s in sets_u) for (g in panels_u) {
     rows <- which(within & sa == s & pan == g)
     if (!length(rows)) next
+    ff <- .btlef_frame_fit(y[rows], within_p[rows], f_cell = f_cell)
     fr[[length(fr) + 1L]] <- data.frame(
-      panel = g, set = s, rho = unname(phi[[g]] * alpha[[s]]),
+      # within-set logit = phi_g (beta_a - beta_b) and beta = (v - kappa)/
+      # alpha, so the discrimination applied to COMMON-SCALE differences
+      # within this frame is phi/alpha (phi * alpha composed the map the
+      # wrong way round)
+      panel = g, set = s, rho = unname(phi[[g]] / alpha[[s]]),
       n_comparisons = length(rows),
-      fit_resid = .btlef_frame_fit(y[rows], within_p[rows]),
+      fit_resid = ff$fit_resid, df_fit = ff$df,
       stringsAsFactors = FALSE)
   }
   frames <- if (length(fr)) do.call(rbind, fr) else NULL
   if (!is.null(frames)) rownames(frames) <- NULL
+
+  diag_frame <- .btlef_diagnostics(
+    a, b, y, jd, pan, sa, sb, fit0$p_all, phi, alpha_use,
+    objects, n_parameters = npar_frame)
+  objects <- diag_frame$objects
+  osi <- .psi(objects$location, objects$se)
 
   if (S == 1L)
     notes <- c(notes, "single set: panel-units model (set units alpha not estimated)")
@@ -917,33 +1447,59 @@ btl_efrm <- function(data, object_a, object_b, winner, judge, panels,
       "too one-sided); they were excluded from the phi reconciliation and ",
       "refit with the panel units held at the reconciled phi"))
 
+  report("finalising", 1L, 1L)
   out <- list(objects = objects, phi_table = phi_table,
               alpha_table = alpha_table, kappa_table = kappa_table,
+              unit_omnibus = unit_omnibus,
+              unit_support = list(panel = panel_support, edge = edge_support,
+                                  set = set_support,
+                                  minimum_panel_judges = 6L,
+                                  minimum_panel_effective_judges = 5.5,
+                                  minimum_link_judges = 8L),
               frames = frames, equal_unit = equal_unit, n_cross = n_cross,
               sets = sets_u, panels = panels_u, reference_set = sets_u[1],
               n_comparisons = length(a),
               converged = fit0$converged,
+              # rasch_btl-compatible core diagnostics, all evaluated under
+              # the frame probabilities rather than copied from an equal-unit
+              # fit. This lets the GUI and generic summaries use the active
+              # common-scale calibration after frames are added.
+              pairs = diag_frame$pairs, judges = diag_frame$judges,
+              comparisons = diag_frame$comparisons,
+              total_chisq = diag_frame$total_chisq,
+              total_df = diag_frame$total_df, total_p = diag_frame$total_p,
+              osi = osi, loglik = ll_frames, iterations = NA_integer_,
+              n_parameters = npar_frame,
+              clustered = TRUE, cov_beta = cov_v,
+              thresholds = NULL, components = NULL,
+              thr_structure = "dichotomous", m = 1L,
+              categories = c("0", "1"), dependence = NULL,
+              dependence_data = NULL,
               se_method = se_method,
+              workers = workers, seed = seed,
               boot_reps = if (se_method %in% c("bootstrap", "judge_bootstrap"))
                 boot_reps else NA_integer_,
+              boot_reps_used = if (se_method %in%
+                c("bootstrap", "judge_bootstrap")) length(draws) else NA_integer_,
               se_note = if (se_method == "judge_bootstrap")
                 paste("standard errors from a judge-resampling bootstrap",
                       "(judges redrawn with replacement within panels, the",
                       "whole pipeline refitted): carries stage-one",
-                      "uncertainty AND any extra-model dependence within",
+                      "uncertainty and any extra-model dependence within",
                       "judges")
               else if (se_method == "bootstrap")
                 paste("standard errors from a parametric bootstrap of the",
-                      "whole two-stage pipeline: the staged conditional",
+                      "whole two-stage pipeline: the two-stage",
                       "estimates are unchanged, and their errors carry the",
                       "stage-one uncertainty into the linking")
               else
-                paste("CONDITIONAL standard errors: exact for beta and phi,",
-                      "but the alpha and kappa errors are conditional on",
-                      "stage 1 and UNDERSTATE the total sampling variability;",
-                      "use se_method = 'bootstrap' for inference"),
+                paste("analytic standard errors for beta and phi; alpha and",
+                      "kappa errors condition on the stage-one estimates and",
+                      "do not represent total pipeline uncertainty; use",
+                      "se_method = 'judge_bootstrap' for inference"),
               notes = notes)
-  class(out) <- "rasch_btl_efrm"
+  out <- .tag_tables(out)
+  class(out) <- c("rasch_btl_efrm", "rasch_btl")
   out
 }
 
@@ -953,7 +1509,7 @@ print.rasch_btl_efrm <- function(x, ...) {
                      "%d objects in %d set(s) x %d panel(s), %d comparisons\n"),
               nrow(x$objects), nrow(x$alpha_table), nrow(x$phi_table),
               x$n_comparisons))
-  cat(sprintf("Two-stage conditional ML: %s; SEs %s\n",
+  cat(sprintf("Two-stage maximum likelihood: %s; SEs %s\n",
               if (x$converged) "converged" else "NOT converged",
               if (identical(x$se_method, "judge_bootstrap"))
                 sprintf("by judge-resampling bootstrap (B = %d)", x$boot_reps)
@@ -962,14 +1518,24 @@ print.rasch_btl_efrm <- function(x, ...) {
               else "conditional (understate the linking uncertainty)"))
   if (nrow(x$alpha_table) == 1L)
     cat("Model: panel units only (single set; set units not estimated)\n")
-  cat("\nPanel units (phi; Wald H0: log phi = 0):\n")
+  if (!is.null(x$unit_omnibus)) {
+    cat("\nOmnibus Wald tests of equal units and origins:\n")
+    print(.fmt_df(x$unit_omnibus), row.names = FALSE)
+  }
+  cat("\nPanel units (phi; exploratory Holm-adjusted contrasts):\n")
   print(.fmt_df(x$phi_table), row.names = FALSE)
   if (nrow(x$alpha_table) > 1L) {
     cat("\nSet units (alpha) and origins (kappa; reference set = ",
         x$reference_set, "):\n", sep = "")
-    at <- merge(x$alpha_table[, c("set", "alpha", "se_log_alpha", "p")],
-                x$kappa_table[, c("set", "kappa", "se_kappa")],
+    at <- merge(x$alpha_table[, c("set", "alpha", "se_log_alpha",
+                                  "p_adj", "significant")],
+                x$kappa_table[, c("set", "kappa", "se_kappa", "p_adj",
+                                  "significant")],
                 by = "set", sort = FALSE)
+    names(at)[names(at) == "p_adj.x"] <- "p_adj_alpha"
+    names(at)[names(at) == "significant.x"] <- "significant_alpha"
+    names(at)[names(at) == "p_adj.y"] <- "p_adj_kappa"
+    names(at)[names(at) == "significant.y"] <- "significant_kappa"
     print(.fmt_df(at), row.names = FALSE)
   }
   eu <- x$equal_unit
@@ -980,12 +1546,70 @@ print.rasch_btl_efrm <- function(x, ...) {
   invisible(x)
 }
 
+# Object characteristic display for a frame-adjusted comparison fit. A single
+# equal-unit logistic curve is not available: the slope depends on panel and,
+# for within-set comparisons, on the object's set unit. Curves and observed
+# points therefore share a colour within each fitted frame.
+.plot_btl_efrm_icc <- function(fit, object, grid = NULL, min_n = 10) {
+  ob <- fit$objects
+  if (!object %in% ob$object) stop("no such object: ", object)
+  vo <- ob$location[match(object, ob$object)]
+  set_o <- ob$set[match(object, ob$object)]
+  if (is.null(grid)) {
+    rng <- range(ob$location) + c(-1, 1)
+    grid <- seq(rng[1], rng[2], length.out = 201)
+  }
+  cm <- fit$comparisons
+  take_a <- cm$object_a == object
+  take_b <- cm$object_b == object
+  d <- rbind(
+    data.frame(opponent = cm$object_b[take_a], response = cm$response[take_a],
+               weight = cm$weight[take_a], panel = cm$panel[take_a],
+               set_opponent = cm$set_b[take_a],
+               slope = cm$frame_slope[take_a]),
+    data.frame(opponent = cm$object_a[take_b], response = 1 - cm$response[take_b],
+               weight = cm$weight[take_b], panel = cm$panel[take_b],
+               set_opponent = cm$set_a[take_b],
+               slope = cm$frame_slope[take_b]))
+  d <- d[d$opponent %in% ob$object, , drop = FALSE]
+  d$frame <- ifelse(d$set_opponent == set_o,
+                    paste(d$panel, "within", set_o),
+                    paste(d$panel, "vs", d$set_opponent))
+  sp <- split(seq_len(nrow(d)), .factor_keys(
+    data.frame(frame = d$frame, opponent = d$opponent,
+               stringsAsFactors = FALSE)))
+  obs <- do.call(rbind, lapply(sp, function(ii) data.frame(
+    frame = d$frame[ii[1]], opponent = d$opponent[ii[1]],
+    loc = ob$location[match(d$opponent[ii[1]], ob$object)],
+    mean = sum(d$weight[ii] * d$response[ii]) / sum(d$weight[ii]),
+    n = sum(d$weight[ii]), slope = mean(d$slope[ii]))))
+  obs <- obs[obs$n >= min_n, , drop = FALSE]
+  frames <- unique(d$frame)
+  slope <- vapply(frames, function(fr) mean(d$slope[d$frame == fr]), 0)
+  cols <- setNames(rep(.rr$pal, length.out = length(frames)), frames)
+  op <- .rr_canvas(range(grid), c(0, 1),
+                   "Opponent common-scale location (logits)",
+                   "Probability preferred",
+                   sprintf("%s  (common-scale location %.3f)", object, vo))
+  on.exit(par(op))
+  for (fr in frames)
+    lines(grid, stats::plogis(slope[[fr]] * (vo - grid)),
+          col = cols[[fr]], lwd = 2.2)
+  if (nrow(obs))
+    points(obs$loc, obs$mean, pch = 21, bg = cols[obs$frame],
+           col = "white", cex = 1.45, lwd = 1.1)
+  .rr_legend("topright", c("Model", "Observed"), lwd = c(2.2, NA),
+             pch = c(NA, 21), pt.bg = c(NA, .rr$blue),
+             col = c(.rr$ink, "white"), pt.cex = 1.25)
+  if (length(frames) <= 8L)
+    .rr_legend("bottomleft", frames, lwd = 2.2, col = unname(cols), cex = .72)
+  invisible(if (nrow(obs)) obs$opponent else character(0))
+}
+
 #' Plot the frame units of a paired-comparison EFRM fit
 #'
-#' Caterpillar plot of the estimated units on the log scale: one row per panel
-#' unit \code{phi_g} and one per set unit \code{alpha_s}, with 95 per cent
-#' intervals, the reference (unit one) marked, mirroring
-#' \code{\link{plot_frames}} in the package's house style.
+#' Caterpillar plot of panel units \code{phi_g} and set units \code{alpha_s}
+#' on the log scale, with 95 per cent intervals and unit one marked.
 #'
 #' @param fit A fitted object from \code{\link{btl_efrm}}.
 #' @return Called for its plotting side effect; invisibly \code{NULL}.
@@ -1005,7 +1629,6 @@ plot_btl_units <- function(fit) {
       data.frame(label = paste0("set: ", al$set), kind = "set",
                  est = log(al$alpha), se = al$se_log_alpha,
                  stringsAsFactors = FALSE))
-  rows$se[!is.finite(rows$se)] <- 0
   rows <- rows[order(rows$kind, rows$est), ]
   n <- nrow(rows)
   lo <- rows$est - 1.96 * rows$se; hi <- rows$est + 1.96 * rows$se
@@ -1014,14 +1637,17 @@ plot_btl_units <- function(fit) {
             las = 1, col.axis = .rr$ink, col.lab = .rr$ink, col.main = .rr$ink,
             font.main = 2, cex.main = 1.15)
   on.exit(par(op))
-  plot(NA, xlim = range(c(lo, hi, 0)) + c(-0.1, 0.1), ylim = c(0.5, n + 0.5),
+  plot(NA, xlim = range(c(rows$est, lo, hi, 0), na.rm = TRUE) + c(-0.1, 0.1),
+       ylim = c(0.5, n + 0.5),
        xlab = "log unit", ylab = "", axes = FALSE, main = "")
   abline(h = seq_len(n), col = .rr$grid, lwd = 0.8)
   abline(v = 0, lty = 2, col = .rr$soft)
   axis(1, col = .rr$grid, col.ticks = .rr$soft)
   axis(2, at = seq_len(n), labels = rows$label, cex.axis = 0.75,
        col = .rr$grid, col.ticks = NA)
-  segments(lo, seq_len(n), hi, seq_len(n), lwd = 2.2, col = .rr$soft)
+  hs <- is.finite(rows$se)
+  segments(lo[hs], which(hs), hi[hs], which(hs), lwd = 2.2,
+           col = .rr$soft)
   points(rows$est, seq_len(n), pch = 21, cex = 1.5, bg = colr,
          col = "white", lwd = 1.2)
   .rr_legend("bottomright", c("panel unit (phi)", "set unit (alpha)"),

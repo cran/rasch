@@ -1,0 +1,256 @@
+---
+title: "The Extended Frame of Reference model"
+author: "Josh McGrane"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{The Extended Frame of Reference model}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+options(digits = 4)
+```
+
+```{r library}
+library(rasch)
+```
+
+## Frames and units
+
+Rasch's criterion of invariant comparison is stated within a frame of
+reference (Rasch 1961). The extended frame of reference model allows the unit
+to differ over linked combinations of item sets and person groups (Humphry
+2005; Humphry and Andrich 2008). For item \(i\) in set \(s\) and person
+\(n\) in group \(g\),
+
+\[
+P(X_{ni}=x)=
+\frac{\exp\{\rho_{sg}[x\theta_n-\sum_{k=1}^{x}\delta_{ik}]\}}
+{\sum_{y=0}^{m_i}\exp\{\rho_{sg}[y\theta_n-
+\sum_{k=1}^{y}\delta_{ik}]\}},\qquad
+\rho_{sg}=\alpha_s\phi_g .
+\]
+
+The item-set unit is \(\alpha_s\), and the person-group unit is
+\(\phi_g\). The partial credit model holds within each frame in its natural
+unit. Dichotomous items are the one-threshold case.
+
+Use this model when variation in the unit is part of the measurement account.
+Poor fit to an equal-unit model is not by itself evidence for a
+frame-dependent unit.
+
+## Fit the model
+
+```{r simulate}
+d <- simulate_efrm(
+  n_per_group = 150,
+  items_per_set = 8,
+  set_unit_ratio = 1.30,
+  group_unit_ratio = 1.10,
+  seed = 25
+)
+truth <- attr(d, "truth")
+```
+
+```{r fit}
+fit <- rasch_efrm(
+  d,
+  item_sets = truth$item_sets,
+  groups = "group",
+  id = "id",
+  boot_reps = 30,
+  workers = 1
+)
+fit
+```
+
+The principal model-specific tables are:
+
+```{r tables}
+fit$phi_table       # person-group units
+fit$alpha_table     # item-set units
+fit$set_table       # linked set locations
+fit$frames          # complete frame units
+fit$linking         # set-linking design
+```
+
+Person-group units are estimated from common threshold patterns across
+groups. Set units are estimated from persons observed in more than one set.
+For a linked pair, the natural coordinates satisfy
+\(u_b=r u_a+c\). The package estimates \(r\), \(c\), and masses for the
+nuisance person distribution on a finite grid by semiparametric likelihood:
+
+\[
+\prod_n \int P(X_{na}\mid u)P(X_{nb}\mid ru+c)\,dF_{g(n)}(u).
+\]
+
+The masses are estimated jointly with the link, separately for each observed
+person group, so neither a normal shape nor a common distribution across
+groups is prescribed. The link holds the conditional item thresholds and
+person-group units fixed while estimating only \(r\), \(c\), and the nuisance
+masses. The common-scale parameters are then
+
+\[
+\delta_{ik}=\widetilde\delta_{ik}/\alpha_s+\mu_s,
+\qquad \rho_{sg}=\alpha_s\phi_g.
+\]
+
+The item thresholds and person-group units remain
+pairwise conditional estimates; the mixing distribution is used only for
+the relative set unit, which is not identified by that conditional stage.
+The discrete nonparametric margin follows Follmann (1988); its use for linked
+item-set units is an extension implemented here.
+
+The group-by-set frame graph and the set-linking graph must each connect to a
+common scale. A linking response pattern must span a score range of at least
+four within a set. Overlapping item sets are not permitted.
+
+Several group factors may define crossed frames:
+
+```{r crossed, eval = FALSE}
+fit_crossed <- rasch_efrm(
+  data,
+  item_sets = item_sets,
+  groups = c("language", "cohort"),
+  id = "id"
+)
+fit_crossed$phi_factorial
+fit_crossed$phi_factorial_tests
+```
+
+The factorial tables give the GLS decomposition of the estimated log group
+units. They do not replace the frame-level estimates.
+
+## Uncertainty and equal-unit comparisons
+
+The default hybrid covariance combines the pairwise Godambe covariance with a
+person bootstrap for set linking. Within-frame thresholds and group units are
+jointly redrawn, and the link is rebuilt from each draw. The resulting
+covariance is retained for the common-scale thresholds and complete frame
+units.
+Set `se_method = "bootstrap"` to refit the complete model to each person
+resample.
+
+The linking calculations use a compiled numerical kernel. Bootstrap replicates
+run on four workers by default, or fewer where the system limit is lower. A
+fixed `seed` gives the same samples and results for every worker count without
+altering the caller's random-number stream. In the Shiny application the fit
+runs in a separate process. The analyst can select up to four workers, follow
+completed batches, or cancel the process without replacing the current
+analysis. R scripts can supply `progress` and `cancel` callbacks for the same
+controls.
+
+```{r comparison}
+fit$efrm_vs_rasch$unit_omnibus
+fit$efrm_vs_rasch$unit_tests
+```
+
+The omnibus Wald tests assess the set- and group-unit families. Individual
+unit contrasts are Holm-adjusted follow-ups. The raw composite-likelihood
+difference is descriptive and compares the group-unit stage only. Set units
+are identified in the linking stage and are assessed by their Wald test.
+Probabilities require at least 50 persons or effective persons in every group
+and at least 50 common persons on every set-link edge. Sparse designs retain
+the unit estimates without an inferential probability.
+
+Simulation under normal, bimodal and deliberately different group
+distributions gave set-unit bias within 0.004 log-units, empirical-to-reported
+SE ratios from 0.97 to 1.05, and null rejection from 4.0 to 5.0 per cent for
+the hybrid method. The complete person bootstrap was mildly conservative in
+the corresponding null design. Sets with only three dichotomous items were
+not identified; four-item sets were recovered without bias.
+
+## Item invariance across frames
+
+The fitted EFRM gives an item one location across its frames, scaled by the
+frame unit. `frame_invariance()` examines that restriction by calibrating
+each frame separately. Each compared frame needs at least 50 persons with two
+or more responses. Items with weak separate-frame standard errors are excluded
+from the comparison.
+
+For frame \(f\), the common-scale item location is
+\(\hat\delta_{if}^{*}=\hat\delta_{if}/\hat\rho_f\). The separate
+calibrations have independent origins, so differences are centred over the
+common thresholds before testing. Let \(w_i=m_i/\sum_jm_j\), where \(m_i\)
+is the number of thresholds for item \(i\). The default covariance conditions
+on the fitted frame units:
+
+\[
+C\{V_1/\hat\rho_1^2+V_2/\hat\rho_2^2\}C^{\mathsf T},
+\qquad C=I-\mathbf 1\mathbf w^{\mathsf T} .
+\]
+
+```{r invariance, eval = FALSE}
+inv <- frame_invariance(fit, se_method = "conditional")
+inv$summary
+inv$locations
+inv$discrimination
+```
+
+A person-within-frame bootstrap includes uncertainty in the fitted units:
+
+```{r invariance-bootstrap, eval = FALSE}
+inv_boot <- frame_invariance(
+  fit,
+  se_method = "bootstrap",
+  boot_reps = 300,
+  seed = 1
+)
+```
+
+The conditional method returns raw and Holm-adjusted probabilities for the
+location comparisons. Its standardised-infit and slope-ratio columns are
+descriptive. The bootstrap returns discrimination probabilities as well and
+applies Holm adjustment to the combined location and discrimination family.
+
+In 300 null simulations with 500 persons per frame, the bootstrap SE ratios
+were 1.00 for locations and 1.03 for log discrimination ratios; 95 per cent
+coverage was 0.948 and 0.954, and combined Holm familywise error was 3.0 per
+cent. A separate 2,000-replicate check found that probabilities based only on
+the conditional standardised-infit comparison gave 7.1 per cent combined
+familywise error. The conditional method therefore leaves those probabilities
+undefined. At the same sample size, bootstrap power was 96.3 per cent for two
+items shifted by one logit, but 9.6 per cent for two items made 1.5 times as
+steep. Discrimination departures require appreciably more information.
+
+The location contrasts are relative to the mean difference of the common
+items. If a small number of items is shifted, centring also gives the
+remaining items non-zero relative contrasts. The table identifies the pattern
+of departures; item content or external anchors are needed to decide which
+items provide the defensible reference.
+
+## Refit after a departure
+
+`resolve_frames()` gives an item a separate location in each frame. The item
+continues to contribute to person measurement but no longer links those
+frames. `drop_items()` removes it. Both functions refit the model and update
+the frame, item and person estimates.
+
+```{r repair, eval = FALSE}
+resolved <- resolve_frames(fit, "S1I02")
+removed <- drop_items(fit, "S1I02")
+```
+
+The remaining common items and linked sets must still identify the frame
+units. The functions preserve the original crossed factors, uncertainty
+method and fitting controls, and return a result only when the revised model
+converges.
+
+## References
+
+Follmann, D. (1988). Consistent estimation in the Rasch model based on
+nonparametric margins. *Psychometrika*, 53, 553--562.
+https://doi.org/10.1007/BF02294407
+
+Humphry, S. M. (2005). *Maintaining a Common Arbitrary Unit in Social
+Measurement*. PhD thesis, Murdoch University.
+
+Humphry, S. M., and Andrich, D. (2008). Understanding the unit in the Rasch
+model. *Journal of Applied Measurement*, 9(3), 249--264.
+
+Rasch, G. (1961). On general laws and the meaning of measurement in
+psychology. In *Proceedings of the Fourth Berkeley Symposium on Mathematical
+Statistics and Probability* (Vol. 4, pp. 321--333). University of California
+Press.

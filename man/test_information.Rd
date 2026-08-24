@@ -12,11 +12,29 @@ test_information(fit, grid = seq(-6, 6, by = 0.1))
 \item{grid}{Logit grid over which to evaluate the information.}
 }
 \value{
-A data frame with \code{theta}, \code{info}, and \code{sem}.
+A data frame with \code{theta}, \code{info}, and \code{sem}. For
+  EFRM and MFRM fits it also contains a \code{design} column identifying
+  the administrable frame or facet design.
 }
 \description{
-Fisher information of the whole test over a grid of person locations, with
-the corresponding standard error of measurement.
+Fisher information over a grid of person locations, with the corresponding
+standard error of measurement. Ordinary Rasch fits return one whole-test
+curve. EFRM fits return one curve per person group and per item-set
+administration pattern actually observed within that group (in a linking
+design, persons who took only the core set get a core-only curve, and the
+linking subsample gets the pooled one). MFRM fits return one curve per set
+of facet conditions observed together for a person, so ratings that jointly
+inform the same person measure are added and mutually exclusive designs
+remain separate.
+}
+\details{
+For an administrable block \eqn{\mathcal A}, the information and standard
+error of measurement are
+\deqn{I(\theta)=\sum_{i\in\mathcal A}d_i^2
+\operatorname{Var}(X_i\mid\theta),\qquad
+\operatorname{SEM}(\theta)=I(\theta)^{-1/2},}
+where \eqn{d_i} is the frame unit or discrimination multiplier. For an
+ordinary Rasch fit, \eqn{d_i=1}.
 }
 \examples{
 set.seed(1)
@@ -24,4 +42,11 @@ d <- seq(-1.5, 1.5, length.out = 6)
 X <- matrix(rbinom(300 * 6, 1, plogis(outer(rnorm(300), d, "-"))), 300, 6)
 colnames(X) <- paste0("I", 1:6)
 head(test_information(rasch(X)))
+}
+\references{
+Andrich, D. and Marais, I. (2019). A Course in Rasch Measurement Theory:
+Measuring in the Educational, Social and Health Sciences. Springer.
+}
+\seealso{
+\code{\link{targeting_table}} and \code{\link{plot_tif}}.
 }

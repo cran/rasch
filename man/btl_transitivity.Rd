@@ -23,17 +23,17 @@ A list of class \code{"rasch_btl_transitivity"}: \code{summary} (one
   and \code{notes}.
 }
 \description{
-The single-dimension analogue for paired comparisons of the
-unidimensionality question. A Bradley-Terry-Luce scale implies that
-preferences stack into one consistent order: if A beats B and B beats C
-then A should beat C. A \emph{circular triad} (A beats B, B beats C, C
-beats A) is a local contradiction, like rock-paper-scissors. A few are
-sampling noise; many, systematically, mean the comparisons are not being
-driven by a single attribute. The rate of circular triads is compared with
-the value expected from pure guessing (one quarter of triples), and, when
-every pair has been compared, Kendall's coefficient of consistency is
-reported (Kendall & Babington Smith 1940). With judges, each judge's own
-consistency is reported too, flagging judges whose choices approach chance.
+Summarises circular triads in the observed paired comparisons. A triad is
+circular when A is preferred to B, B to C, and C to A. For a complete
+tournament, the function reports Kendall's coefficient of consistency
+(Kendall and Babington Smith 1940). Judge-specific summaries are returned
+when judges are available.
+}
+\details{
+A circular-triad rate of one quarter is the benchmark for a random
+tournament. It is not the expected rate under a fitted BTL model with
+unequal object locations, so this function is a descriptive consistency
+measure rather than a calibrated goodness-of-fit test.
 }
 \examples{
 set.seed(1); objs <- LETTERS[1:6]; beta <- setNames(seq(-1.5, 1.5, len = 6), objs)

@@ -20,9 +20,11 @@ test_that("G = 1, S = 1 reduces exactly to btl()", {
   expect_equal(fit$objects$v, fit$objects$beta_set)
   expect_equal(nrow(fit$alpha_table), 1L)
   expect_equal(fit$alpha_table$alpha, 1)
+  expect_error(btl_dif(fit, factors = rep("g", nrow(fit$comparisons))),
+               "not defined after a BTL-EFRM frame adjustment")
 })
 
-test_that("planted panel units (phi) are recovered and Wald-flagged", {
+test_that("conditional panel units are recovered but inference is withheld", {
   phi_true <- c(0.7, 1.0, 1.43); phi_true <- phi_true / exp(mean(log(phi_true)))
   d <- simulate_btl_efrm(n_objects_per_set = 8, n_sets = 1, n_panels = 3,
                          n_judges_per_panel = 20, reps_within = 120,
@@ -36,11 +38,8 @@ test_that("planted panel units (phi) are recovered and Wald-flagged", {
   expect_lt(max(abs(z)), 3)                              # each within 3 SE
   # geometric-mean-one normalisation
   expect_equal(exp(mean(log(pt$phi))), 1, tolerance = 1e-8)
-  # the two panels with phi != 1 flag; the phi = 1 panel does not
-  flagged <- pt$p < 0.05
-  expect_true(flagged[pt$panel == "panel1"])            # 0.70
-  expect_true(flagged[pt$panel == "panel3"])            # 1.43
-  expect_false(flagged[pt$panel == "panel2"])           # 1.00
+  expect_true(all(is.na(pt$p)))
+  expect_true(all(is.na(pt$p_adj)))
   # single set: no set units estimated
   expect_equal(nrow(fit$alpha_table), 1L)
 })
@@ -67,10 +66,16 @@ test_that("planted set units (alpha) and origins (kappa) are recovered", {
   expect_gt(cor(vhat, tr$v[names(vhat)]), 0.99)
   # the frames model fits the differing-unit data better than one unit
   expect_gt(fit$equal_unit$difference, 0)
+  expect_setequal(fit$unit_omnibus$term,
+                  c("panel units (phi)", "set units (alpha)",
+                    "set origins (kappa)"))
+  expect_true(all(is.na(fit$unit_omnibus$p)))
+  expect_true(all(c("p_adj", "significant") %in%
+                    names(fit$alpha_table)))
 })
 
-test_that("units are not spuriously flagged under the null", {
-  base <- 300L; flags <- 0L; diffs <- numeric(12)
+test_that("conditional equal-unit fits remain numerically stable under the null", {
+  base <- 300L; diffs <- numeric(12)
   for (k in seq_len(12)) {
     d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
                            n_judges_per_panel = 10, reps_within = 20,
@@ -78,11 +83,10 @@ test_that("units are not spuriously flagged under the null", {
     fit <- befit(d, "object_a", "object_b", winner = "winner",
                     judge = "judge", panels = "panel",
                     object_sets = attr(d, "truth")$object_sets)
-    flags <- flags + any(fit$phi_table$p < 0.05, na.rm = TRUE) +
-      any(fit$alpha_table$p < 0.05, na.rm = TRUE)
+    expect_true(all(is.na(fit$phi_table$p)))
+    expect_true(all(is.na(fit$alpha_table$p)))
     diffs[k] <- fit$equal_unit$difference
   }
-  expect_lte(flags, 2L)                                 # loose binomial bound
   expect_lt(max(abs(diffs)), 25)                        # equal-unit gap small
 })
 
@@ -157,6 +161,57 @@ test_that("plot_btl_units draws without error", {
   expect_silent(plot_btl_units(fit))
 })
 
+test_that("frame estimates propagate through paired-comparison diagnostics", {
+  d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
+                         n_judges_per_panel = 10, reps_within = 30,
+                         reps_cross = 30, panel_units = c(0.8, 1.25),
+                         set_units = c(1, 1.4), set_origins = c(0, 0.6),
+                         seed = 44)
+  fit <- befit(d, "object_a", "object_b", "winner", "judge", "panel",
+               attr(d, "truth")$object_sets)
+
+  expect_s3_class(fit, "rasch_btl")
+  expect_equal(fit$objects$location, fit$objects$v)
+  expect_equal(fit$objects$se, fit$objects$se_v)
+  expect_true(all(c("expected", "frame_slope", "information") %in%
+                    names(fit$comparisons)))
+
+  cmp <- fit$comparisons
+  loc <- setNames(fit$objects$location, fit$objects$object)
+  expected <- plogis(cmp$frame_slope *
+                       (loc[cmp$object_a] - loc[cmp$object_b]))
+  expect_equal(cmp$expected, unname(expected), tolerance = 1e-8)
+
+  info <- btl_information(fit)
+  expect_equal(info$total, sum(cmp$information), tolerance = 1e-10)
+  expect_equal(sum(info$objects$information), 2 * info$total,
+               tolerance = 1e-10)
+  expect_no_error(judge_surprise(fit, fit$judges$judge[1]))
+  expect_no_error(btl_dimensionality(fit, reps = 20))
+  expect_error(btl_next_pairs(fit), "panel and object set")
+
+  tab <- fit_summary_table(fit)
+  expect_equal(tab$value[tab$statistic == "Object sets"], "2")
+  pdf(NULL); on.exit(dev.off())
+  expect_silent(plot_btl_icc(fit, fit$objects$object[1]))
+  expect_silent(plot_btl_targeting(fit))
+})
+
+test_that("conditional frame fits withhold equating drift inference", {
+  d1 <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
+                          reps_within = 25, reps_cross = 25, seed = 71)
+  d2 <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
+                          reps_within = 25, reps_cross = 25, seed = 72)
+  f1 <- befit(d1, "object_a", "object_b", "winner", "judge", "panel",
+              attr(d1, "truth")$object_sets)
+  f2 <- befit(d2, "object_a", "object_b", "winner", "judge", "panel",
+              attr(d2, "truth")$object_sets)
+  eq <- btl_equate(f1, f2, independent = TRUE)
+  expect_false(eq$inferential)
+  expect_true(any(grepl("joint object-location covariance", eq$notes,
+                        fixed = TRUE)))
+})
+
 test_that("bootstrap SEs propagate linking uncertainty (estimates unchanged)", {
   skip_on_cran()
   d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
@@ -172,6 +227,34 @@ test_that("bootstrap SEs propagate linking uncertainty (estimates unchanged)", {
   expect_equal(fb$objects$v, fc$objects$v)
   # the bootstrap carries stage-one noise the conditional errors omit
   expect_gt(fb$alpha_table$se_log_alpha[2], fc$alpha_table$se_log_alpha[2])
+  expect_true(all(is.finite(fb$unit_omnibus$df2)))
+
+  # The model-based bootstrap draws comparison outcomes independently. Its
+  # reference is therefore normal/chi-square, not the finite-judge reference
+  # used after resampling judges.
+  set.seed(10)
+  fp <- btl_efrm(d, "object_a", "object_b", "winner", "judge", "panel", os,
+                 se_method = "bootstrap", boot_reps = 30)
+  expect_true(all(is.infinite(fp$unit_omnibus$df2)))
+  expect_true(all(is.infinite(fp$alpha_table$df)))
+})
+
+test_that("judge-bootstrap unit tests respect panel-specific judge support", {
+  skip_on_cran()
+  d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 1, n_panels = 2,
+                         n_judges_per_panel = 10, reps_within = 35, seed = 81)
+  by_judge <- unique(d[c("judge", "panel")])
+  move <- by_judge$judge[by_judge$panel == "panel2"][1:8]
+  d$panel[d$judge %in% move] <- "panel1"
+  fit <- btl_efrm(d, "object_a", "object_b", "winner", "judge", "panel",
+                  attr(d, "truth")$object_sets,
+                  se_method = "judge_bootstrap", boot_reps = 30)
+  expect_lt(min(fit$unit_support$panel$n_judges), 6)
+  expect_true(all(is.na(fit$phi_table$p)))
+  expect_true(all(is.na(fit$unit_omnibus$p)))
+  expect_true(all(is.finite(fit$phi_table$phi)))
+  expect_false(any(grepl("set-unit and set-origin inference is withheld",
+                         fit$notes, fixed = TRUE)))
 })
 
 test_that("bootstrap SEs are calibrated on the chain-linked design", {
@@ -254,4 +337,104 @@ test_that("estimates and convergence are invariant to duplicating the data", {
   expect_equal(f2$phi_table$phi, f1$phi_table$phi, tolerance = 1e-6)
   expect_equal(f2$alpha_table$alpha, f1$alpha_table$alpha, tolerance = 1e-6)
   expect_equal(f2$objects$v, f1$objects$v, tolerance = 1e-6)
+})
+
+test_that("btl_efrm refuses (quasi-)complete cross-set separation", {
+  set.seed(3)
+  K <- 5
+  o1 <- sprintf("S1O%02d", seq_len(K)); o2 <- sprintf("S2O%02d", seq_len(K))
+  judges <- sprintf("J%03d", 1:8)
+  gen_within <- function(objs, beta, reps) {
+    pr <- t(combn(objs, 2)); aa <- bb <- character(0)
+    for (r in seq_len(nrow(pr))) {
+      aa <- c(aa, rep(pr[r, 1], reps)); bb <- c(bb, rep(pr[r, 2], reps)) }
+    p <- plogis(beta[aa] - beta[bb])
+    data.frame(object_a = aa, object_b = bb,
+               winner = ifelse(runif(length(aa)) < p, aa, bb),
+               stringsAsFactors = FALSE)
+  }
+  b1 <- setNames(as.numeric(scale(seq_len(K))), o1)
+  b2 <- setNames(as.numeric(scale(seq_len(K))), o2)
+  w1 <- gen_within(o1, b1, 20); w2 <- gen_within(o2, b2, 20)
+  # every set2 object beats every set1 object, always: perfect separation
+  grid <- expand.grid(oa = o1, ob = o2, stringsAsFactors = FALSE)
+  c12 <- data.frame(object_a = rep(grid$oa, 25), object_b = rep(grid$ob, 25),
+                    winner = rep(grid$ob, 25), stringsAsFactors = FALSE)
+  d <- rbind(w1, w2, c12)
+  d$judge <- sample(judges, nrow(d), TRUE); d$panel <- "panel1"
+  os <- list(set1 = o1, set2 = o2)
+  # both the conditional and the default bootstrap path must refuse, not
+  # report a boundary alpha/kappa with a fabricated SE
+  expect_error(suppressWarnings(
+    btl_efrm(d, "object_a", "object_b", "winner", judge = "judge",
+             panels = "panel", object_sets = os,
+             se_method = "conditional", min_link = 20)),
+    "separated")
+  expect_error(suppressWarnings(
+    btl_efrm(d, "object_a", "object_b", "winner", judge = "judge",
+             panels = "panel", object_sets = os,
+             se_method = "bootstrap", boot_reps = 40, min_link = 20)),
+    "separated")
+})
+
+test_that("BTL-EFRM judge bootstrap reports progress and restores the RNG", {
+  d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
+                         n_judges_per_panel = 8, reps_within = 25,
+                         reps_cross = 25, seed = 701)
+  os <- attr(d, "truth")$object_sets
+  seen <- list()
+  set.seed(702)
+  before <- .Random.seed
+  f <- btl_efrm(d, "object_a", "object_b", "winner", "judge", "panel", os,
+                boot_reps = 30, workers = 1, seed = 703,
+                progress = function(stage, current, total)
+                  seen[[length(seen) + 1L]] <<- c(stage, current, total))
+  expect_identical(.Random.seed, before)
+  expect_identical(f$workers, 1L)
+  expect_identical(f$seed, 703L)
+  stages <- vapply(seen, `[`, "", 1L)
+  expect_true(all(c("two-stage fit", "judge bootstrap", "finalising") %in%
+                    stages))
+  js <- seen[stages == "judge bootstrap"]
+  expect_identical(as.integer(tail(js, 1L)[[1L]][2:3]), c(30L, 30L))
+
+  completed <- 0L
+  expect_condition(
+    btl_efrm(d, "object_a", "object_b", "winner", "judge", "panel", os,
+      boot_reps = 30, workers = 1, seed = 704,
+      progress = function(stage, current, total)
+        if (stage == "judge bootstrap") completed <<- as.integer(current),
+      cancel = function() completed >= 2L),
+    class = "rasch_cancelled")
+  expect_lte(completed, 2L)
+})
+
+test_that("parallel BTL-EFRM judge bootstraps are seed-identical", {
+  skip_on_cran()
+  skip_if_not(file.exists(file.path(system.file(package = "rasch"),
+                                    "DESCRIPTION")),
+              "parallel integration test needs an installed package")
+  old_workers <- options(rasch.max_workers = 2L)
+  on.exit(options(old_workers), add = TRUE)
+  probe <- try(parallel::makePSOCKcluster(2L), silent = TRUE)
+  skip_if(inherits(probe, "try-error"), "local socket clusters unavailable")
+  parallel::stopCluster(probe)
+
+  d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
+                         n_judges_per_panel = 8, reps_within = 25,
+                         reps_cross = 25, seed = 705)
+  os <- attr(d, "truth")$object_sets
+  serial <- btl_efrm(d, "object_a", "object_b", "winner", "judge", "panel",
+                     os, boot_reps = 30, workers = 1, seed = 706)
+  para <- btl_efrm(d, "object_a", "object_b", "winner", "judge", "panel",
+                   os, boot_reps = 30, workers = 2, seed = 706)
+  expect_identical(para$phi_table, serial$phi_table)
+  expect_identical(para$alpha_table, serial$alpha_table)
+  expect_identical(para$kappa_table, serial$kappa_table)
+  expect_identical(para$objects, serial$objects)
+  expect_identical(para$unit_omnibus, serial$unit_omnibus)
+})
+
+test_that("BTL-EFRM defaults to four available workers", {
+  expect_identical(formals(btl_efrm)$workers, 4L)
 })

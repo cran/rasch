@@ -2,7 +2,7 @@
 % Please edit documentation in R/dif.R
 \name{dif_size}
 \alias{dif_size}
-\title{DIF magnitude in logits with pairwise comparisons}
+\title{DIF differences between factor levels}
 \usage{
 dif_size(
   fit,
@@ -15,7 +15,9 @@ dif_size(
 )
 }
 \arguments{
-\item{fit}{A fitted object from \code{\link{rasch}}.}
+\item{fit}{A fitted object from \code{\link{rasch}} or
+\code{\link{rasch_mfrm}}. EFRM fits are excluded because an ordinary
+split refit would discard their frame units.}
 
 \item{item}{Item name or index.}
 
@@ -35,37 +37,63 @@ significant.}
 resolved locations would be too unstable to compare), with a note.}
 }
 \value{
-A list of class \code{"rasch_dif_size"}: \code{levels} (resolved
-  location and SE per level, with its n), \code{pairs} (per comparison:
-  difference in logits, SE, z, raw and adjusted p, 95 per cent interval,
-  \code{significant}, \code{practical}), the settings, and any notes.
+A list of class \code{"rasch_dif_size"}. \code{levels} contains
+  the resolved location, standard error and sample size for each level.
+  \code{pairs} contains logit differences, Wald statistics, confidence
+  intervals, raw and adjusted probabilities, and practical flags. For
+  dichotomous items it also contains \code{ets}; for polytomous items it
+  contains the descriptive \code{signed_area}. Sampling-uncertainty fields
+  are \code{NA} when person identifiers repeat.
 }
 \description{
-Quantifies differential item functioning on the measurement scale
-itself, where practical significance is judged: the item is resolved
-into one copy per group (or per cell of a factor combination), the
-model is refitted, and the distance between the resolved locations is
-the DIF size in logits (Andrich & Marais 2019, ch. 16: a simulated
-shift of 0.71 was recovered as 0.75 by exactly this method). Every
-pair of levels is compared with a Wald test using the full sandwich
-covariance of the resolved locations (for a between-person factor the
-persons behind different levels are disjoint, but the shared calibration
-of the other items still couples the estimates, so the covariance is
-used rather than assumed zero), with familywise adjustment over the
-pairs. For a within-person factor -- the same persons behind several
-levels, as in a stacked repeated-measures design -- the sandwich carries
-no person clustering, so the standard errors are conservative; a note
-says so, and \code{\link{dif_contrasts}} handles that case with
-person-level differencing. Differences
-at least \code{flag_logits} in absolute size are flagged as practically
-significant; half a logit is a common working criterion, to be weighed
-against the test's targeting and purpose.
+Resolves an item by one or more person factors and compares the resulting
+locations. Several factors in \code{by} give pairwise comparisons between
+their joint cells and can be used to quantify an interaction.
 }
 \details{
-For an interaction, supply several factor names: levels are then the
-factor-combination cells, which is the post-hoc follow-up to a
-significant factor-by-factor term in \code{\link{dif_anova}}.
+Let \eqn{\delta_i} contain the resolved locations of item
+\eqn{i}, and let \eqn{\mathbf{c}_{ab}} place 1 on level \eqn{a}, -1 on
+level \eqn{b}, and zero elsewhere. The reported difference and its
+standard error are
+\deqn{\Delta_{i,ab}=\mathbf{c}_{ab}^{\mathsf T}
+\delta_i,}
+\deqn{\operatorname{SE}(\Delta_{i,ab})=
+\sqrt{\mathbf{c}_{ab}^{\mathsf T}\mathbf{V}_i
+\mathbf{c}_{ab}},}
+where \eqn{\mathbf{V}_i} is the full covariance of the resolved
+locations. Wald probabilities are adjusted over the pairwise family.
+
+With repeated person identifiers, the row-level calibration covariance does
+not represent within-person sampling dependence. Logit differences and
+practical flags are retained, but their standard errors and Wald tests are
+withheld. Use \code{\link{dif_contrasts}} for person-level inference in a
+repeated-measures design.
 }
+\section{Magnitude conventions}{
+
+For dichotomous items, \code{ets} applies the ETS A, B and C rules to the
+itemwise comparison. On the logit scale the magnitude cut-points are
+\eqn{1/2.35=0.426} and \eqn{1.5/2.35=0.638}. Category A also includes an
+itemwise test that is not significant. Category C requires a magnitude of
+at least 0.638 and rejection of the interval null
+\eqn{|\Delta|\leq 0.426}; B is the remainder. The category uses the raw
+itemwise probability, while \code{significant} uses \code{p_adjust} over
+the requested pairwise family.
+
+For a partial credit item with \eqn{m_i} thresholds, the signed area
+between the two expected-score curves has the closed form
+\deqn{SA_{ab}=\int\{E_b(X\mid\theta)-E_a(X\mid\theta)\}\,d\theta
+=\sum_{k=1}^{m_i}(\delta_{iak}-\delta_{ibk})
+=m_i(\beta_{ia}-\beta_{ib}).}
+This is returned as \code{signed_area}; a positive value means that level
+\code{a} has the harder resolved item. It is descriptive and is not
+given an A/B/C category: score-metric classifications for polytomous DIF
+are not interchangeable with a PCM logit difference. For pooled MFRM
+items, the areas use the same precision weight for a facet cell in every
+group. A comparison is withheld when the groups do not support the same
+observed response categories.
+}
+
 \examples{
 set.seed(1); n <- 600
 d <- seq(-2, 2, length.out = 8); g <- rep(c("a", "b"), each = n / 2)
@@ -74,4 +102,28 @@ X <- matrix(rbinom(n * 8, 1, plogis(outer(rnorm(n), d, "-") - sh)), n, 8)
 colnames(X) <- paste0("I", 1:8)
 fit <- rasch(data.frame(X, grp = g), factors = "grp")
 dif_size(fit, "I3", by = "grp")
+}
+\references{
+Andrich, D. and Marais, I. (2019). A Course in Rasch Measurement Theory:
+Measuring in the Educational, Social and Health Sciences. Springer.
+
+Holm, S. (1979). A simple sequentially rejective multiple test procedure.
+Scandinavian Journal of Statistics, 6(2), 65--70.
+
+Zieky, M. (1993). Practical questions in the use of DIF statistics in item
+development. In P. W. Holland and H. Wainer (eds), Differential Item
+Functioning (pp. 337--364). Erlbaum.
+
+Linacre, J. M. and Wright, B. D. (1989). Mantel-Haenszel DIF and PROX are
+equivalent! Rasch Measurement Transactions, 3(2), 51--53.
+
+Cohen, A. S., Kim, S.-H. and Baker, F. B. (1993). Detection of differential
+item functioning in the graded response model. Applied Psychological
+Measurement, 17(4), 335--350.
+
+Raju, N. S. (1988). The area between two item characteristic curves.
+Psychometrika, 53(4), 495--502.
+}
+\seealso{
+\code{\link{dif_anova}} and \code{\link{dif_contrasts}}.
 }

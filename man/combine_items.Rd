@@ -17,13 +17,16 @@ almost always required because subtests change the maximum scores.}
 }
 \value{
 A new \code{\link{rasch}} fit on the combined structure, with the
-  combinations recorded in its notes.
+  combinations recorded in its notes. Person and item estimates are
+  recalculated. Fit grouping, external anchors on unchanged items, keyed
+  scoring, PCM constraints and optimisation controls are retained.
+  Anchored items cannot be combined because the resulting superitem has no
+  corresponding external anchor.
 }
 \description{
-Forms one polytomous super-item from each nominated group of items (its
-score is the member sum; missing if any member is missing), keeps all other
-items as they are, and refits the model with the same settings. The usual
-treatment for item pairs flagged by \code{\link{residual_correlations}}.
+Replaces each nominated item group by a polytomous super-item whose score is
+the sum of its members, then refits the model. The function is commonly used
+to examine item groups identified by \code{\link{residual_correlations}}.
 }
 \examples{
 set.seed(1); Np <- 500; L <- 8
@@ -34,4 +37,9 @@ X[, 5] <- ifelse(runif(Np) < 0.9, X[, 4], X[, 5])   # dependent pair
 fit <- rasch(X)
 fit2 <- combine_items(fit, list(c("I4", "I5")))
 fit2$items$item
+}
+\seealso{
+\code{\link{drop_items}} to remove an item rather than combine
+  it, and \code{\link{residual_correlations}} for the dependence that
+  motivates combining.
 }

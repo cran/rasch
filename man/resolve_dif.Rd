@@ -8,7 +8,7 @@ resolve_dif(
   fit,
   factors = NULL,
   alpha = 0.05,
-  p_adjust = "BH",
+  p_adjust = "holm",
   min_anchors = NULL,
   max_splits = NULL
 )
@@ -24,9 +24,10 @@ defaults to every nominated factor.}
 
 \item{p_adjust}{Multiplicity adjustment across items each round.}
 
-\item{min_anchors}{Minimum number of original items to leave unsplit; the
-procedure stops before the anchor set falls below this (pervasive DIF is
-not artificial DIF). Default \code{max(3, items / 4)}.}
+\item{min_anchors}{Minimum number of original items to leave unsplit as the
+internal reference set. The procedure stops before this set becomes
+smaller; pervasive DIF is not artificial DIF. Default
+\code{max(3, items / 4)}.}
 
 \item{max_splits}{Hard cap on the number of splits. Default: the number
 of items.}
@@ -34,19 +35,21 @@ of items.}
 \value{
 A list of class \code{"rasch_resolve_dif"}: the final resolved
   \code{fit}, the \code{splits} performed (order, item, factor, partial
-  eta-squared, DIF magnitude in logits), the \code{stopped} reason, and
-  the residual \code{dif} table for the final fit.
+  eta-squared, source item, DIF magnitude in logits), the \code{stopped}
+  reason, and the residual \code{dif} table for the final fit.
 }
 \description{
-Splits DIF items one at a time, largest effect first, refitting after
-each split, until no item shows significant DIF (or the anchor set would
-fall too low). Splitting the item with the largest real DIF first
-removes the artificial DIF it induces on other items (Andrich & Hagquist
-2012, 2015), so the procedure resolves genuine DIF without chasing the
-artificial DIF that a single simultaneous pass would flag. Each split
-resolves the item into one copy per group (or per factor-combination
-cell for an interaction), with independent locations and thresholds, so
-both uniform and non-uniform DIF are resolved together.
+Splits items with uniform DIF one at a time, beginning with the largest
+estimated effect,
+and refits after each split. This order addresses the artificial DIF that a
+large departure can induce in otherwise invariant items (Andrich and
+Hagquist 2012, 2015). Each split gives the item a separate location and
+threshold structure in every factor cell. A location split does not model a
+group-specific discrimination, so items with non-uniform DIF are left for
+review rather than being made untestable by a split. The procedure stops
+when no resolvable uniform DIF remains or the remaining unsplit reference
+set reaches \code{min_anchors}. Items fixed by external anchors are not
+split.
 }
 \examples{
 set.seed(1); n <- 600
@@ -61,4 +64,9 @@ resolve_dif(fit)$splits
 Andrich, D., & Hagquist, C. (2012). Real and artificial
   differential item functioning. \emph{Journal of Educational and
   Behavioral Statistics}, 37(3), 387-416.
+}
+\seealso{
+\code{\link{split_items}} for a single split,
+  \code{\link{drop_items}} to remove an item instead, and
+  \code{\link{dif_anova}} for the test it resolves.
 }

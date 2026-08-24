@@ -1,0 +1,356 @@
+---
+title: "A Rasch analysis workflow"
+author: "Josh McGrane"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{A Rasch analysis workflow}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>",
+                      fig.width = 7, fig.height = 4.2)
+options(digits = 4)
+```
+
+```{r library}
+library(rasch)
+```
+
+This vignette follows a Rasch analysis from the overall summary to item and
+person fit, targeting, dependence, and differential item functioning (DIF).
+The order matters. A fit statistic is difficult to interpret without knowing
+whether the scale separates the sample or supplies information over the
+relevant part of the latent trait.
+
+The same analyses are available in the Shiny application. Run
+`rasch::run_app()` to import data, fit a model, inspect the results, and export
+tables or plots without writing R analysis code.
+
+## Fit the model required by the scoring structure
+
+`rasch` fits the partial credit model by default (Rasch 1960; Andrich and
+Marais 2019). Dichotomous data are its one-threshold special case. Set
+`model = "RSM"` only when the same category threshold structure is intended
+to hold across items.
+
+For person $n$, item $i$, and score $x=0,\ldots,m_i$, the partial credit model
+is
+
+$$
+P(X_{ni}=x)=
+\frac{\exp\left\{x\theta_n-\sum_{k=1}^{x}\delta_{ik}\right\}}
+{\sum_{y=0}^{m_i}\exp\left\{y\theta_n-
+\sum_{k=1}^{y}\delta_{ik}\right\}}.
+$$
+
+The rating scale model constrains $\delta_{ik}=\beta_i+\tau_k$. Pairwise
+conditioning removes $\theta_n$ from the item likelihood. Person locations
+are subsequently estimated by Warm's weighted likelihood method (Warm 1989).
+
+The example is polytomous and contains three person groups. One item has
+disordered generating thresholds, one has uniform DIF, and one item pair has
+local response dependence. These departures make the diagnostic sequence
+visible without changing the commands used for observed data. Before fitting
+observed data, check the coding and frequency of every category. Negative
+scores are read as missing; valid categories begin at zero.
+
+```{r fit}
+d <- simulate_rasch(
+  n_persons = 600,
+  n_items = 12,
+  model = "PCM",
+  n_categories = 4,
+  difficulty = c(-1.5, 1.5),
+  disordered = "I04",
+  dependence = list(pairs = list(c("I10", "I11")), strength = 1.3),
+  dif = list(items = "I08", uniform = 0.8),
+  n_groups = 3,
+  seed = 17
+)
+
+fit <- rasch(d, model = "PCM", id = "id", factors = "group")
+```
+
+## Overall summary and reliability
+
+The summary establishes whether estimation converged and gives the overall
+item--trait interaction, reliability, and the package's qualitative assessment
+of the power of fit tests. It should be read before individual item or person
+results.
+
+```{r overall-summary}
+fit
+```
+
+The person separation index (PSI) compares the observed variance of person
+locations with their mean error variance:
+
+$$
+\mathrm{PSI}=
+\frac{\operatorname{Var}(\hat\theta)-
+\operatorname{mean}\{\operatorname{SE}(\hat\theta)^2\}}
+{\operatorname{Var}(\hat\theta)}.
+$$
+
+The implementation truncates negative values at zero. `fit$psi_noext` removes
+persons with extreme scores and is useful when extremes inflate the observed
+spread. The separation ratio and number of strata express the same information
+on more interpretable scales.
+
+The power label is a screening judgement based on PSI, not a formal power
+calculation. Low reliability weakens the ordering of persons and the formation
+of distinct class intervals, so item--trait and DIF tests may fail to detect
+real departures. Power also depends on sample size, test length, targeting,
+category use, and trait spread. Conversely, a large sample can make a small
+departure statistically significant. Here the PSI is `r sprintf("%.2f", fit$psi$PSI)`,
+which the package classifies as `r fit$power_of_fit`; weak separation is
+therefore not an immediate explanation for a quiet fit test. Fit residuals,
+effect sizes, plots, and substantive importance remain necessary.
+
+## Item estimates, fit, and thresholds
+
+Item locations and their standard errors should be read alongside fit
+residuals and the Holm-adjusted item--trait probabilities. The table shows the
+six items with the largest absolute residuals; the complete results are in
+`fit$items`. A positive residual indicates more variation than expected and a
+negative residual indicates responses that are more predictable than expected.
+The conventional $\pm2.5$ band is a screening rule rather than a separate
+hypothesis test.
+
+```{r item-estimates}
+item_order <- order(abs(fit$items$fit_resid), decreasing = TRUE)
+head(fit$items[item_order, c(
+  "item", "location", "se", "fit_resid", "p_adj"
+)], 6)
+```
+
+```{r item-fit-plot, fig.alt = "Item locations plotted against item fit residuals."}
+plot_item_map(fit)
+```
+
+For a polytomous item, successive thresholds should normally increase on the
+latent scale. The threshold map shows their order directly. Item I04 has an
+intervening category without its own region on the scale; the category curves
+show the same problem in probability form.
+
+```{r thresholds, fig.height = 5.2, fig.alt = "Estimated category thresholds for all items on the common logit scale."}
+plot_threshold_map(fit)
+```
+
+```{r category-curves, fig.alt = "Category characteristic curves and observed category proportions for item I04."}
+plot_ccc(fit, "I04", observed = TRUE)
+```
+
+Disordering alone does not justify collapsing categories. The response-option
+meanings, observed use, and category curves should support any rescoring. The
+model must then be refitted and checked again.
+
+## Person estimates and fit
+
+Person fit addresses the consistency of each response pattern with the fitted
+scale. The following table puts the largest absolute residuals first. Positive
+residuals indicate unexpectedly erratic patterns; negative residuals indicate
+patterns that are unusually predictable.
+
+```{r person-estimates}
+person_order <- order(abs(fit$person$fit_resid),
+                      decreasing = TRUE, na.last = TRUE)
+head(fit$person[person_order, c(
+  "id", "group", "raw", "theta", "se", "fit_resid"
+)], 6)
+```
+
+```{r person-fit-plot, fig.alt = "Person locations plotted against person fit residuals."}
+plot_person_fit(fit)
+```
+
+An unexpected response pattern may reflect coding or data-entry errors,
+careless responding, a secondary trait, or a genuine but unusual person. It is
+not, by itself, a reason to remove the person. In this example,
+`r sum(abs(fit$person$fit_resid) > 2.5, na.rm = TRUE)` persons fall outside
+the displayed band. Fit residuals are unavailable for extreme response
+patterns because those patterns do not provide an interior location at which
+fit can be assessed.
+
+## Targeting and information
+
+Targeting concerns the match between the person distribution and the item
+threshold distribution. The table reports their locations and spread, the
+proportions of persons beyond the threshold range, and the principal
+reliability indices.
+
+```{r targeting-summary}
+fit$targeting
+```
+
+For a Rasch model, test information is the sum of the conditional response
+variances:
+
+$$
+I(\theta)=\sum_i \operatorname{Var}(X_i\mid\theta),
+\qquad
+\operatorname{SE}(\hat\theta)\approx I(\theta)^{-1/2}.
+$$
+
+The person--item map below places person locations and item thresholds on the
+same logit scale. The information curve shows where the test is most precise.
+
+```{r targeting-map, fig.height = 5.2, fig.alt = "Person and item distributions with the test information curve on the common logit scale."}
+plot_pimap(fit, information = TRUE)
+```
+
+The Wright map shows the same alignment in the conventional vertical
+arrangement: the person distribution beside the item thresholds on one logit
+scale.
+
+```{r wright, fig.height = 5.2, fig.alt = "Wright map of the person distribution and item thresholds on the common logit scale."}
+plot_wright(fit)
+```
+
+The optional `WrightMap` package draws the same map with greater flexibility,
+including several person and item panels (Torres Irribarra and Freund 2025).
+Polytomous thresholds are labelled `t1`, `t2`, and so on. Threshold labels are
+omitted for a wholly dichotomous scale; a dichotomous item in a mixed scale
+retains `t1`. Panels should answer a substantive question; here the person
+distributions are separated by the fitted group factor.
+
+```{r wrightmap, fig.width = 8, fig.height = 5.2, fig.alt = "Wright map with one person panel per group."}
+if (requireNamespace("WrightMap", quietly = TRUE)) {
+  wright_map(fit, person_panels = "group")
+}
+```
+
+If `WrightMap` is not installed, install it with
+`install.packages("WrightMap")` before running this chunk.
+
+## Local and trait dependence
+
+Local response dependence occurs when two responses remain associated after
+conditioning on the latent trait. Yen's $Q3$ is the correlation between two
+items' standardised residuals. Because raw $Q3$ values have a negative
+baseline in a finite test, `q3_star` subtracts the average off-diagonal value.
+
+```{r local-dependence}
+q3 <- residual_correlations(fit)
+q3$average
+head(q3$pairs[, c("item_a", "item_b", "q3", "q3_star")], 5)
+```
+
+```{r local-dependence-plot, fig.alt = "Heatmap of adjusted residual correlations between items."}
+plot_resid_cor(fit)
+```
+
+There is no universal critical value for adjusted $Q3$ (Christensen,
+Makransky and Horton 2017). Its size, the response process, and the content of
+the item pair matter. When theory supports treating dependent items as one
+superitem, `combine_items()` refits the complete calibration and
+`spread_test()` compares its threshold spread with the binomial bound. The
+bound does not apply to a superitem containing a polytomous component.
+
+Trait dependence is examined through the residual components and by comparing
+person estimates from opposed item subsets (Smith 2002). For subsets $A$ and
+$B$, the person-level statistic is
+
+$$
+t_n=\frac{\hat\theta_{nA}-\hat\theta_{nB}}
+{\sqrt{\operatorname{SE}(\hat\theta_{nA})^2+
+       \operatorname{SE}(\hat\theta_{nB})^2}}.
+$$
+
+Under unidimensionality, about the nominated alpha level of these comparisons
+should be significant. The exact binomial interval, the residual loadings,
+and the score points in each subset are part of the result.
+
+```{r trait-dependence}
+dimensionality <- dimensionality_test(fit)
+```
+
+```{r trait-dependence-plot, fig.alt = "Loadings of items on the first residual component."}
+plot_pca(fit)
+```
+
+Here, `r sprintf("%.1f", 100 * dimensionality$prop_significant)`% of the
+person comparisons are significant (exact 95% interval
+`r sprintf("%.1f", 100 * dimensionality$ci[1])`% to
+`r sprintf("%.1f", 100 * dimensionality$ci[2])`%). The test does not flag
+trait dependence, but one opposed subset contains only
+`r min(dimensionality$score_points)` score points. A quiet result from a short
+subtest is inconclusive rather than evidence that a secondary trait is absent.
+
+## Differential item functioning
+
+Person factors must be nominated when the model is fitted. With a person
+factor $G$ and trait class interval $C$, the residual model is
+
+$$
+z=\mu+G+C+G\mathbin{:}C+\varepsilon.
+$$
+
+The factor term tests uniform DIF; the interaction with class interval tests
+non-uniform DIF. `dif_anova()` fits all nominated factors together, recognises
+within-person factors in repeated designs, and applies Holm familywise
+correction over the item-by-term tests.
+
+```{r dif}
+dif <- dif_anova(fit, sizes = TRUE)
+flagged_dif <- subset(dif$summary, uniform_DIF | nonuniform_DIF)
+flagged_dif[, c(
+  "item", "term", "F_uniform", "p_uniform_adj", "eta2_uniform",
+  "F_nonuniform", "p_nonuniform_adj", "eta2_nonuniform"
+)]
+```
+
+```{r dif-plot, fig.alt = "Observed and expected item characteristic curves for item I08 by person group."}
+plot_icc(fit, "I08", group = "group")
+```
+
+For a significant factor with more than two levels, the follow-up should
+estimate the relevant differences in Rasch logits rather than rely on a
+generic Tukey procedure. With `sizes = TRUE`, `dif_anova()` returns the
+Holm-adjusted marginal pairwise comparisons for significant main effects and
+difference-in-differences for significant interactions.
+
+```{r dif-follow-up}
+dif$posthoc[, c(
+  "item", "contrast", "estimate", "se", "p_adj",
+  "lower", "upper", "practical"
+)]
+```
+
+Statistical significance and practical magnitude answer different questions.
+Any split must be supported by the response process and should be applied with
+`resolve_dif()`, which refits the calibration and updates the item and person
+estimates. The revised fit then goes through the same summary, fit, targeting,
+dependence, and DIF sequence.
+
+## References
+
+Andrich, D., and Marais, I. (2019). *A Course in Rasch Measurement Theory:
+Measuring in the Educational, Social and Health Sciences*. Springer.
+
+Christensen, K. B., Makransky, G., and Horton, M. (2017). Critical values for
+Yen's Q3: Identification of local dependence in the Rasch model using residual
+correlations. *Applied Psychological Measurement*, 41(3), 178--194.
+
+Holm, S. (1979). A simple sequentially rejective multiple test procedure.
+*Scandinavian Journal of Statistics*, 6(2), 65--70.
+
+Rasch, G. (1960). *Probabilistic Models for Some Intelligence and Attainment
+Tests*. Copenhagen: Danish Institute for Educational Research. (Expanded
+edition, 1980, Chicago: University of Chicago Press.)
+
+Smith, E. V. Jr. (2002). Detecting and evaluating the impact of
+multidimensionality using item fit statistics and principal component analysis
+of residuals. *Journal of Applied Measurement*, 3(2), 205--231.
+
+Torres Irribarra, D., and Freund, R. (2025). *WrightMap: IRT item-person map
+with ConQuest integration*. R package version 1.5.
+
+Warm, T. A. (1989). Weighted likelihood estimation of ability in item
+response theory. *Psychometrika*, 54(3), 427--450.
+
+Yen, W. M. (1984). Effects of local item dependence on the fit and equating
+performance of the three-parameter logistic model. *Applied Psychological
+Measurement*, 8(2), 125--145.

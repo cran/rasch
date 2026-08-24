@@ -9,7 +9,7 @@ btl_dif(
   factors,
   objects = NULL,
   effects = c("main", "factorial"),
-  p_adjust = "BH",
+  p_adjust = "holm",
   alpha = 0.05,
   flag_logits = 0.5,
   min_n = 20,
@@ -18,10 +18,11 @@ btl_dif(
 )
 }
 \arguments{
-\item{fit}{An object from \code{\link{btl}}.}
+\item{fit}{An ordinary paired-comparison fit from \code{\link{btl}}.}
 
-\item{factors}{A judge factor, or a named list of them, each either one
-value per row of \code{fit$comparisons} or a vector named by judge.}
+\item{factors}{One judge factor, or a named list containing several. Each
+factor may have one value per comparison row or be a vector named by
+judge.}
 
 \item{objects}{Objects to test; all by default.}
 
@@ -29,9 +30,9 @@ value per row of \code{fit$comparisons} or a vector named by judge.}
 (each factor's main effect and its band interaction); \code{"factorial"}
 also crosses the factors with one another.}
 
-\item{p_adjust}{Multiplicity adjustment across objects within each term;
-the resolved-size probabilities are adjusted in one pool over all
-objects, terms, and cell pairs.}
+\item{p_adjust}{Multiplicity adjustment over all object-by-term tests;
+the resolved-size probabilities are adjusted separately in one pool over
+all objects, terms, and cell pairs.}
 
 \item{alpha}{Significance level for adjusted probabilities.}
 
@@ -49,62 +50,65 @@ A list of class \code{"rasch_btl_dif"}: \code{summary} (one row per
   eta-squared -- the term itself -- the non-uniform ones -- the term
   crossed with the opponent band -- plus \code{uniform_DIF},
   \code{nonuniform_DIF} and \code{superseded} flags); \code{terms} (the
-  full per-object analysis-of-variance table); \code{levels} (resolved
-  location and SE per object, term and cell); \code{sizes} (per object,
-  term and cell pair: difference in logits, SE, z, adjusted p, significance
-  and practical flags); \code{effects}, \code{factors}, and \code{notes}.
+  full per-object analysis-of-variance table, including its raw and
+  effective judge support); \code{levels} (resolved
+  location, SE, comparison count, judge count and effective judge count per
+  object, term and cell); \code{sizes} (per object, term and cell pair:
+  difference in logits, judge support for both cells, SE, t, degrees of
+  freedom, adjusted p, significance and practical flags); \code{effects},
+  \code{factors}, \code{alpha}, \code{p_adjust}, \code{flag_logits}, and
+  \code{notes}. \code{summary_factors} retains the factor membership of
+  each displayed term.
 }
 \description{
-Tests whether objects function differently for identifiable groups of
-judges. One judge factor is analysed on its own; several factors are
-modelled jointly -- with main effects by default and factor-by-factor
-interactions optional -- exactly as \code{\link{dif_anova}} treats person
-factors. For each object the standardised residuals of its comparisons,
-oriented to the object, are analysed by the judge factor(s) crossed with
-opponent-strength bands: a term is uniform DIF, its crossing with the band
-non-uniform DIF, and a significant higher-order group term supersedes the
-lower-order group terms built from a subset of its factors. Each term
-flagged for uniform DIF and not superseded is then resolved -- the object
-split into one copy per cell of the term's factors inside a joint refit --
-and the differences between the resolved locations reported in logits with
-judge-clustered Wald tests and the practical-significance flag, mirroring
-\code{\link{dif_size}}. Fits with within-judge dependence effects
-(\code{order}) keep those effects in the residual moments and in the
-refits, so dependence is not mistaken for judge-group DIF; count-weighted
-comparisons enter all tests with their weights.
+Tests whether object locations differ across groups of judges. Several
+judge factors can be fitted jointly, with optional factor-by-factor
+interactions. Uniform DIF is a judge-factor effect; non-uniform DIF is its
+interaction with opponent-strength band.
 }
 \details{
-The screening ANOVA treats JUDGES as the independent units: residuals are
-aggregated to one weighted mean per judge (per opponent band) and tested
-in a split-plot design with the judge as the error unit -- group terms
-between judges, band terms and their interactions within. Testing
-judge-level factors against comparison-level residuals would
-pseudo-replicate (a null simulation with judge heterogeneity and
-arbitrary groups falsely flagged uniform DIF in 6 of 10 datasets); the
-judge-level design is calibrated, and its power grows with the number of
-judges per group, not the number of comparisons. Each factor level needs
-at least two judges, and an object at least four judges overall, to be
-testable.
+Judges are the independent units. For each object, oriented residuals are
+aggregated to one weighted mean per judge and opponent band. A split-plot
+analysis then tests judge factors between judges and band effects within
+judges. Each factor level requires at least two judges. Confirmatory Wald
+tests are available only when the base fit supplies a valid judge-clustered
+covariance. The base paired-comparison calibration must have converged.
+BTL-EFRM fits are not accepted: the ordinary residual and resolution
+models do not contain the fitted panel and set units.
 
-Each object is resolved against the other objects' common locations. When
-several objects carry real DIF, resolving them one at a time can spread a
-large effect onto clean objects as compensating, opposite-signed artificial
-DIF (Andrich & Hagquist 2012, 2015); read large flags on several objects
-together with that hazard in mind, and prefer resolving the largest effect
-first and re-running.
+A significant uniform term is followed by a joint refit in which the object
+has one location per factor cell. Differences between these locations are
+reported in logits. A cell needs at least eight effective judges for
+pairwise inference; otherwise its location and differences remain
+descriptive. Pairwise tests use degrees of freedom based on the effective
+judges in the two cells. Higher-order terms supersede their component terms.
+Models fitted with \code{order} retain the exposure and carry-over effects
+in both the residual analysis and refit.
+Between-judge tests use HC3 covariance so unequal comparison workloads do
+not impose equal precision on judge means. Omnibus probabilities require
+at least eight judges and eight effective judges in every factor cell.
+Holm adjustment is the default; \code{"BH"} remains available for
+false-discovery-rate screening.
+
+Objects are resolved one at a time against the common locations of the
+remaining objects. With DIF in several objects, this can induce compensating
+apparent DIF in invariant objects (Andrich and Hagquist 2012, 2015).
+An externally anchored object is not resolved: fixing each of its copies at
+the same anchor would define their difference as zero. Anchors on the other
+objects are retained in the joint refit.
 }
 \examples{
 set.seed(1)
 beta <- c(A = -1, B = -0.3, C = 0.4, D = 0.9)
 pr <- t(combn(names(beta), 2))
-d <- data.frame(a = rep(pr[, 1], each = 60), b = rep(pr[, 2], each = 60),
-                judge = sample(sprintf("J\%02d", 1:12), 360, TRUE))
-shift <- ifelse(d$judge \%in\% sprintf("J\%02d", 1:6) & d$a == "C", 0.9,
-         ifelse(d$judge \%in\% sprintf("J\%02d", 1:6) & d$b == "C", -0.9, 0))
+d <- data.frame(a = rep(pr[, 1], each = 100), b = rep(pr[, 2], each = 100),
+                judge = sample(sprintf("J\%02d", 1:20), 600, TRUE))
+shift <- ifelse(d$judge \%in\% sprintf("J\%02d", 1:10) & d$a == "C", 0.9,
+         ifelse(d$judge \%in\% sprintf("J\%02d", 1:10) & d$b == "C", -0.9, 0))
 p <- plogis(beta[d$a] - beta[d$b] + shift)
 d$win <- ifelse(runif(nrow(d)) < p, d$a, d$b)
 f <- btl(d, "a", "b", winner = "win", judge = "judge")
-grp <- setNames(rep(c("g1", "g2"), each = 6), sprintf("J\%02d", 1:12))
+grp <- setNames(rep(c("g1", "g2"), each = 10), sprintf("J\%02d", 1:20))
 btl_dif(f, grp, objects = "C")
 }
 \references{
@@ -116,4 +120,8 @@ Andrich, D., & Hagquist, C. (2012). Real and artificial
   Modelling the effect of subject-specific covariates in paired
   comparison studies with an application to university rankings.
   \emph{Journal of the Royal Statistical Society C}, 47(4), 511-525.
+
+  MacKinnon, J. G., & White, H. (1985). Some heteroskedasticity-consistent
+  covariance matrix estimators with improved finite sample properties.
+  \emph{Journal of Econometrics}, 29(3), 305--325.
 }

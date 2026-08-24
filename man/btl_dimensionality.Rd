@@ -2,9 +2,9 @@
 % Please edit documentation in R/btl-independence.R
 \name{btl_dimensionality}
 \alias{btl_dimensionality}
-\title{Residual dimensionality of paired comparisons}
+\title{Experimental residual dimensionality of paired comparisons}
 \usage{
-btl_dimensionality(fit, reps = 50L)
+btl_dimensionality(fit, reps = 200L)
 }
 \arguments{
 \item{fit}{A paired-comparison fit from \code{\link{btl}}.}
@@ -21,36 +21,24 @@ A list of class \code{"rasch_btl_dim"}: \code{bimensions} (per
   its reference); \code{residual_matrix}; and \code{notes}.
 }
 \description{
-The residual-PCA analogue for paired comparisons. The fitted model predicts
-how often each object should beat each other from their locations; the
-object-by-object matrix of departures from that prediction (on the
-log-odds scale) is \emph{skew-symmetric}, so its structure decomposes into
-rotational planes -- Gower's (1977) bimensions -- rather than the ordinary
-components of a symmetric residual-correlation matrix. A dominant leading
-bimension is a coherent \dQuote{swirl} in the residuals (A over-beats B, B
-over-beats C, C over-beats A): a second attribute steering some contests. A
-flat spectrum is noise: the single scale suffices. The leading bimension is
-judged against a reference built by simulating unidimensional data from the
-fitted model with the observed pair counts (a parametric bootstrap, as in
-\code{\link{plot_scree}}); an observed strength above the reference is
-structure the one-dimensional model does not explain. For graded fits the
-residual log-odds are taken on the points-proportion scale, whose model
-mean is not exactly \code{plogis(beta_i - beta_j)}; the simulated reference
-carries the same construction, so the test stays calibrated (verified
-mildly conservative on model-true graded data) rather than anticonservative.
-Likewise, when the fit carries within-judge dependence effects
-(\code{order}), the reference is simulated sequentially through each
-judge's comparisons WITH the fitted exposure and carry-over coefficients:
-order effects push the marginal pair rates around in a structured way, and
-a reference without them would read that structure as a second attribute.
-The price is power: carry-over and a judge-camp second attribute are
-partially confounded (both appear as consistent within-judge deviation),
-so with \code{order} modelled the test is conservative about attributing
-the ambiguous share to a second dimension.
-The reference simulates from the point estimates without refitting each
-replicate, so it carries sampling noise in the responses but not
-estimation noise in the parameters -- adequate for the screening use
-here, slightly liberal in tiny designs.
+Decomposes the skew-symmetric matrix of observed-minus-expected pair
+log-odds into Gower's (1977) rotational planes, or bimensions. A large
+leading bimension indicates a structured cycle in the residual comparisons.
+Its strength is compared with simulations from the fitted one-dimensional
+model using the observed comparison counts.
+}
+\details{
+This is an experimental diagnostic. The reference is conditional on the
+fitted point estimates because the model is not re-estimated in each
+replicate. Ordered-response fits use the same points-proportion residual in
+the data and simulations. Fits with exposure or carry-over effects simulate
+those effects through each judge's observed sequence. The fitted model must
+have converged.
+
+A categorical result is withheld if any object pair is unobserved. It is
+also withheld when every judge receives essentially the same comparison
+sequence and an order effect is fitted, because order and residual structure
+are then confounded.
 }
 \examples{
 set.seed(1); objs <- LETTERS[1:6]; beta <- setNames(seq(-1.5, 1.5, len = 6), objs)

@@ -20,6 +20,7 @@ test_that("targeting plots render for dichotomous and polytomous fits", {
   pdf(NULL); on.exit(dev.off())
   expect_no_error(plot_pimap(f))
   expect_no_error(plot_pimap(fp, bins = 15, xlim = c(-2, 2)))
+  expect_no_error(plot_pimap(f, information = TRUE))
   expect_no_error(plot_wright(f))
   expect_no_error(plot_wright(fp, bins = 20, xlim = c(-3, 3)))
   # a scale range excluding some persons and thresholds still renders
@@ -27,6 +28,22 @@ test_that("targeting plots render for dichotomous and polytomous fits", {
   expect_no_error(plot_pimap(f, xlim = c(-1, 1)))
   # class-interval and grid-range controls on the expected value curve
   expect_no_error(plot_icc(fp, "P03", n_groups = 8, grid = seq(-3, 3, 0.05)))
+  # multi-item overlays use a common proportional score scale and may omit
+  # the observed class-interval points
+  expect_no_error(plot_icc(fp, c("P01", "P03", "P05"), observed = TRUE))
+  expect_no_error(plot_icc(fp, c(1, 2), observed = FALSE))
+})
+
+test_that("the default person-item scale labels beyond every estimate", {
+  s <- rasch:::.pimap_scale(c(-4.2, 3.3))
+  expect_lte(s$range[1], -4.2)
+  expect_gte(s$range[2], 3.3)
+  expect_equal(range(s$ticks), s$range)
+  expect_gt(max(s$ticks), 3.3)
+
+  fixed <- rasch:::.pimap_scale(c(-4.2, 3.3), c(-3.5, 2.5))
+  expect_equal(fixed$range, c(-3.5, 2.5))
+  expect_true(all(fixed$ticks >= -3.5 & fixed$ticks <= 2.5))
 })
 
 test_that("the kidmap and batch savers work, and Q3 pairs are complete", {
@@ -37,6 +54,7 @@ test_that("the kidmap and batch savers work, and Q3 pairs are complete", {
   f <- rasch(X)
 
   pdf(NULL); on.exit(dev.off())
+  expect_error(plot_icc(f, f$items$item[1:9]), "At most eight")
   expect_no_error(plot_kidmap(f, person = 1))
   expect_no_error(plot_kidmap(f, person = 2, level = 0.9, xlim = c(-3, 3)))
   expect_error(plot_kidmap(f, person = "no-such-id"), "not found")
@@ -73,6 +91,8 @@ test_that("the DIF overlay accepts one or several nominated factor names", {
   expect_no_error(plot_icc(f, "I2", group = c("group", "sex")))
   # a raw person vector still works
   expect_no_error(plot_icc(f, "I2", group = s))
+  expect_error(plot_icc(f, c("I1", "I2"), group = s),
+               "single item")
 })
 
 test_that("residual components beyond the first can be inspected and tested", {
@@ -87,8 +107,10 @@ test_that("residual components beyond the first can be inspected and tested", {
   expect_no_error(plot_pca(f, component = 3))
   expect_error(plot_pca(f, component = 99), "not available")
   # the t-test default split follows the chosen component
-  expect_match(dimensionality_test(f, component = 1)$split, "component 1")
-  expect_match(dimensionality_test(f, component = 2)$split, "component 2")
+  expect_match(dimensionality_test(f, component = 1, min_score_points = 2)$split,
+               "component 1")
+  expect_match(dimensionality_test(f, component = 2, min_score_points = 2)$split,
+               "component 2")
 })
 
 test_that("residual dependence displays generalise to MFRM and EFRM fits", {
@@ -98,8 +120,13 @@ test_that("residual dependence displays generalise to MFRM and EFRM fits", {
   d <- seq(-1.5, 1.5, length.out = L)
   X <- matrix(rbinom(Np * L, 1, plogis(outer(rnorm(Np), d, "-"))), Np, L)
   colnames(X) <- sprintf("I%02d", 1:L)
-  mf <- rasch_mfrm(data.frame(person = seq_len(Np), X,
-                              rater = sample(c("A", "B"), Np, TRUE),
+  # each person appears under BOTH raters: a nested one-rater-per-person
+  # design leaves severity confounded with the person blocks and is now
+  # (correctly) refused by the connectivity check
+  X2 <- matrix(rbinom(Np * L, 1, plogis(outer(rnorm(Np), d, "-"))), Np, L)
+  colnames(X2) <- colnames(X)
+  mf <- rasch_mfrm(data.frame(person = rep(seq_len(Np), 2), rbind(X, X2),
+                              rater = rep(c("A", "B"), each = Np),
                               check.names = FALSE),
                    person = "person", facets = "rater", items = colnames(X))
   expect_false(is.null(mf$residuals))
@@ -109,6 +136,12 @@ test_that("residual dependence displays generalise to MFRM and EFRM fits", {
   expect_no_error(plot_pca_biplot(mf))
   expect_no_error(plot_resid_cor(mf, stat = "q3"))
   expect_no_error(plot_resid_cor(mf, stat = "q3star"))
+  mi <- test_information(mf, grid = c(-1, 0, 1))
+  expect_true("design" %in% names(mi))
+  expect_equal(length(unique(mi$design)), 1L)
+  expect_match(unique(mi$design), "rater=A.*rater=B")
+  expect_no_error(plot_tif(mf, grid = c(-1, 0, 1)))
+  expect_no_error(plot_tcc(mf, grid = c(-1, 0, 1)))
 
   # EFRM: one item set, two groups differing in discrimination so the sets link
   set.seed(12); per_g <- 300; glev <- c("G1", "G2")
@@ -120,6 +153,11 @@ test_that("residual dependence displays generalise to MFRM and EFRM fits", {
   ef <- rasch_efrm(data.frame(XE, g = grp),
                    item_sets = list(core = colnames(XE)), groups = "g")
   expect_false(is.null(ef$residuals))
-  expect_no_error(plot_pca_biplot(ef))
+  expect_error(plot_pca_biplot(ef), "no respondents in common")
   expect_no_error(plot_resid_cor(ef))
+  ei <- test_information(ef, grid = c(-1, 0, 1))
+  expect_equal(length(unique(ei$design)), 2L)
+  expect_equal(nrow(ei), 6L)
+  expect_no_error(plot_tif(ef, grid = c(-1, 0, 1)))
+  expect_no_error(plot_tcc(ef, grid = c(-1, 0, 1)))
 })

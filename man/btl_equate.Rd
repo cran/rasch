@@ -4,19 +4,34 @@
 \alias{btl_equate}
 \title{Equate two paired-comparison calibrations through their common objects}
 \usage{
-btl_equate(fit1, fit2, alpha = 0.05, p_adjust = "holm")
+btl_equate(fit1, fit2, alpha = 0.05, p_adjust = "holm", independent = NULL)
 }
 \arguments{
 \item{fit1}{A fitted object from \code{\link{btl}}: the calibration whose
 scale (origin) the equating targets.}
 
 \item{fit2}{A second \code{\link{btl}} fit, or a bank: a data frame with
-columns \code{object}, \code{location}, and optionally \code{se}.}
+columns \code{object}, \code{location}, and optionally \code{se}; object
+names must be unique and locations finite. Bank-based drift inference
+requires the joint location covariance as a square matrix in
+\code{attr(fit2, "cov_location")}, ordered like the bank rows (or named by
+object), unless the bank is treated as fixed with zero SEs. A bank whose
+covariance was estimated from a finite number of independent sampling
+units may carry their residual degrees of freedom in
+\code{attr(fit2, "df_location")}. For a polytomous
+fit the bank must carry
+\code{attr(bank, "m")} matching the number of fitted score steps.}
 
 \item{alpha}{Significance level for the (multiplicity-adjusted) drift tests.}
 
-\item{p_adjust}{Multiple-comparison adjustment across the common objects,
-passed to \code{\link[stats]{p.adjust}} (default \code{"holm"}).}
+\item{p_adjust}{Adjustment for the common-object tests, passed to
+\code{stats::p.adjust}. The default is \code{"holm"}.}
+
+\item{independent}{Whether the calibrations have independent judges and
+comparisons. For two fitted objects the default \code{NULL} withholds
+drift tests until independence is stated explicitly. Bank tables are
+treated as independent unless \code{FALSE} is supplied. Dependent
+calibrations require a joint or paired bootstrap for inference.}
 }
 \value{
 A list of class \code{"rasch_btl_equate"}: the comparison
@@ -26,38 +41,29 @@ A list of class \code{"rasch_btl_equate"}: the comparison
   \code{p}, and the \code{drifting} flag); the estimated \code{shift} and
   its \code{shift_se}; \code{equated}, the second calibration's full object
   table re-expressed on \code{fit1}'s scale; the number of common objects
-  \code{n_common}; \code{alpha}; \code{p_adjust}; and \code{notes}.
+  \code{n_common}; the number usable for inference \code{n_inference};
+  whether inference was available \code{inferential}; \code{alpha};
+  \code{p_adjust}; and \code{notes}.
 }
 \description{
-Compares the object locations of a Bradley-Terry-Luce fit with those of a
-second fit (or a banked table of object locations), matched by object name.
-The use case is standards maintenance and comparative judgement across
-panels or years: the same scripts, performances, or products are judged by
-different panels -- or by one panel in successive years -- and a common set
-of anchor objects is carried through so that the two rounds land on a single
-scale.
+Places two Bradley--Terry--Luce calibrations on a common origin using their
+shared objects, then tests the shared objects for drift. The second
+calibration may be a fitted model or an object bank.
 }
 \details{
-Each calibration is identified by the sum-zero constraint, but the two
-constraints are imposed over \emph{different} object sets, so the origins do
-not coincide even when the shared objects are unchanged: each scale is
-centred on the mean of a different collection. A scale shift between the two
-origins is therefore estimated by the precision-weighted mean difference
-over the common objects, and each common object is then tested against the
-shifted identity line. A flagged object shows drift -- a script the two
-panels valued differently, or a standard that moved between years -- and
-weakens the equating link; the surviving objects carry the second
-calibration's whole scale onto the first (\code{loc2 + shift}).
+Let \eqn{d_j} be the location difference for common object \eqn{j} and
+\eqn{v_j} its marginal variance. The origin shift is the precision-weighted
+mean
+\deqn{\hat s=\frac{\sum_j d_j/v_j}{\sum_j 1/v_j}.}
+Each object is tested using its shifted difference \eqn{d_j-\hat s}. The
+covariance calculation retains the dependence induced by the sum-zero
+constraints. Drift tests require independent calibrations and at least
+three common objects with usable covariance information.
 
-The single shift presumes the drifting objects are a \emph{minority}. When
-most of the common objects have genuinely moved, the precision-weighted
-shift is pulled toward the movers and the drift tests can invert -- the
-stable anchors flag as the apparent drifters. Read wholesale flagging
-(several objects, one direction) as a contaminated link, not as evidence
-about the individual objects; equate through a vetted anchor subset
-instead. The \code{shift_se} accounts for the covariance of the location
-estimates within each calibration (each is sum-zero constrained, so its
-locations are not independent).
+The common-object set should contain a stable majority. If most common
+objects move in the same direction, the estimated shift follows them and
+stable objects can appear to drift. In that case, repeat the equating with a
+substantively justified anchor set.
 }
 \examples{
 set.seed(1)
@@ -68,7 +74,8 @@ sim <- function(objs) {
   d$win <- ifelse(runif(nrow(d)) < plogis(beta[d$a] - beta[d$b]), d$a, d$b)
   btl(d, "a", "b", "win")
 }
-eq <- btl_equate(sim(paste0("O", 1:7)), sim(paste0("O", 2:8)))
+eq <- btl_equate(sim(paste0("O", 1:7)), sim(paste0("O", 2:8)),
+                  independent = TRUE)
 eq$table
 }
 \references{

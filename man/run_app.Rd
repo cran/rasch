@@ -2,7 +2,7 @@
 % Please edit documentation in R/app.R
 \name{run_app}
 \alias{run_app}
-\title{Launch the rasch graphical interface}
+\title{Launch the rasch point-and-click graphical interface}
 \usage{
 run_app(...)
 }
@@ -13,9 +13,17 @@ run_app(...)
 Called for its side effect of launching the app.
 }
 \description{
-Opens the Shiny application: data upload with ID, person-factor, and item
-column nomination; the full analysis; interactive tables and
-plots; and one-click export of every table and plot.
+Opens the Shiny application for fitting models and examining their tables,
+plots and diagnostics. The R code for each result is available in the app.
+Analyses can be saved and reopened, or exported as HTML, Word or PDF
+reports.
+}
+\details{
+The app's interface packages ('shiny', 'bslib', 'DT', 'bsicons', and
+'callr' for cancellable EFRM estimation) are suggested rather than
+required by the package. If any are missing,
+\code{run_app} lists them all and, in an interactive session, offers to
+install them before launching.
 }
 \examples{
 if (interactive()) run_app()

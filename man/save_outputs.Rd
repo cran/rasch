@@ -2,7 +2,7 @@
 % Please edit documentation in R/export.R
 \name{save_outputs}
 \alias{save_outputs}
-\title{Save every output of a Rasch analysis to a folder}
+\title{Save the outputs of a Rasch analysis}
 \usage{
 save_outputs(
   fit,
@@ -23,7 +23,7 @@ save_outputs(
 
 \item{width, height}{Plot size in inches.}
 
-\item{dpi}{PNG resolution; the default 300 is publication quality.}
+\item{dpi}{PNG resolution.}
 
 \item{item_plots}{Also write the per-item plot set (one ICC, category curve,
 threshold curve, and frequency chart per item).}
@@ -32,12 +32,10 @@ threshold curve, and frequency chart per item).}
 Invisibly, the vector of files written.
 }
 \description{
-Writes all tables (item statistics, thresholds with standard errors, person
-estimates including ID and factors, the score-to-measure table, residual
-correlations, principal-component loadings, category frequencies, and DIF
-results for every nominated factor) as CSV; every plot, including the
-per-item characteristic, category, threshold, and frequency plots, as PNG
-and optionally PDF; and a plain-text analysis summary.
+Writes the summary, estimates, diagnostic tables, person measures, and
+model-specific results as CSV. Plots are written as PNG and, optionally,
+PDF, together with a plain-text analysis summary. For MFRM and EFRM fits,
+item estimates and response-cell diagnostics are saved separately.
 }
 \examples{
 set.seed(1)

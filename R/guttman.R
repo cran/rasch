@@ -11,15 +11,22 @@
 
 #' Guttman-ordered response matrix and reproducibility
 #'
-#' Orders persons by location (descending) and items by location (ascending),
-#' the Guttman scalogram arrangement, and computes the coefficient of
-#' reproducibility against the deterministic Guttman pattern implied by each
-#' person's total score.
+#' Orders persons by descending location and dichotomous items by ascending
+#' location (the Guttman scalogram arrangement), computing the
+#' reproducibility coefficient against the deterministic pattern implied by each
+#' person's total score. PCM category steps can interleave across items, so
+#' polytomous fits are rejected rather than forced into an invalid whole-item
+#' deterministic order.
 #'
-#' @param fit A fitted object from \code{\link{rasch}}.
+#' @param fit A fitted object from \code{\link{rasch}} whose columns form one
+#'   administered item set. Expanded EFRM and MFRM response-cell matrices are
+#'   not accepted; one-cell-per-item reductions are.
 #' @return A list with the ordered score matrix \code{matrix} (persons by
 #'   items, row and column names carrying the ID and item labels), the person
 #'   and item orderings, and the coefficient of reproducibility \code{CR}.
+#' @references
+#' Guttman, L. (1944). A basis for scaling qualitative data. American
+#' Sociological Review, 9(2), 139--150.
 #' @examples
 #' set.seed(1)
 #' d <- seq(-2, 2, length.out = 6)
@@ -28,13 +35,31 @@
 #' guttman_table(rasch(X))$CR
 #' @export
 guttman_table <- function(fit) {
+  if (!inherits(fit, "rasch")) stop("guttman_table needs a rasch fit")
+  structural <- inherits(fit, c("rasch_efrm", "rasch_mfrm"))
+  if (!.classical_design_applicable(fit))
+    stop("the whole-item scalogram is not defined when an item is ",
+         "represented by several frame or facet response cells; construct ",
+         "it for one observable item design instead")
   X <- fit$X; m <- fit$m
+  if (structural) {
+    item_names <- fit$virtual_map$item[
+      match(colnames(X), fit$virtual_map$vkey)]
+    if (anyNA(item_names) || anyDuplicated(item_names))
+      stop("the one-cell-per-item reduction could not be matched to its ",
+           "item names")
+    colnames(X) <- item_names
+  }
+  if (any(m != 1L))
+    stop("guttman_table currently supports dichotomous items only; ",
+         "polytomous category steps can interleave and require a step-level ",
+         "scalogram")
   th <- fit$person$theta
   porder <- order(th, fit$person$raw, decreasing = TRUE)
   iorder <- order(fit$items$location)
   G <- X[porder, iorder, drop = FALSE]
   rownames(G) <- as.character(fit$person$id)[porder]
-  colnames(G) <- fit$items$item[iorder]
+  colnames(G) <- colnames(X)[iorder]
 
   # coefficient of reproducibility: 1 - errors / responses, where the
   # error count compares each observed score with the deterministic pattern
@@ -57,8 +82,8 @@ guttman_table <- function(fit) {
 
 #' Plot the Guttman scalogram
 #'
-#' Displays the Guttman-ordered response matrix as a heatmap (dark for high
-#' categories), with persons sorted by location down the rows and items by
+#' Displays the dichotomous Guttman-ordered response matrix as a heatmap (dark
+#' for a score of one), with persons sorted by location down the rows and items by
 #' location across the columns. The coefficient of reproducibility is shown in
 #' the subtitle.
 #'
@@ -74,6 +99,10 @@ guttman_table <- function(fit) {
 #' plot_guttman(rasch(X))
 #' @export
 plot_guttman <- function(fit, max_persons = 80) {
+  if (length(max_persons) != 1L || !is.finite(max_persons) ||
+      max_persons < 1L || max_persons != floor(max_persons))
+    stop("max_persons must be one positive whole number")
+  max_persons <- as.integer(max_persons)
   g <- guttman_table(fit); G <- g$matrix; m <- max(fit$m)
   N <- nrow(G)
   if (N > max_persons) G <- G[round(seq(1, N, length.out = max_persons)), , drop = FALSE]

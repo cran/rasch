@@ -18,7 +18,11 @@ rasch_efrm(
   tol = 1e-07,
   min_link_persons = 30,
   se_method = c("hybrid", "bootstrap"),
-  boot_reps = NULL
+  boot_reps = NULL,
+  progress = NULL,
+  cancel = NULL,
+  workers = 4L,
+  seed = NULL
 )
 }
 \arguments{
@@ -30,10 +34,18 @@ a named character vector mapping item names to set names. Items not
 mentioned form their own set \code{"(rest)"} when a list is given.}
 
 \item{groups}{Name of the person-group column in \code{data}, or a vector
-with one entry per person.}
+with one entry per person.
+Several columns define crossed group cells. Their units are returned in
+\code{phi_table}; \code{phi_factorial} and
+\code{phi_factorial_tests} contain the GLS factorial decomposition and
+omnibus Wald tests. Structurally unidentified units are refused. Very
+imprecise but identified units are retained with a warning.}
 
-\item{id, factors, items, n_groups, adjust_N, na_codes}{As in
-\code{\link{rasch}}.}
+\item{id}{Person identifier, either a column name or one value per row.
+EFRM data require one response row per person, so identifiers must be
+unique.}
+
+\item{factors, items, n_groups, adjust_N, na_codes}{As in \code{\link{rasch}}.}
 
 \item{maxit, tol}{Outer iteration cap and convergence tolerance of the
 bilinear pairwise stage.}
@@ -42,115 +54,103 @@ bilinear pairwise stage.}
 set pair to contribute to the unit linking.}
 
 \item{se_method}{\code{"hybrid"} (sandwich + linking bootstrap + delta
-propagation; fast, default) or \code{"bootstrap"} (full person
+propagation; default) or \code{"bootstrap"} (full person
 bootstrap of all stages).}
 
 \item{boot_reps}{Bootstrap replicates; defaults to 300 for the linking
-bootstrap and 200 for the full bootstrap.}
+bootstrap and 200 for the full bootstrap. Use zero to omit unit
+uncertainty; otherwise at least 30 are required.}
+
+\item{progress}{Optional function called as \code{progress(stage, current,
+total)} during long uncertainty calculations. It is intended for
+interfaces and batch logging and does not alter estimation.}
+
+\item{cancel}{Optional zero-argument function checked between bootstrap
+batches. Returning \code{TRUE} stops with a \code{rasch_cancelled}
+condition. A serial fit uses one replicate per batch.}
+
+\item{workers}{Number of parallel bootstrap workers. The default is four,
+reduced when fewer physical cores are available or the R process has a
+lower system limit. Random samples are generated before distribution, so
+a fixed seed gives the same result for any worker count. Every worker
+holds its own copy of the bootstrap state.}
+
+\item{seed}{Optional bootstrap seed. The caller's random-number state is
+restored when estimation finishes.}
 }
 \value{
-An object of classes \code{"rasch_efrm"} and \code{"rasch"}. In
-  addition to the standard components (computed over item-by-group
-  virtual columns with the frame units carried in \code{disc}), it has
-  \code{frames} (one row per frame: units, origin, pooled fit),
-  \code{phi_table}, \code{alpha_table}, \code{set_table},
-  \code{item_arbitrary} and \code{thresholds_arbitrary} (the structural
-  parameters in the common unit), \code{score_curves} (per-group
-  score-to-measure curves, replacing the raw-score table),
-  \code{efrm_vs_rasch} (fit comparison against the equal-unit model on
-  the same conditional information), and \code{linking} (the linking
-  evidence).
+An object of classes \code{"rasch_efrm"} and \code{"rasch"}.
+  Model-specific components include \code{frames}, \code{phi_table},
+  \code{alpha_table}, \code{set_table}, common-unit item and threshold
+  tables, group-specific \code{score_curves}, \code{efrm_vs_rasch}, and
+  \code{linking}, and the person support used for unit inference in
+  \code{unit_support}. See the extended frame of reference vignette for
+  their interpretation.
 }
 \description{
-Estimates Humphry's extended frame of reference model, in which the unit
-of the latent scale differs across frames (item-set by person-group
-cells): the response model is
-\code{P(X = x) prop exp(rho_sg (x theta - sum delta))} with
-\code{rho_sg = alpha_s phi_g}. Within frames the partial credit model
-holds in the frame's natural unit, so item thresholds and the person
-group units \code{phi} are estimated by within-frame pairwise conditional
-maximum likelihood (the person parameter cancels; Andrich and Luo 2003),
-jointly across frames through the sets shared by several groups. Item-set
-units \code{alpha} and set locations are then estimated from persons
-common to pairs of sets, using error-corrected true-score variances, and
-reconciled over the linking graph by weighted least squares. Everything
-is reported in a common arbitrary unit, and the returned object is also a
-full \code{\link{rasch}} fit at the item-by-group level, so the package's
-diagnostic tables and plots apply.
+Fits Humphry's extended frame of reference model, in which the unit can
+differ across item-set by person-group frames. For item \eqn{i} in set
+\eqn{s} and person \eqn{n} in group \eqn{g},
+\deqn{P(X_{ni}=x)=\frac{\exp\{\rho_{sg}[x\theta_n-
+  \sum_{k=1}^{x}\delta_{ik}]\}}
+  {\sum_{y=0}^{m_i}\exp\{\rho_{sg}[y\theta_n-
+  \sum_{k=1}^{y}\delta_{ik}]\}},\qquad
+  \rho_{sg}=\alpha_s\phi_g.}
 }
 \details{
-Humphry (2005) states the model for dichotomous responses. The polytomous
-form fitted here, with the frame unit multiplying the whole exponent over
-the item's partial-credit thresholds, is this package's extension of that
-statement. It is the form characterised by preserving the two properties
-the model's logic rests on: the partial credit model holds within every
-frame in the frame's natural unit (so the pairwise conditional
-cancellation remains valid), and the weighted score remains sufficient
-for the person parameter. It reduces exactly to the dichotomous model
-when items are scored 0/1 and to the ordinary partial credit model when
-all units equal one. One interpretive consequence: category widths in
-natural units scale with the frame unit, so a high-unit frame makes
-proportionally sharper category distinctions; frame-level fit and the
-per-frame category curves are where a violation of this would appear.
+The partial credit model holds within each frame in its natural unit.
+Person-group units \eqn{\phi_g} are identified from common item thresholds
+across groups. Item sets partition the items, so set units \eqn{\alpha_s}
+are identified instead from persons observed in more than one set. The
+set-linking graph and the group-by-set frame graph must each connect to a
+common scale.
 
-Estimation order: the within-frame pairwise stage establishes the
-centred set thresholds and the person-group units \code{phi}; the
-person-side linking stage then establishes the item-set units
-\code{alpha} and set locations. The reported item parameters and all
-person measures are computed only after every unit is established: item
-thresholds are mapped into the common arbitrary unit using \code{alpha}
-and the set locations, and person measures are weighted-score weighted
-likelihood estimates evaluated under the final units
-\code{rho = alpha * phi}. The per-frame person estimates used inside the
-linking stage are interim quantities for the unit ratios only and are
-discarded. The within-frame stage needs no re-estimation once
-\code{alpha} is known, because the pairwise likelihood is invariant to
-the within-set rescaling that \code{alpha} represents; the units' own
-uncertainty is reported in \code{alpha_table} and \code{phi_table} and
-folded into the common-unit standard errors as described below.
+Set units use a semiparametric likelihood for persons observed in each
+linked pair of sets. For sets \eqn{a} and \eqn{b}, it maximises
+\deqn{\prod_n\int P(X_{na}\mid u)P(X_{nb}\mid ru+c)\,dF_{g(n)}(u),}
+where the masses of each observed group's \eqn{F_g}, the scale ratio
+\eqn{r} and the offset \eqn{c} are estimated jointly on a fixed grid. This
+avoids prescribing a normal or common person distribution across groups.
+The conditional thresholds and group units are held fixed in this step;
+only \eqn{r}, \eqn{c}, and the nuisance masses are estimated. The linked
+parameters are then
+\deqn{\delta_{ik}=\widetilde\delta_{ik}/\alpha_s+\mu_s,
+\qquad \rho_{sg}=\alpha_s\phi_g.}
+Score moments supply starting values and screen weak links. Response
+patterns must span a score range of at least four within a set. Overlapping
+item sets are not permitted. The public
+convergence flag covers both estimation stages; \code{stage1_converged}
+records the conditional stage separately.
 
-Standard errors: under \code{se_method = "hybrid"} (default) the group
-units carry sandwich standard errors from the pairwise stage, the set
-units carry person-bootstrap standard errors from the linking stage, and
-the unit uncertainty is propagated into the common-unit threshold and
-item standard errors by the delta method (treating the item-side and
-person-side information as independent). Under
-\code{se_method = "bootstrap"} all stages are re-estimated on
-\code{boot_reps} person resamples and every standard error and the
-threshold covariance come from the replicate spread; slower, but captures
-all cross-dependencies jointly.
+The hybrid covariance combines the pairwise Godambe covariance with a
+person bootstrap for set linking. Each replicate jointly redraws the
+within-frame thresholds and group units, then rebuilds the link. The joint
+draws retain covariance among common-scale thresholds, set units and group
+units. With \code{se_method = "bootstrap"}, the complete model is refitted
+to each person resample.
 
-Relation to Humphry (2005, sections 5.3 and 5.4): the two-stage
-architecture implemented here operationalises the estimation approach
-proposed in section 5.3 of the thesis (conditional estimation within
-frames, with the item-set units obtained through person estimates from
-linked sets), and retains the thesis's error-variance correction (its
-equation 2.29, after Andrich 1982) and its transformation of standard
-errors into the common unit by the inverse discrimination. The standard
-errors themselves go further than the thesis's section 5.4, which inverts
-each diagonal element of the joint-likelihood information separately and
-therefore conditions on the remaining parameters, including the person
-locations, being treated as known. Here full covariance matrices are used
-throughout; the item-side covariance carries the Godambe sandwich
-correction required for a pairwise composite likelihood; the unit
-uncertainty that the thesis's transformation treats as fixed is
-propagated into the common-unit parameters; and resampling replaces
-analytic plug-in variances for the person-side linking stage.
+The \code{efrm_vs_rasch} component records the within-frame composite
+log-likelihood comparison between group-dependent and equal group units.
+This difference is descriptive and contains no information about set units,
+which are identified at the linking stage. The accompanying Wald omnibus
+tests provide inference for the group- and set-unit families. Unit estimates
+are retained for sparse designs, but probabilities require at least 50
+persons or effective persons in every group and at least 50 common persons
+on every set-link edge.
 
-Measurement-theoretic status: within every frame the model is strictly
-Rasch, with person-free item comparisons by conditioning. Across frames
-it is an argued extension of the theory of the unit (Humphry 2005;
-Humphry and Andrich 2008): on this account the unit was always a
-frame-dependent empirical property that the ordinary model leaves
-implicit, and the extension makes it explicit; the orthodox reading of
-Rasch measurement contests this, and applied reports should present it
-as an extension rather than settled doctrine. Two concessions are
-intrinsic to the model rather than to this implementation: the item-set
-units are identified only from the person side (their conditional
-identification is impossible, as documented above), so that step uses
-distributional information; and person measures rest on weighted-score
-sufficiency with estimated weights, whose uncertainty is propagated
-rather than ignored.
+The model assumes that an item retains its location and discrimination
+across the frames in which it appears, apart from the frame unit.
+\code{\link{frame_invariance}} examines this assumption by separate frame
+calibrations. Misfit concentrated within one item set can also distort its
+estimated unit; inspect item fit and targeting before interpreting unit
+differences. \code{\link{drop_items}} and \code{\link{resolve_frames}}
+provide refitted sensitivity analyses.
+
+The dichotomous model follows Humphry (2005) and Humphry and Andrich
+(2008). The polytomous, multigroup and crossed-frame forms are extensions
+implemented in this package. The discrete nonparametric margin follows the
+Rasch estimation approach of Follmann (1988); its use for linked item-set
+units is an extension implemented here.
 }
 \examples{
 \donttest{
@@ -160,11 +160,51 @@ simP <- function(th, tau, r) { x <- 0:length(tau)
 grp <- rep(c("A", "B"), each = Np / 2)
 phi <- c(A = 0.8, B = 1.25)
 d <- seq(-1.5, 1.5, length.out = 10)
+theta <- rnorm(Np)
 X <- sapply(seq_along(d), function(i) sapply(seq_len(Np), function(n)
-  sample(0:1, 1, prob = simP(rnorm(Np)[n], d[i], phi[grp[n]]))))
+  sample(0:1, 1, prob = simP(theta[n], d[i], phi[grp[n]]))))
 colnames(X) <- sprintf("I\%02d", seq_along(d))
 fit <- rasch_efrm(data.frame(X, grp = grp), item_sets = list(core = colnames(X)),
                   groups = "grp")
 fit$phi_table
 }
+}
+\references{
+Andrich, D. (1982). An extension of the Rasch model for ratings providing
+both location and dispersion parameters. Psychometrika, 47(1), 105--113.
+
+Andrich, D. and Luo, G. (2003). Conditional pairwise estimation in the
+Rasch model for ordered response categories using principal components.
+Journal of Applied Measurement, 4(3), 205--221.
+
+Andrich, D. and Marais, I. (2019). A Course in Rasch Measurement Theory:
+Measuring in the Educational, Social and Health Sciences. Springer.
+
+Follmann, D. (1988). Consistent estimation in the Rasch model based on
+nonparametric margins. Psychometrika, 53, 553--562.
+\doi{10.1007/BF02294407}
+
+Humphry, S. M. (2005). Maintaining a Common Arbitrary Unit in Social
+Measurement. PhD thesis, Murdoch University.
+
+Humphry, S. M. (2010). Modeling the effects of person group factors on
+discrimination. Educational and Psychological Measurement, 70(2),
+215--231.
+
+Humphry, S. M. (2012). Item set discrimination and the unit in the Rasch
+model. Journal of Applied Measurement, 13(2), 165--180.
+
+Montuoro, P. and Humphry, S. M. (2024). Modeling the effect of reading
+item clarity on item discrimination. Journal of Applied Measurement,
+24(3/4), 121--132.
+
+Humphry, S. M. and Andrich, D. (2008). Understanding the unit in the Rasch
+model. Journal of Applied Measurement, 9(3), 249--264.
+}
+\seealso{
+\code{\link{frame_invariance}}, which tests the item invariance
+  this model assumes rather than imposing it, and \code{\link{drop_items}},
+  which removes an item the test flags and refits. Also
+  \code{\link{rasch}}, \code{\link{rasch_mfrm}},
+  \code{\link{test_information}}, and \code{\link{simulate_efrm}}.
 }

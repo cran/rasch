@@ -8,28 +8,31 @@ dif_anova(
   fit,
   factors = NULL,
   n_groups = NULL,
-  p_adjust = "BH",
+  p_adjust = "holm",
   alpha = 0.05,
   effects = c("main", "factorial"),
   sizes = FALSE,
   id = NULL,
-  within = NULL
+  within = NULL,
+  pool_facets = TRUE
 )
 }
 \arguments{
-\item{fit}{A fitted object from \code{\link{rasch}}.}
+\item{fit}{A fitted object from \code{\link{rasch}},
+\code{\link{rasch_mfrm}}, or \code{\link{rasch_efrm}}.}
 
 \item{factors}{A vector (one factor), a data frame of person factors, or a
 character vector naming factor columns nominated in the fit. Defaults to
 every factor stored in the fit.}
 
-\item{n_groups}{Number of trait class intervals. By default set from
-the smallest factor-combination cell so every interval-by-cell count
-keeps about 30 expected responses (between 2 and 10 intervals); the
-value used is returned in \code{n_groups}.}
+\item{n_groups}{Number of trait class intervals. The default uses the
+smallest joint factor cell to retain about 30 expected responses per
+interval and cell, with between 2 and 10 intervals. The selected value is
+returned in \code{n_groups}.}
 
-\item{p_adjust}{Multiplicity adjustment across items within each term;
-default \code{"BH"}.}
+\item{p_adjust}{Multiplicity adjustment over all item-by-term tests;
+default \code{"holm"}. Use \code{"BH"} only for
+false-discovery-rate screening rather than familywise control.}
 
 \item{alpha}{Significance level applied to the adjusted probabilities.}
 
@@ -38,58 +41,83 @@ default \code{"BH"}.}
 factor-by-factor terms); \code{"factorial"} also crosses the factors
 with each other. Immaterial with a single factor.}
 
-\item{sizes}{Also compute DIF magnitudes in logits (\code{\link{dif_size}})
-for every significant, non-superseded group term: the item is resolved
-by the term's levels (interaction terms by their cells) and all
-pairwise location differences are returned with Holm familywise
-adjustment and the practical-significance flag. Each size involves a
-re-analysis, so this costs one refit per flagged item-term.}
+\item{sizes}{If \code{TRUE}, refit each flagged item-term and calculate
+pairwise DIF differences in logits using \code{\link{dif_size}}.}
 
-\item{id, within}{Person identifier and within-subject factor names for
-stacked repeated-measures designs. When any factor is within-subject the
-model becomes a mixed (split-plot) analysis of variance -- the class
-interval taken at the person level, the within factors carrying a person
-error stratum -- so their terms are tested validly. Auto-detected from
-the fit's person identifier.}
+\item{id}{Person identifier for stacked or repeated-measures data. It may
+be a column name stored in the fit or a vector with one value per row;
+by default the identifier carried by the fit is used.}
+
+\item{within}{Names of within-person factors. With repeated identifiers,
+varying factors are detected automatically when this is omitted. See
+Details for the mixed-design analysis.}
+
+\item{pool_facets}{For MFRM fits: pool residuals to the underlying
+items (the default), so DIF is tested per item rather than per
+item-by-facet cell; \code{FALSE} tests each cell as its own item.
+EFRM response cells are always pooled by item, so this argument does not
+alter EFRM fits. Ignored for ordinary fits.}
 }
 \value{
-A list with \code{summary}, the compact reading of the analysis
-  (one row per item and group term with the uniform F, adjusted p, and
-  partial eta-squared -- the term itself -- and the non-uniform ones --
-  the term crossed with class interval -- plus \code{uniform_DIF},
-  \code{nonuniform_DIF} and \code{superseded} flags); \code{terms},
-  the complete per-item analysis of
-  variance table (term, df, sum of squares, mean square, F, partial
-  eta-squared, raw and adjusted p, significance, supersession, including
-  the residual row);
-  and \code{tukey} (per item, term, and level comparison: difference,
-  95 per cent interval, and Tukey-adjusted p), plus the \code{alpha} and
-  adjustment used. Tukey comparisons are reported for significant,
-  non-superseded group terms except two-level main effects, where the
-  F test is already the only comparison. With \code{sizes = TRUE},
-  \code{sizes} holds the logit DIF magnitudes per item, term, and level
-  pair (two-level main effects included, since the single difference is
-  exactly the DIF size).
+A list with:
+\describe{
+  \item{\code{summary}}{One row per item and group term, containing the
+  uniform and non-uniform tests, partial eta-squared, adjusted
+  probabilities, DIF flags, and supersession flag.}
+  \item{\code{terms}}{The complete item-wise analysis-of-variance tables.}
+  \item{\code{sizes}}{When requested, pairwise logit differences for the
+  significant, non-superseded item-terms.}
+  \item{\code{posthoc}}{When \code{sizes = TRUE}, marginal pairwise
+  differences for main effects and difference-in-differences magnitudes
+  for interactions, calculated by \code{\link{dif_posthoc}}.}
+  \item{\code{between_covariance}}{The covariance reference used for
+  uniform between-person terms.}
+}
+The remaining components record the factors, class intervals, adjustment,
+significance level, and design settings.
 }
 \description{
-For each item the standardised residuals are analysed by the nominated
-person factor(s) crossed with the trait class interval. A term not
-involving the class interval is uniform DIF; a term crossing it is
-non-uniform DIF (Hagquist and Marais 2019, ch. 16). With one factor this
-is a one-way analysis, \code{z ~ g * ci}. With several factors they are
-modelled jointly -- the statistically correct treatment, rather than one
-factor at a time -- with main effects by default
-(\code{z ~ (f1 + f2 + ...) * ci}); set \code{effects = "factorial"} to add
-the factor-by-factor interactions (\code{z ~ (f1 * f2 * ...) * ci}). When
-interactions are fitted, a significant one supersedes the lower-order
-terms built from its variables, recorded in the \code{superseded} column;
-interpret the highest-order significant terms.
+Tests uniform and non-uniform DIF by analysing each item's standardised
+residuals over person factors and trait class intervals (Andrich and Marais
+2019, ch. 16). Several person factors are fitted jointly. The function also
+supports designs containing both between-person and within-person factors.
 }
 \details{
-Probabilities are adjusted across items within each term
-(Benjamini-Hochberg by default). Tukey HSD comparisons are returned for
-each significant, non-superseded group term. Sums of squares are
-sequential (factors in the order given, class interval last).
+With one factor \eqn{G} and class interval \eqn{C}, the residual model is
+\deqn{z=\mu+G+C+G\mathbin{:}C+\varepsilon.}
+The factor term tests uniform DIF and its interaction with class interval
+tests non-uniform DIF. With several factors, \code{effects = "main"} fits
+\code{(f1 + f2 + ...) * ci}; \code{effects = "factorial"} also includes
+factor-by-factor interactions. Type II sums of squares are used. The
+multiplicity adjustment covers all item-by-DIF-term tests, including both
+uniform and non-uniform DIF; the class-interval main effect is a nuisance
+term and is not included.
+
+When identifiers repeat, the person is the unit of analysis. Between-person
+terms use person means and the between-person error stratum. Within-person
+terms use orthonormal contrasts of person-by-cell means. A
+Greenhouse--Geisser correction is applied to within-person factors with
+more than two levels. Persons missing a required cell are excluded from the
+corresponding within-person test. In incomplete mixed designs, within-cell
+effects are removed before the between-person analysis. Uniform
+between-person factor terms use HC3 covariance so unequal group sizes,
+leverage, and differing precision of person means do not impose a common
+residual variance. Class-interval interactions retain the residual-ANOVA
+reference used to test non-uniform DIF.
+For between-person design matrix \eqn{X}, residuals \eqn{e_i}, and leverages
+\eqn{h_i},
+\deqn{\widehat{V}_{\mathrm{HC3}}=(X^{\mathsf T}X)^{-1}X^{\mathsf T}
+\operatorname{diag}\left\{\frac{e_i^2}{(1-h_i)^2}\right\}X
+(X^{\mathsf T}X)^{-1}.}
+
+A significant higher-order factor term supersedes its component terms in
+the summary. For EFRM fits, frame-defining factors are excluded because
+they define the model rather than a separate DIF contrast; testing such a
+factor means stepping outside the model, which is what
+\code{\link{frame_invariance}} does. MFRM residuals are pooled to
+underlying items unless \code{pool_facets = FALSE}. EFRM response cells
+are always pooled by item; the frame-defining factors remain excluded.
+Inference is available only from a converged calibration.
 }
 \examples{
 set.seed(1); n <- 800
@@ -101,4 +129,44 @@ X <- matrix(rbinom(n * 6, 1, plogis(outer(rnorm(n), d, "-") - sh)), n, 6)
 colnames(X) <- paste0("I", 1:6)
 fit <- rasch(data.frame(X, g1 = g1, g2 = g2), factors = c("g1", "g2"))
 dif_anova(fit)$summary
+
+\donttest{
+# Mixed design: group is between persons and occasion is within persons.
+N <- 320; theta <- rnorm(N); group <- rep(c("A", "B"), each = N / 2)
+make_wave <- function(occasion_shift) {
+  shift <- matrix(0, N, 6)
+  shift[group == "B", 2] <- 0.9
+  shift[, 5] <- occasion_shift
+  matrix(rbinom(N * 6, 1,
+         plogis(outer(theta, d, "-") - shift)), N, 6)
+}
+Xm <- rbind(make_wave(0), make_wave(1.0))
+colnames(Xm) <- paste0("I", 1:6)
+repeated <- data.frame(Xm, group = rep(group, 2),
+                       occasion = rep(c("T1", "T2"), each = N))
+mixed_fit <- rasch(repeated, id = rep(seq_len(N), 2),
+                   factors = c("group", "occasion"))
+mixed_dif <- dif_anova(mixed_fit, within = "occasion")
+subset(mixed_dif$summary, uniform_DIF | nonuniform_DIF)
+}
+}
+\references{
+Holm, S. (1979). A simple sequentially rejective multiple test procedure.
+Scandinavian Journal of Statistics, 6(2), 65--70.
+
+Hagquist, C. and Andrich, D. (2017). Recent advances in analysis of
+differential item functioning in health research using the Rasch model.
+Health and Quality of Life Outcomes, 15, 181.
+
+MacKinnon, J. G. and White, H. (1985). Some heteroskedasticity-consistent
+covariance matrix estimators with improved finite sample properties.
+Journal of Econometrics, 29(3), 305--325.
+
+Maxwell, S. E. and Delaney, H. D. (2004). Designing Experiments and
+Analyzing Data: A Model Comparison Perspective (2nd ed.). Lawrence Erlbaum.
+}
+\seealso{
+\code{\link{dif_size}}, \code{\link{dif_contrasts}}, and
+  \code{\link{resolve_dif}}; and \code{\link{frame_invariance}} for the
+  frame-defining factor this function excludes.
 }

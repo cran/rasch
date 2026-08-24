@@ -5,11 +5,11 @@
 # trait class interval: a factor main effect indicates uniform DIF and a
 # factor-by-interval interaction indicates non-uniform DIF. With several
 # person factors they are modelled jointly by dif_anova (main effects by
-# default, factor-by-factor interactions optional), with Tukey HSD
-# comparisons on the significant group terms and the convention that a
+# default, factor-by-factor interactions optional), with covariance-aware
+# logit contrasts on significant group terms and the convention that a
 # significant interaction supersedes the main effects of the factors
-# involved. Multiplicity across items is handled by Benjamini-Hochberg
-# false-discovery-rate adjustment.
+# involved. Multiplicity across items is handled by Holm familywise
+# adjustment.
 # ===========================================================================
 
 .dif_factors <- function(fit, factors) {
@@ -27,10 +27,15 @@
 # levels (or with the factor-combination cells in the factorial), so the
 # interval count is chosen to keep the smallest group's expected cell size
 # adequate -- independently of the interval count of the overall fit.
-.dif_n_groups <- function(fit, grp, cell_min = 30L) {
+.dif_n_groups <- function(fit, grp, cell_min = 30L, id = NULL) {
   ok <- !is.na(grp) & !is.na(fit$person$theta)
   if (!any(ok)) return(2L)
-  n_min <- min(table(droplevels(factor(grp[ok]))))
+  # with repeated ids the cells are counted in PERSONS, not rows: stacked
+  # or duplicated observations must not widen the interval rule
+  n_min <- if (!is.null(id))
+    min(tapply(as.character(id)[ok], droplevels(factor(grp[ok])),
+               function(v) length(unique(v))))
+  else min(table(droplevels(factor(grp[ok]))))
   max(2L, min(10L, as.integer(n_min) %/% as.integer(cell_min)))
 }
 
@@ -54,6 +59,225 @@
 
 # variables of an ANOVA term label, e.g. "g1:ci" -> c("g1", "ci")
 .term_vars <- function(term) strsplit(term, ":", fixed = TRUE)[[1]]
+
+# Formula terms are built from safe internal names. For display, quote a
+# literal factor name containing the interaction separator so a main effect
+# called "age:band" cannot be mistaken for the age-by-band interaction.
+.dif_term_label <- function(vars) {
+  z <- vapply(vars, function(v) {
+    if (grepl("[:`]", v)) paste0("`", gsub("`", "``", v, fixed = TRUE), "`")
+    else v
+  }, "")
+  paste(z, collapse = ":")
+}
+
+# ---------------------------------------------------------------------------
+# Order-invariant person-level DIF tests. Between-person terms get Type II
+# sums of squares on person-level residual means: each term is adjusted for
+# every term NOT containing it (so the class interval is always adjusted
+# out of every group test), with F against the full model's between-person
+# residual -- sequential (Type I) tests let a group factor absorb trait or
+# correlated-factor variance in unbalanced designs, flipping which factor
+# flags with entry order. Within-person terms are tested on person-by-cell
+# means through orthonormal contrasts with the Greenhouse-Geisser epsilon
+# correction (Maxwell & Delaney 2004): classical split-plot strata assume
+# sphericity, and a nonspherical 4-level null rejected at ~9% nominal 5%.
+# ---------------------------------------------------------------------------
+.dif_type2 <- function(d, term_labels, resp = "z",
+                       variance = c("classical", "hc3"), robust_terms = NULL) {
+  variance <- match.arg(variance)
+  mk <- function(tl) stats::as.formula(paste(
+    resp, "~", if (length(tl)) paste(tl, collapse = " + ") else "1"))
+  full <- tryCatch(stats::lm(mk(term_labels), data = d),
+                   error = function(e) NULL)
+  if (is.null(full)) return(NULL)
+  rss_full <- sum(stats::resid(full)^2)
+  df_res <- stats::df.residual(full)
+  if (df_res < 1 || rss_full <= 0) return(NULL)
+  mse <- rss_full / df_res
+  out <- list()
+  for (tt in term_labels) {
+    tv <- .term_vars(tt)
+    not_cont <- term_labels[!vapply(term_labels, function(u)
+      all(tv %in% .term_vars(u)), TRUE)]
+    m0 <- stats::lm(mk(not_cont), data = d)
+    m1 <- stats::lm(mk(c(not_cont, tt)), data = d)
+    df_t <- stats::df.residual(m0) - stats::df.residual(m1)
+    if (df_t < 1) next
+    ss_t <- max(sum(stats::resid(m0)^2) - sum(stats::resid(m1)^2), 0)
+    Fv <- (ss_t / df_t) / mse
+    p_t <- stats::pf(Fv, df_t, df_res, lower.tail = FALSE)
+    df_denom <- df_res
+    # Judge-level residual means can have very different precision when
+    # comparison workloads differ. HC3 retains the equal-judge estimand but
+    # does not impose a common residual variance. The robust Wald statistic is
+    # reported as an F with the model residual denominator; the separate
+    # cell-support guard below avoids presenting this small-sample
+    # approximation where a factor level has too few independent judges.
+    if (variance == "hc3" && (is.null(robust_terms) || tt %in% robust_terms)) {
+      Fv <- p_t <- NA_real_
+      X <- stats::model.matrix(m1)
+      asg <- attr(X, "assign")
+      labs <- attr(stats::terms(m1), "term.labels")
+      ti <- match(tt, labs)
+      jj <- which(asg == ti)
+      qrX <- qr(X)
+      if (length(jj) && qrX$rank == ncol(X)) {
+        Xi <- tryCatch(solve(crossprod(X)), error = function(e) NULL)
+        if (!is.null(Xi)) {
+          h <- pmin(stats::hatvalues(m1), 1 - 1e-8)
+          ae <- stats::residuals(m1) / pmax(1 - h, 1e-8)
+          meat <- crossprod(X * ae)
+          Vr <- Xi %*% meat %*% Xi
+          Vt <- Vr[jj, jj, drop = FALSE]
+          bt <- stats::coef(m1)[jj]
+          Wr <- tryCatch(drop(t(bt) %*% solve(Vt, bt)),
+                         error = function(e) NA_real_)
+          if (is.finite(Wr)) {
+            Fv <- Wr / length(jj)
+            p_t <- if (is.finite(df_denom) && df_denom > 0)
+              stats::pf(Fv, length(jj), df_denom, lower.tail = FALSE) else NA_real_
+          }
+        }
+      }
+    }
+    out[[length(out) + 1L]] <- data.frame(
+      term = tt, df = df_t, df_denom = df_denom, gg_epsilon = NA_real_,
+      sum_sq = ss_t, mean_sq = ss_t / df_t,
+      F_value = Fv, p = p_t,
+      resid_ss = rss_full, stringsAsFactors = FALSE)
+  }
+  if (!length(out)) return(NULL)
+  rbind(do.call(rbind, out),
+        data.frame(term = "Residuals", df = df_res, df_denom = NA_real_,
+                   gg_epsilon = NA_real_, sum_sq = rss_full,
+                   mean_sq = mse, F_value = NA_real_, p = NA_real_,
+                   resid_ss = NA_real_, stringsAsFactors = FALSE))
+}
+
+# Within-stratum tests on the person-by-within-cell mean matrix Y (complete
+# cases over cells). For a term pairing the within subspace (Kronecker
+# contrast matrix over the within factors) with a between portion, the
+# contrast scores S = Y C are tested by Type II model comparison of each
+# score column on the between design, pooled over columns, with df scaled
+# by the Greenhouse-Geisser epsilon of the residual score covariance.
+.dif_within_tests <- function(Y, pdat, wname, wlv, within_terms,
+                              bterms_all) {
+  n <- nrow(Y)
+  contr_of <- function(k) {
+    C <- stats::contr.helmert(k)
+    sweep(C, 2, sqrt(colSums(C^2)), "/")
+  }
+  meanvec_of <- function(k) matrix(1 / sqrt(k), k, 1)
+  mk <- function(tl, resp) stats::as.formula(paste(
+    resp, "~", if (length(tl)) paste(tl, collapse = " + ") else "1"))
+  out <- list(); resid_pool <- 0; resid_df <- 0
+  na_row <- function(tt) data.frame(
+    term = tt, df = NA_real_, df_denom = NA_real_, gg_epsilon = NA_real_,
+    sum_sq = NA_real_, mean_sq = NA_real_, F_value = NA_real_, p = NA_real_,
+    resid_ss = NA_real_, stringsAsFactors = FALSE)
+  # between design for the scores: only terms whose factors survive the
+  # complete-panel filtering with at least two levels (a group observed at
+  # a single occasion pattern can lose every complete panel; its
+  # interactions are then non-estimable and are reported NA rather than
+  # crashing lm with a one-level factor)
+  pdat <- droplevels(pdat)
+  ok_var <- vapply(names(pdat), function(cn)
+    !is.factor(pdat[[cn]]) || nlevels(pdat[[cn]]) >= 2L, TRUE)
+  bad_vars <- names(pdat)[!ok_var]
+  bt_full <- bterms_all[!vapply(bterms_all, function(u)
+    any(.term_vars(u) %in% bad_vars), TRUE)]
+  for (tt in within_terms) {
+    tv <- .term_vars(tt)
+    w_t <- intersect(tv, names(wlv))
+    b_t <- setdiff(tv, w_t)
+    if (any(b_t %in% bad_vars)) {         # non-estimable after filtering
+      out[[length(out) + 1L]] <- na_row(tt)
+      next
+    }
+    Cm <- matrix(1, 1, 1)
+    for (wf in names(wlv)) {
+      k <- wlv[[wf]]
+      Cm <- Cm %x% (if (wf %in% w_t) contr_of(k) else meanvec_of(k))
+    }
+    S <- Y %*% Cm
+    m <- ncol(S)
+    fits_j <- lapply(seq_len(m), function(j) {
+      dd <- pdat; dd$s_ <- S[, j]
+      stats::lm(mk(bt_full, "s_"), data = dd)
+    })
+    rss_f <- sum(vapply(fits_j, function(f) sum(stats::resid(f)^2), 0))
+    dfr1 <- stats::df.residual(fits_j[[1]])
+    df_err <- m * dfr1
+    if (df_err < 1 || rss_f <= 0) next
+    # Greenhouse-Geisser epsilon from the residual score covariance
+    E <- vapply(fits_j, stats::resid, numeric(n))
+    Sg <- crossprod(as.matrix(E)) / dfr1
+    lam <- eigen(Sg, symmetric = TRUE, only.values = TRUE)$values
+    lam <- pmax(lam, 0)
+    eps <- if (m == 1L || sum(lam^2) <= 0) 1 else
+      max(min(sum(lam)^2 / (m * sum(lam^2)), 1), 1 / m)
+    if (!length(b_t)) {
+      # the within main effect is the grand mean of the contrast scores,
+      # adjusted for the between design. Removing the intercept from a
+      # FORMULA does nothing when factors are present (R re-parameterises
+      # them to absorb the constant), so the design is built explicitly
+      # with sum-to-zero factor coding, where the intercept column is the
+      # balanced grand mean and genuinely separable.
+      Xb <- if (length(bt_full)) {
+        fml <- stats::as.formula(paste("~", paste(bt_full, collapse = " + ")))
+        used <- unique(unlist(lapply(bt_full, .term_vars)))
+        fac_cols <- intersect(
+          names(pdat)[vapply(pdat, is.factor, TRUE)], used)
+        ctr <- stats::setNames(
+          rep(list("contr.sum"), length(fac_cols)), fac_cols)
+        stats::model.matrix(fml, data = pdat, contrasts.arg = ctr)
+      } else matrix(1, n, 1)
+      ss_t <- 0
+      for (j in seq_len(m)) {
+        r_full <- stats::lm.fit(Xb, S[, j])$residuals
+        r_red <- stats::lm.fit(Xb[, -1, drop = FALSE], S[, j])$residuals
+        ss_t <- ss_t + max(sum(r_red^2) - sum(r_full^2), 0)
+      }
+      df_t <- m
+    } else {
+      not_cont <- bt_full[!vapply(bt_full, function(u)
+        all(b_t %in% .term_vars(u)), TRUE)]
+      rss0 <- rss1 <- 0; df_t1 <- NA_integer_
+      for (j in seq_len(m)) {
+        dd <- pdat; dd$s_ <- S[, j]
+        f0 <- stats::lm(mk(not_cont, "s_"), data = dd)
+        f1 <- stats::lm(mk(c(not_cont, paste(b_t, collapse = ":")), "s_"),
+                        data = dd)
+        rss0 <- rss0 + sum(stats::resid(f0)^2)
+        rss1 <- rss1 + sum(stats::resid(f1)^2)
+        df_t1 <- stats::df.residual(f0) - stats::df.residual(f1)
+      }
+      if (is.na(df_t1) || df_t1 < 1) next
+      ss_t <- max(rss0 - rss1, 0)
+      df_t <- m * df_t1
+    }
+    Fv <- (ss_t / df_t) / (rss_f / df_err)
+    # the p-value is computed at the Greenhouse-Geisser corrected degrees
+    # of freedom (eps * df, eps * df_denom); the nominal df, the
+    # denominator df, and epsilon are all returned so the test is
+    # reproducible and reportable
+    out[[length(out) + 1L]] <- data.frame(
+      term = tt, df = df_t, df_denom = df_err, gg_epsilon = eps,
+      sum_sq = ss_t, mean_sq = ss_t / df_t,
+      F_value = Fv,
+      p = stats::pf(Fv, eps * df_t, eps * df_err, lower.tail = FALSE),
+      resid_ss = rss_f, stringsAsFactors = FALSE)
+    resid_pool <- rss_f; resid_df <- df_err
+  }
+  if (!length(out)) return(NULL)
+  rbind(do.call(rbind, out),
+        data.frame(term = "Residuals", df = resid_df, df_denom = NA_real_,
+                   gg_epsilon = NA_real_, sum_sq = resid_pool,
+                   mean_sq = if (resid_df > 0) resid_pool / resid_df else
+                     NA_real_, F_value = NA_real_, p = NA_real_,
+                   resid_ss = NA_real_, stringsAsFactors = FALSE))
+}
 
 # Flatten an aov (single- or multi-stratum) into one row per term, carrying
 # the residual sum of squares of the term's own stratum so a partial
@@ -86,68 +310,111 @@
 
 #' Differential item functioning by residual analysis of variance
 #'
-#' For each item the standardised residuals are analysed by the nominated
-#' person factor(s) crossed with the trait class interval. A term not
-#' involving the class interval is uniform DIF; a term crossing it is
-#' non-uniform DIF (Hagquist and Marais 2019, ch. 16). With one factor this
-#' is a one-way analysis, \code{z ~ g * ci}. With several factors they are
-#' modelled jointly -- the statistically correct treatment, rather than one
-#' factor at a time -- with main effects by default
-#' (\code{z ~ (f1 + f2 + ...) * ci}); set \code{effects = "factorial"} to add
-#' the factor-by-factor interactions (\code{z ~ (f1 * f2 * ...) * ci}). When
-#' interactions are fitted, a significant one supersedes the lower-order
-#' terms built from its variables, recorded in the \code{superseded} column;
-#' interpret the highest-order significant terms.
+#' Tests uniform and non-uniform DIF by analysing each item's standardised
+#' residuals over person factors and trait class intervals (Andrich and Marais
+#' 2019, ch. 16). Several person factors are fitted jointly. The function also
+#' supports designs containing both between-person and within-person factors.
 #'
-#' Probabilities are adjusted across items within each term
-#' (Benjamini-Hochberg by default). Tukey HSD comparisons are returned for
-#' each significant, non-superseded group term. Sums of squares are
-#' sequential (factors in the order given, class interval last).
+#' @details
+#' With one factor \eqn{G} and class interval \eqn{C}, the residual model is
+#' \deqn{z=\mu+G+C+G\mathbin{:}C+\varepsilon.}
+#' The factor term tests uniform DIF and its interaction with class interval
+#' tests non-uniform DIF. With several factors, \code{effects = "main"} fits
+#' \code{(f1 + f2 + ...) * ci}; \code{effects = "factorial"} also includes
+#' factor-by-factor interactions. Type II sums of squares are used. The
+#' multiplicity adjustment covers all item-by-DIF-term tests, including both
+#' uniform and non-uniform DIF; the class-interval main effect is a nuisance
+#' term and is not included.
 #'
-#' @param fit A fitted object from \code{\link{rasch}}.
+#' When identifiers repeat, the person is the unit of analysis. Between-person
+#' terms use person means and the between-person error stratum. Within-person
+#' terms use orthonormal contrasts of person-by-cell means. A
+#' Greenhouse--Geisser correction is applied to within-person factors with
+#' more than two levels. Persons missing a required cell are excluded from the
+#' corresponding within-person test. In incomplete mixed designs, within-cell
+#' effects are removed before the between-person analysis. Uniform
+#' between-person factor terms use HC3 covariance so unequal group sizes,
+#' leverage, and differing precision of person means do not impose a common
+#' residual variance. Class-interval interactions retain the residual-ANOVA
+#' reference used to test non-uniform DIF.
+#' For between-person design matrix \eqn{X}, residuals \eqn{e_i}, and leverages
+#' \eqn{h_i},
+#' \deqn{\widehat{V}_{\mathrm{HC3}}=(X^{\mathsf T}X)^{-1}X^{\mathsf T}
+#' \operatorname{diag}\left\{\frac{e_i^2}{(1-h_i)^2}\right\}X
+#' (X^{\mathsf T}X)^{-1}.}
+#'
+#' A significant higher-order factor term supersedes its component terms in
+#' the summary. For EFRM fits, frame-defining factors are excluded because
+#' they define the model rather than a separate DIF contrast; testing such a
+#' factor means stepping outside the model, which is what
+#' \code{\link{frame_invariance}} does. MFRM residuals are pooled to
+#' underlying items unless \code{pool_facets = FALSE}. EFRM response cells
+#' are always pooled by item; the frame-defining factors remain excluded.
+#' Inference is available only from a converged calibration.
+#'
+#' @param fit A fitted object from \code{\link{rasch}},
+#'   \code{\link{rasch_mfrm}}, or \code{\link{rasch_efrm}}.
 #' @param factors A vector (one factor), a data frame of person factors, or a
 #'   character vector naming factor columns nominated in the fit. Defaults to
 #'   every factor stored in the fit.
-#' @param n_groups Number of trait class intervals. By default set from
-#'   the smallest factor-combination cell so every interval-by-cell count
-#'   keeps about 30 expected responses (between 2 and 10 intervals); the
-#'   value used is returned in \code{n_groups}.
-#' @param p_adjust Multiplicity adjustment across items within each term;
-#'   default \code{"BH"}.
+#' @param n_groups Number of trait class intervals. The default uses the
+#'   smallest joint factor cell to retain about 30 expected responses per
+#'   interval and cell, with between 2 and 10 intervals. The selected value is
+#'   returned in \code{n_groups}.
+#' @param p_adjust Multiplicity adjustment over all item-by-term tests;
+#'   default \code{"holm"}. Use \code{"BH"} only for
+#'   false-discovery-rate screening rather than familywise control.
 #' @param alpha Significance level applied to the adjusted probabilities.
 #' @param effects \code{"main"} (default) models several factors additively
 #'   (each factor's main effect and its class-interval interaction, but no
 #'   factor-by-factor terms); \code{"factorial"} also crosses the factors
 #'   with each other. Immaterial with a single factor.
-#' @param id,within Person identifier and within-subject factor names for
-#'   stacked repeated-measures designs. When any factor is within-subject the
-#'   model becomes a mixed (split-plot) analysis of variance -- the class
-#'   interval taken at the person level, the within factors carrying a person
-#'   error stratum -- so their terms are tested validly. Auto-detected from
-#'   the fit's person identifier.
-#' @param sizes Also compute DIF magnitudes in logits (\code{\link{dif_size}})
-#'   for every significant, non-superseded group term: the item is resolved
-#'   by the term's levels (interaction terms by their cells) and all
-#'   pairwise location differences are returned with Holm familywise
-#'   adjustment and the practical-significance flag. Each size involves a
-#'   re-analysis, so this costs one refit per flagged item-term.
-#' @return A list with \code{summary}, the compact reading of the analysis
-#'   (one row per item and group term with the uniform F, adjusted p, and
-#'   partial eta-squared -- the term itself -- and the non-uniform ones --
-#'   the term crossed with class interval -- plus \code{uniform_DIF},
-#'   \code{nonuniform_DIF} and \code{superseded} flags); \code{terms},
-#'   the complete per-item analysis of
-#'   variance table (term, df, sum of squares, mean square, F, partial
-#'   eta-squared, raw and adjusted p, significance, supersession, including
-#'   the residual row);
-#'   and \code{tukey} (per item, term, and level comparison: difference,
-#'   95 per cent interval, and Tukey-adjusted p), plus the \code{alpha} and
-#'   adjustment used. Tukey comparisons are reported for significant,
-#'   non-superseded group terms except two-level main effects, where the
-#'   F test is already the only comparison. With \code{sizes = TRUE},
-#'   \code{sizes} holds the logit DIF magnitudes per item, term, and level
-#'   pair (two-level main effects included, since the single difference is
-#'   exactly the DIF size).
+#' @param id Person identifier for stacked or repeated-measures data. It may
+#'   be a column name stored in the fit or a vector with one value per row;
+#'   by default the identifier carried by the fit is used.
+#' @param within Names of within-person factors. With repeated identifiers,
+#'   varying factors are detected automatically when this is omitted. See
+#'   Details for the mixed-design analysis.
+#' @param pool_facets For MFRM fits: pool residuals to the underlying
+#'   items (the default), so DIF is tested per item rather than per
+#'   item-by-facet cell; \code{FALSE} tests each cell as its own item.
+#'   EFRM response cells are always pooled by item, so this argument does not
+#'   alter EFRM fits. Ignored for ordinary fits.
+#' @param sizes If \code{TRUE}, refit each flagged item-term and calculate
+#'   pairwise DIF differences in logits using \code{\link{dif_size}}.
+#' @return A list with:
+#' \describe{
+#'   \item{\code{summary}}{One row per item and group term, containing the
+#'   uniform and non-uniform tests, partial eta-squared, adjusted
+#'   probabilities, DIF flags, and supersession flag.}
+#'   \item{\code{terms}}{The complete item-wise analysis-of-variance tables.}
+#'   \item{\code{sizes}}{When requested, pairwise logit differences for the
+#'   significant, non-superseded item-terms.}
+#'   \item{\code{posthoc}}{When \code{sizes = TRUE}, marginal pairwise
+#'   differences for main effects and difference-in-differences magnitudes
+#'   for interactions, calculated by \code{\link{dif_posthoc}}.}
+#'   \item{\code{between_covariance}}{The covariance reference used for
+#'   uniform between-person terms.}
+#' }
+#' The remaining components record the factors, class intervals, adjustment,
+#' significance level, and design settings.
+#' @references
+#' Holm, S. (1979). A simple sequentially rejective multiple test procedure.
+#' Scandinavian Journal of Statistics, 6(2), 65--70.
+#'
+#' Hagquist, C. and Andrich, D. (2017). Recent advances in analysis of
+#' differential item functioning in health research using the Rasch model.
+#' Health and Quality of Life Outcomes, 15, 181.
+#'
+#' MacKinnon, J. G. and White, H. (1985). Some heteroskedasticity-consistent
+#' covariance matrix estimators with improved finite sample properties.
+#' Journal of Econometrics, 29(3), 305--325.
+#'
+#' Maxwell, S. E. and Delaney, H. D. (2004). Designing Experiments and
+#' Analyzing Data: A Model Comparison Perspective (2nd ed.). Lawrence Erlbaum.
+#' @seealso \code{\link{dif_size}}, \code{\link{dif_contrasts}}, and
+#'   \code{\link{resolve_dif}}; and \code{\link{frame_invariance}} for the
+#'   frame-defining factor this function excludes.
 #' @examples
 #' set.seed(1); n <- 800
 #' d <- seq(-1.5, 1.5, length.out = 6)
@@ -158,60 +425,246 @@
 #' colnames(X) <- paste0("I", 1:6)
 #' fit <- rasch(data.frame(X, g1 = g1, g2 = g2), factors = c("g1", "g2"))
 #' dif_anova(fit)$summary
+#'
+#' \donttest{
+#' # Mixed design: group is between persons and occasion is within persons.
+#' N <- 320; theta <- rnorm(N); group <- rep(c("A", "B"), each = N / 2)
+#' make_wave <- function(occasion_shift) {
+#'   shift <- matrix(0, N, 6)
+#'   shift[group == "B", 2] <- 0.9
+#'   shift[, 5] <- occasion_shift
+#'   matrix(rbinom(N * 6, 1,
+#'          plogis(outer(theta, d, "-") - shift)), N, 6)
+#' }
+#' Xm <- rbind(make_wave(0), make_wave(1.0))
+#' colnames(Xm) <- paste0("I", 1:6)
+#' repeated <- data.frame(Xm, group = rep(group, 2),
+#'                        occasion = rep(c("T1", "T2"), each = N))
+#' mixed_fit <- rasch(repeated, id = rep(seq_len(N), 2),
+#'                    factors = c("group", "occasion"))
+#' mixed_dif <- dif_anova(mixed_fit, within = "occasion")
+#' subset(mixed_dif$summary, uniform_DIF | nonuniform_DIF)
+#' }
 #' @export
 dif_anova <- function(fit, factors = NULL, n_groups = NULL,
-                                p_adjust = "BH", alpha = 0.05,
+                                p_adjust = "holm", alpha = 0.05,
                                 effects = c("main", "factorial"),
-                                sizes = FALSE, id = NULL, within = NULL) {
+                                sizes = FALSE, id = NULL, within = NULL,
+                                pool_facets = TRUE) {
+  if (!isTRUE(fit$est$converged))
+    stop("the fitted calibration did not converge; DIF inference is unavailable")
   effects <- match.arg(effects)
   Z <- fit$residuals; L <- ncol(Z)
+  # Structural residuals pool to UNDERLYING items: users ask whether item A
+  # shows DIF, not whether an internal item-by-frame or item-by-facet cell
+  # does. In an EFRM a person contributes to at most one frame cell for an
+  # underlying item, so the standardised sum is exactly that observed cell.
+  # MFRM users may still request per-cell tests with pool_facets = FALSE.
+  pooled_note <- NULL
+  pooled_structural <- (inherits(fit, "rasch_mfrm") && isTRUE(pool_facets)) ||
+    inherits(fit, "rasch_efrm")
+  if (pooled_structural &&
+      !is.null(fit$virtual_map)) {
+    vm <- fit$virtual_map
+    items_u <- unique(vm$item)
+    Zp <- vapply(items_u, function(it) {
+      zz <- Z[, vm$vkey[vm$item == it], drop = FALSE]
+      nn <- rowSums(is.finite(zz))
+      out <- rowSums(zz, na.rm = TRUE) / sqrt(pmax(nn, 1L))
+      out[nn == 0L] <- NA_real_
+      out
+    }, numeric(nrow(Z)))
+    Zp[!is.finite(Zp)] <- NA_real_
+    colnames(Zp) <- items_u
+    Z <- Zp; L <- ncol(Z)
+    pooled_note <- if (inherits(fit, "rasch_efrm")) paste(
+      "EFRM response-cell residuals pooled to the underlying items; each",
+      "person contributes its observed frame cell and frame-defining factors",
+      "remain excluded") else paste(
+      "MFRM residuals pooled to the underlying items (standardised sum over",
+      "each item's observed facet cells, so rows with different facet",
+      "coverage are normalised by the square root of that count);",
+      "pool_facets = FALSE tests",
+      "each item-by-facet cell as its own item")
+  }
   factors <- .dif_factors(fit, factors)
+  # the EFRM frame group IS the frame structure: each frame has its own
+  # virtual items, so the group factor has a single level among any
+  # virtual item's responders and cannot be tested as DIF
+  drop_frame_note <- NULL
+  if (!is.null(fit$frame_group) && any(names(factors) %in% fit$frame_group)) {
+    hit <- intersect(names(factors), fit$frame_group)
+    if (length(hit) == length(factors))
+      .refuse("'", paste(hit, collapse = "', '"),
+           "' define(s) the EFRM frame structure itself: the factor is ",
+           "constant among the persons responding within any frame, so ",
+           "no within-frame comparison remains to test as DIF; nominate ",
+           "other person factors")
+    factors <- factors[!names(factors) %in% fit$frame_group]
+    drop_frame_note <- paste0("frame factor(s) '",
+                              paste(hit, collapse = "', '"),
+                              "' excluded: they are the frame structure, ",
+                              "not testable DIF factors")
+  }
 
   # within-subject factors (levels repeating within a person) turn the
   # analysis into a mixed (split-plot) one: the class interval is taken at
   # the person level so it is a clean whole-plot factor, and the within
   # factors carry a person error stratum.
-  if (is.character(id) && length(id) == 1L && !is.null(fit$factors) &&
-      id %in% names(fit$factors)) id <- fit$factors[[id]]
+  if (is.character(id) && length(id) == 1L) {
+    if (is.null(fit$factors) || !id %in% names(fit$factors))
+      stop("id column '", id, "' not found among the fit's factors")
+    id <- fit$factors[[id]]
+  }
   if (is.null(id) && !is.null(fit$person$id)) id <- as.character(fit$person$id)
-  if (is.null(within) && !is.null(id) && anyDuplicated(id)) {
+  if (!is.null(id)) id <- as.character(id)
+  repeated <- !is.null(id) && anyDuplicated(id) > 0L
+  if (!is.null(within)) {
+    unknown <- setdiff(within, names(factors))
+    if (length(unknown))
+      stop("within-subject factor(s) not among the nominated factors: ",
+           paste(unknown, collapse = ", "))
+    if (!repeated)
+      stop("within-subject factors need repeated person ids (each id ",
+           "observed more than once); no id repeats here")
+    varies <- vapply(within, function(fn)
+      any(tapply(as.character(factors[[fn]]), id, function(v)
+        length(unique(v[!is.na(v)])) > 1L), na.rm = TRUE), TRUE)
+    if (any(!varies))
+      stop("factor(s) declared within-subject never vary within any id: ",
+           paste(within[!varies], collapse = ", "))
+    # the converse is equally ill-defined: a factor that varies within
+    # persons has no person-level value, so it cannot be treated as
+    # between-subjects (the old row-level treatment pseudo-replicated)
+    other <- setdiff(names(factors), within)
+    ovaries <- vapply(other, function(fn)
+      any(tapply(as.character(factors[[fn]]), id, function(v)
+        length(unique(v[!is.na(v)])) > 1L), na.rm = TRUE), TRUE)
+    if (length(other) && any(ovaries))
+      stop("factor(s) vary within persons but are not declared in ",
+           "`within`: ", paste(other[ovaries], collapse = ", "),
+           "; declare them within-subject (or aggregate the data to one ",
+           "row per person) -- treating repeated observations as ",
+           "independent between-person rows manufactures information")
+  }
+  if (is.null(within) && repeated) {
     within <- names(factors)[vapply(names(factors), function(fn)
-      any(tapply(as.character(factors[[fn]]), id,
-                 function(v) length(unique(v)) > 1L)), TRUE)]
+      any(tapply(as.character(factors[[fn]]), id, function(v)
+        length(unique(v[!is.na(v)])) > 1L), na.rm = TRUE), TRUE)]
   }
   if (is.null(within)) within <- character(0)
   within <- intersect(within, names(factors))
   mixed <- length(within) > 0L
 
   if (is.null(n_groups)) {
-    cells <- interaction(factors, drop = TRUE)
-    n_groups <- .dif_n_groups(fit, cells)
+    cells <- .factor_cells(factors, sep = ".")
+    n_groups <- .dif_n_groups(fit, cells,
+                              id = if (repeated) id else NULL)
   }
-  ci <- if (mixed) .dif_person_ci(fit, id, n_groups) else
+  # PERSONS are the units whenever ids repeat (stacked or duplicated rows):
+  # observation-level tests would let copied observations manufacture
+  # information. The class interval is taken at the person level so it is a
+  # clean whole-plot covariate.
+  ci <- if (repeated) .dif_person_ci(fit, id, n_groups) else
     .dif_class_intervals(fit, n_groups)
 
   fnames <- names(factors)
   safe <- paste0("f", seq_along(fnames))           # syntactic stand-ins
+  wsafe <- safe[match(within, fnames)]
+  bsafe <- setdiff(safe, wsafe)
   op <- if (effects == "factorial") " * " else " + "
-  err <- if (mixed) {
-    wsafe <- safe[match(within, fnames)]
-    paste0(" + Error(pid/(", paste(wsafe, collapse = " * "), "))")
-  } else ""
-  form <- stats::as.formula(
-    paste("z ~ (", paste(safe, collapse = op), ") * ci", err))
+  form_all <- stats::as.formula(
+    paste("z ~ (", paste(safe, collapse = op), ") * ci"))
+  all_terms <- attr(stats::terms(form_all), "term.labels")
+  bterms <- all_terms[!vapply(all_terms, function(tt)
+    any(.term_vars(tt) %in% wsafe), TRUE)]
+  wterms <- setdiff(all_terms, bterms)
 
-  fits <- vector("list", L); rows <- list()
+  rows <- list()
+  incomplete_note <- 0L
   for (i in seq_len(L)) {
     d <- data.frame(z = Z[, i], ci = ci)
-    if (mixed) d$pid <- factor(id)
+    d$pid <- if (is.null(id)) sprintf("p%06d", seq_len(nrow(d))) else id
     for (j in seq_along(fnames)) d[[safe[j]]] <- factor(factors[[fnames[j]]])
     d <- d[stats::complete.cases(d), ]
     if (nrow(d) < 10 || any(vapply(safe, function(s)
       length(unique(d[[s]])) < 2, TRUE))) next
-    a <- tryCatch(stats::aov(form, data = d), error = function(e) NULL)
-    if (is.null(a)) next
-    fits[[i]] <- a
-    ft <- .aov_terms_flat(a)
+
+    # aggregate to one mean residual per person per within-cell (persons
+    # without repeats aggregate to themselves). Within cells are ordered
+    # with the LAST within factor varying fastest, matching the Kronecker
+    # construction of the contrast matrices. Reversing the structural factor
+    # order gives that mixed-radix order without joining factor labels, which
+    # could collide when a level contains the separator.
+    if (mixed) {
+      wcell <- .factor_cells(d[rev(wsafe)], sep = "\r")
+    } else wcell <- factor(rep("all", nrow(d)))
+    key <- .factor_cells(data.frame(pid = d$pid, wcell = wcell), sep = "\r")
+    agz <- tapply(d$z, key, mean)
+    firsts <- which(!duplicated(key))
+    ag <- d[firsts[match(levels(key), as.character(key[firsts]))],
+            c("pid", "ci", safe), drop = FALSE]
+    ag$z <- as.numeric(agz)
+    ag$wcell <- wcell[firsts[match(levels(key),
+                                   as.character(key[firsts]))]]
+
+    # person-level frame for the between stratum: one row per person, the
+    # mean over that person's OCCASION-ADJUSTED within-cell values. With
+    # differentially incomplete within panels, raw person means are not
+    # comparable between groups (a common occasion effect plus one group
+    # missing an occasion masqueraded as group DIF at F = 37.6); centring
+    # each within cell at its all-person mean removes the common within
+    # effects from the between comparison.
+    # centring must remove within effects that VARY BY TRAIT LEVEL too: a
+    # common occasion-by-class-interval structure plus differential
+    # missingness otherwise masquerades as non-uniform group DIF (observed
+    # F = 214.7 on grp:ci with no group effect). Centre each within cell
+    # within each class interval; empty combinations fall back to the
+    # cell's overall mean.
+    cellci <- .factor_cells(data.frame(wcell = ag$wcell, ci = ag$ci),
+                            sep = "\r")
+    m_cellci <- tapply(ag$z, cellci, mean)
+    m_cell <- tapply(ag$z, ag$wcell, mean)
+    ctr <- as.numeric(m_cellci[as.character(cellci)])
+    miss_ctr <- is.na(ctr)
+    if (any(miss_ctr))
+      ctr[miss_ctr] <- as.numeric(m_cell[as.character(ag$wcell)[miss_ctr]])
+    zc <- ag$z - ctr
+    pkey <- factor(ag$pid)
+    pz <- tapply(zc, pkey, mean)
+    pfirst <- which(!duplicated(pkey))
+    pdat <- ag[pfirst[match(levels(pkey), as.character(pkey[pfirst]))],
+               c("pid", "ci", bsafe), drop = FALSE]
+    pdat$z <- as.numeric(pz)
+
+    # Person means need not have equal precision in unbalanced or incomplete
+    # designs. HC3 retains the equal-person estimand while correcting the
+    # between-person covariance for heteroskedasticity and leverage.
+    robust_terms <- bterms[!vapply(bterms, function(tt)
+      "ci" %in% .term_vars(tt), TRUE)]
+    ft_b <- .dif_type2(pdat, bterms, variance = "hc3",
+                       robust_terms = robust_terms)
+    ft_w <- NULL
+    if (mixed && length(wterms)) {
+      # complete within-cell matrix per person; incomplete persons are
+      # dropped explicitly (multi-stratum projections on unbalanced data
+      # are exactly the murky territory this engine replaces)
+      wl <- lapply(wsafe, function(sn) sort(unique(as.character(ag[[sn]]))))
+      names(wl) <- wsafe
+      Ywide <- tapply(ag$z, list(factor(ag$pid), ag$wcell), mean)
+      complete <- rowSums(is.na(Ywide)) == 0L
+      incomplete_note <- incomplete_note + sum(!complete)
+      if (sum(complete) >= 6L) {
+        Y <- Ywide[complete, , drop = FALSE]
+        pd2 <- pdat[match(rownames(Y), as.character(pdat$pid)), ,
+                    drop = FALSE]
+        wlv <- lapply(wl, length)
+        ft_w <- .dif_within_tests(Y, pd2, paste(wsafe, collapse = ":"),
+                                  wlv, wterms, bterms)
+      }
+    }
+    ft <- rbind(ft_b, ft_w)
+    if (is.null(ft)) next
     rows[[length(rows) + 1L]] <- data.frame(item = colnames(Z)[i], ft)
   }
   if (!length(rows)) stop("no item yielded an estimable factorial ANOVA")
@@ -224,12 +677,13 @@ dif_anova <- function(fit, factors = NULL, n_groups = NULL,
     terms$sum_sq / (terms$sum_sq + terms$resid_ss))
   terms$resid_ss <- NULL
 
-  # adjust across items within each term (the residual rows carry no test)
+  # One reported DIF decision can be triggered by any item-by-term test.
+  # Adjust them as one family: separate adjustment of the uniform and
+  # non-uniform terms gave an approximately 10% all-null probability of at
+  # least one flag at nominal 5% in the balanced MFRM validation design.
   terms$p_adj <- NA_real_
-  for (tt in setdiff(unique(terms$term), "Residuals")) {
-    sel <- terms$term == tt
-    terms$p_adj[sel] <- p.adjust(terms$p[sel], method = p_adjust)
-  }
+  sel_test <- !terms$term %in% c("Residuals", "ci") & is.finite(terms$p)
+  terms$p_adj[sel_test] <- p.adjust(terms$p[sel_test], method = p_adjust)
   terms$significant <- !is.na(terms$p_adj) & terms$p_adj < alpha
 
   # a significant higher-order GROUP interaction supersedes the lower-order
@@ -242,52 +696,14 @@ dif_anova <- function(fit, factors = NULL, n_groups = NULL,
   is_group_t <- !vapply(terms$term, function(t)
     "ci" %in% .term_vars(t), TRUE)
   for (it in unique(terms$item)) {
-    sel <- which(terms$item == it & terms$significant & is_group_t)
-    if (length(sel) < 2) next
-    vlist <- lapply(terms$term[sel], .term_vars)
-    for (a_i in seq_along(sel)) for (b_i in seq_along(sel)) {
-      if (a_i == b_i) next
-      if (all(vlist[[a_i]] %in% vlist[[b_i]]) &&
-          length(vlist[[a_i]]) < length(vlist[[b_i]]))
-        terms$superseded[sel[a_i]] <- TRUE
+    all_terms <- which(terms$item == it & is_group_t)
+    higher <- all_terms[terms$significant[all_terms]]
+    for (lo in all_terms) for (hi in higher) {
+      vl <- .term_vars(terms$term[lo]); vh <- .term_vars(terms$term[hi])
+      if (length(vl) < length(vh) && all(vl %in% vh))
+        terms$superseded[lo] <- TRUE
     }
   }
-
-  # Tukey HSD for significant, non-superseded terms that do not involve the
-  # class interval (the group structure itself)
-  tk <- list(); tukey_note <- NULL
-  for (i in seq_len(L)) {
-    a <- fits[[i]]; if (is.null(a)) next
-    it <- colnames(Z)[i]
-    cand <- terms[terms$item == it & terms$significant & !terms$superseded, ]
-    # group terms only; and no comparisons for a two-level main effect,
-    # where the F test is already the only contrast
-    keep_t <- !vapply(cand$term, function(tt) "ci" %in% .term_vars(tt), TRUE) &
-      !(cand$df == 1L & !grepl(":", cand$term, fixed = TRUE))
-    cand <- cand$term[keep_t]
-    if (!length(cand)) next
-    # TukeyHSD has no method for the multi-stratum aov of a mixed design;
-    # say so rather than return an empty table silently
-    if (inherits(a, "aovlist")) {
-      tukey_note <- paste("Tukey comparisons are unavailable for",
-                          "within-subject (mixed) designs; use the",
-                          "resolved DIF magnitudes (sizes) instead")
-      next
-    }
-    th <- tryCatch(stats::TukeyHSD(a, which = cand), error = function(e) NULL)
-    if (is.null(th)) next
-    for (tt in names(th)) {
-      tb <- as.data.frame(th[[tt]])
-      tk[[length(tk) + 1L]] <- data.frame(
-        item = it, term = tt, comparison = rownames(tb),
-        difference = tb$diff, lower = tb$lwr, upper = tb$upr,
-        p_tukey = tb$`p adj`, row.names = NULL)
-    }
-  }
-  tukey <- if (length(tk)) do.call(rbind, tk) else
-    data.frame(item = character(), term = character(),
-               comparison = character(), difference = numeric(),
-               lower = numeric(), upper = numeric(), p_tukey = numeric())
 
   # map a term's syntactic stand-ins (f1..fk) back to the nominated factor
   # names by exact whole-token match, so a factor named like a stand-in
@@ -296,7 +712,8 @@ dif_anova <- function(fit, factors = NULL, n_groups = NULL,
   # the stand-ins.
   relabel <- function(x) vapply(x, function(t) {
     toks <- strsplit(t, ":", fixed = TRUE)[[1]]
-    i <- match(toks, safe); toks[!is.na(i)] <- fnames[i[!is.na(i)]]
+    i <- match(toks, safe)
+    toks[!is.na(i)] <- vapply(fnames[i[!is.na(i)]], .dif_term_label, "")
     if ("ci" %in% fnames)
       toks[is.na(i) & toks == "ci"] <- "(class interval)"
     paste(toks, collapse = ":")
@@ -304,9 +721,9 @@ dif_anova <- function(fit, factors = NULL, n_groups = NULL,
 
   # DIF magnitudes in logits for the significant, non-superseded group
   # terms (interaction terms resolved by their cells)
-  size_tab <- NULL
+  size_tab <- posthoc_tab <- NULL
   if (isTRUE(sizes)) {
-    sz <- list()
+    sz <- ph <- list(); size_fail <- posthoc_fail <- character(0)
     cand <- terms[terms$significant & !terms$superseded &
                   !vapply(terms$term, function(tt)
                     "ci" %in% .term_vars(tt), TRUE), , drop = FALSE]
@@ -315,15 +732,35 @@ dif_anova <- function(fit, factors = NULL, n_groups = NULL,
       # dif_size takes the nominated factor names, not the stand-ins
       by_user <- fnames[match(.term_vars(tt), safe)]
       ds <- tryCatch(dif_size(fit, it, by = by_user),
-                     error = function(e) NULL)
-      if (is.null(ds)) next
+                     error = function(e) e)
+      if (inherits(ds, "error")) {
+        size_fail <- c(size_fail, conditionMessage(ds))
+        next
+      }
       p <- ds$pairs
       sz[[length(sz) + 1L]] <- data.frame(item = it, term = tt, p,
                                           row.names = NULL)
+      dp <- tryCatch(dif_posthoc(
+        fit, it, term = by_user, factors = fnames,
+        within = fnames[match(wsafe, safe)], id = id),
+        error = function(e) e)
+      if (inherits(dp, "error"))
+        posthoc_fail <- c(posthoc_fail, conditionMessage(dp))
+      else
+        ph[[length(ph) + 1L]] <- data.frame(
+          item = it, term = tt, dp$table, row.names = NULL)
     }
     size_tab <- if (length(sz)) do.call(rbind, sz) else
       data.frame(item = character(), term = character())
-  }
+    size_note <- if (length(size_fail)) paste0(
+      "DIF magnitudes unavailable for some flagged term(s): ",
+      paste(unique(size_fail), collapse = "; ")) else NULL
+    posthoc_tab <- if (length(ph)) do.call(rbind, ph) else
+      data.frame(item = character(), term = character())
+    posthoc_note <- if (length(posthoc_fail)) paste0(
+      "DIF post-hoc comparisons unavailable for some flagged term(s): ",
+      paste(unique(posthoc_fail), collapse = "; ")) else NULL
+  } else size_note <- posthoc_note <- NULL
 
   # compact reading: one row per item and group term, its own effect being
   # uniform DIF and its crossing with the class interval non-uniform DIF
@@ -354,20 +791,46 @@ dif_anova <- function(fit, factors = NULL, n_groups = NULL,
   }
   summary_tab <- do.call(rbind, srows)
   rownames(summary_tab) <- NULL
+  # Keep the exact factor names aligned with the summary rows. Public labels
+  # are deliberately readable strings; downstream refits and the app must
+  # not recover structure by splitting those strings on punctuation.
+  summary_factors <- lapply(summary_tab$term, function(tt)
+    fnames[match(.term_vars(tt), safe)])
 
   # relabel the stand-ins to the nominated names for display, now that all
   # classification is done
   terms$term <- relabel(terms$term)
-  tukey$term <- relabel(tukey$term)
   summary_tab$term <- relabel(summary_tab$term)
   if (!is.null(size_tab) && nrow(size_tab))
     size_tab$term <- relabel(size_tab$term)
+  if (!is.null(posthoc_tab) && nrow(posthoc_tab))
+    posthoc_tab$term <- relabel(posthoc_tab$term)
 
-  out <- list(summary = summary_tab, terms = terms, tukey = tukey,
+  notes <- character(0)
+  if (!is.null(pooled_note)) notes <- c(notes, pooled_note)
+  if (!is.null(drop_frame_note)) notes <- c(notes, drop_frame_note)
+  if (!is.null(size_note)) notes <- c(notes, size_note)
+  if (!is.null(posthoc_note)) notes <- c(notes, posthoc_note)
+  if (incomplete_note > 0L)
+    notes <- c(notes, sprintf(
+      "%d person-by-item panel(s) missing a within-subject cell were dropped from the within-person tests (their between-person information is retained)",
+      incomplete_note))
+  if (mixed && any(is.na(terms$F_value) & terms$term != "Residuals"))
+    notes <- c(notes, paste(
+      "term(s) reported NA were non-estimable after complete-panel",
+      "filtering (a between level lost all its complete within panels)"))
+  out <- list(summary = summary_tab, terms = terms,
+              summary_factors = summary_factors,
               n_groups = nlevels(as.factor(ci)), within = within,
-              effects = effects, alpha = alpha, p_adjust = p_adjust)
-  if (!is.null(tukey_note)) out$tukey_note <- tukey_note
-  if (isTRUE(sizes)) out$sizes <- size_tab
+              factor_names = fnames,
+              between_covariance = "HC3 for uniform factor terms",
+              effects = effects, alpha = alpha, p_adjust = p_adjust,
+              notes = notes)
+  if (isTRUE(sizes)) {
+    out$sizes <- size_tab
+    out$posthoc <- posthoc_tab
+  }
+  out <- .tag_tables(out)
   class(out) <- "rasch_dif"
   out
 }
@@ -384,6 +847,7 @@ print.rasch_dif <- function(x, ...) {
               if (length(x$within))
                 sprintf("; within-subject: %s", paste(x$within, collapse = ", "))
               else ""))
+  cat("Uniform between-person terms use HC3 covariance; class-interval interactions retain the residual-ANOVA reference.\n")
   show <- s[, c("item", "term", "F_uniform", "p_uniform_adj", "uniform_DIF",
                 "F_nonuniform", "p_nonuniform_adj", "nonuniform_DIF")]
   print(.fmt_df(show), row.names = FALSE)
@@ -393,33 +857,34 @@ print.rasch_dif <- function(x, ...) {
   invisible(x)
 }
 
-#' DIF magnitude in logits with pairwise comparisons
+#' DIF differences between factor levels
 #'
-#' Quantifies differential item functioning on the measurement scale
-#' itself, where practical significance is judged: the item is resolved
-#' into one copy per group (or per cell of a factor combination), the
-#' model is refitted, and the distance between the resolved locations is
-#' the DIF size in logits (Andrich & Marais 2019, ch. 16: a simulated
-#' shift of 0.71 was recovered as 0.75 by exactly this method). Every
-#' pair of levels is compared with a Wald test using the full sandwich
-#' covariance of the resolved locations (for a between-person factor the
-#' persons behind different levels are disjoint, but the shared calibration
-#' of the other items still couples the estimates, so the covariance is
-#' used rather than assumed zero), with familywise adjustment over the
-#' pairs. For a within-person factor -- the same persons behind several
-#' levels, as in a stacked repeated-measures design -- the sandwich carries
-#' no person clustering, so the standard errors are conservative; a note
-#' says so, and \code{\link{dif_contrasts}} handles that case with
-#' person-level differencing. Differences
-#' at least \code{flag_logits} in absolute size are flagged as practically
-#' significant; half a logit is a common working criterion, to be weighed
-#' against the test's targeting and purpose.
+#' Resolves an item by one or more person factors and compares the resulting
+#' locations. Several factors in \code{by} give pairwise comparisons between
+#' their joint cells and can be used to quantify an interaction.
 #'
-#' For an interaction, supply several factor names: levels are then the
-#' factor-combination cells, which is the post-hoc follow-up to a
-#' significant factor-by-factor term in \code{\link{dif_anova}}.
+#' @details
+#' Let \eqn{\delta_i} contain the resolved locations of item
+#' \eqn{i}, and let \eqn{\mathbf{c}_{ab}} place 1 on level \eqn{a}, -1 on
+#' level \eqn{b}, and zero elsewhere. The reported difference and its
+#' standard error are
+#' \deqn{\Delta_{i,ab}=\mathbf{c}_{ab}^{\mathsf T}
+#' \delta_i,}
+#' \deqn{\operatorname{SE}(\Delta_{i,ab})=
+#' \sqrt{\mathbf{c}_{ab}^{\mathsf T}\mathbf{V}_i
+#' \mathbf{c}_{ab}},}
+#' where \eqn{\mathbf{V}_i} is the full covariance of the resolved
+#' locations. Wald probabilities are adjusted over the pairwise family.
 #'
-#' @param fit A fitted object from \code{\link{rasch}}.
+#' With repeated person identifiers, the row-level calibration covariance does
+#' not represent within-person sampling dependence. Logit differences and
+#' practical flags are retained, but their standard errors and Wald tests are
+#' withheld. Use \code{\link{dif_contrasts}} for person-level inference in a
+#' repeated-measures design.
+#'
+#' @param fit A fitted object from \code{\link{rasch}} or
+#'   \code{\link{rasch_mfrm}}. EFRM fits are excluded because an ordinary
+#'   split refit would discard their frame units.
 #' @param item Item name or index.
 #' @param by One or more person-factor names nominated in the fit (several
 #'   names give interaction cells), or a grouping vector/data frame with
@@ -431,10 +896,57 @@ print.rasch_dif <- function(x, ...) {
 #'   significant.
 #' @param min_n Levels with fewer responders to the item are dropped (their
 #'   resolved locations would be too unstable to compare), with a note.
-#' @return A list of class \code{"rasch_dif_size"}: \code{levels} (resolved
-#'   location and SE per level, with its n), \code{pairs} (per comparison:
-#'   difference in logits, SE, z, raw and adjusted p, 95 per cent interval,
-#'   \code{significant}, \code{practical}), the settings, and any notes.
+#' @return A list of class \code{"rasch_dif_size"}. \code{levels} contains
+#'   the resolved location, standard error and sample size for each level.
+#'   \code{pairs} contains logit differences, Wald statistics, confidence
+#'   intervals, raw and adjusted probabilities, and practical flags. For
+#'   dichotomous items it also contains \code{ets}; for polytomous items it
+#'   contains the descriptive \code{signed_area}. Sampling-uncertainty fields
+#'   are \code{NA} when person identifiers repeat.
+#'
+#' @section Magnitude conventions:
+#' For dichotomous items, \code{ets} applies the ETS A, B and C rules to the
+#' itemwise comparison. On the logit scale the magnitude cut-points are
+#' \eqn{1/2.35=0.426} and \eqn{1.5/2.35=0.638}. Category A also includes an
+#' itemwise test that is not significant. Category C requires a magnitude of
+#' at least 0.638 and rejection of the interval null
+#' \eqn{|\Delta|\leq 0.426}; B is the remainder. The category uses the raw
+#' itemwise probability, while \code{significant} uses \code{p_adjust} over
+#' the requested pairwise family.
+#'
+#' For a partial credit item with \eqn{m_i} thresholds, the signed area
+#' between the two expected-score curves has the closed form
+#' \deqn{SA_{ab}=\int\{E_b(X\mid\theta)-E_a(X\mid\theta)\}\,d\theta
+#' =\sum_{k=1}^{m_i}(\delta_{iak}-\delta_{ibk})
+#' =m_i(\beta_{ia}-\beta_{ib}).}
+#' This is returned as \code{signed_area}; a positive value means that level
+#' \code{a} has the harder resolved item. It is descriptive and is not
+#' given an A/B/C category: score-metric classifications for polytomous DIF
+#' are not interchangeable with a PCM logit difference. For pooled MFRM
+#' items, the areas use the same precision weight for a facet cell in every
+#' group. A comparison is withheld when the groups do not support the same
+#' observed response categories.
+#' @references
+#' Andrich, D. and Marais, I. (2019). A Course in Rasch Measurement Theory:
+#' Measuring in the Educational, Social and Health Sciences. Springer.
+#'
+#' Holm, S. (1979). A simple sequentially rejective multiple test procedure.
+#' Scandinavian Journal of Statistics, 6(2), 65--70.
+#'
+#' Zieky, M. (1993). Practical questions in the use of DIF statistics in item
+#' development. In P. W. Holland and H. Wainer (eds), Differential Item
+#' Functioning (pp. 337--364). Erlbaum.
+#'
+#' Linacre, J. M. and Wright, B. D. (1989). Mantel-Haenszel DIF and PROX are
+#' equivalent! Rasch Measurement Transactions, 3(2), 51--53.
+#'
+#' Cohen, A. S., Kim, S.-H. and Baker, F. B. (1993). Detection of differential
+#' item functioning in the graded response model. Applied Psychological
+#' Measurement, 17(4), 335--350.
+#'
+#' Raju, N. S. (1988). The area between two item characteristic curves.
+#' Psychometrika, 53(4), 495--502.
+#' @seealso \code{\link{dif_anova}} and \code{\link{dif_contrasts}}.
 #' @examples
 #' set.seed(1); n <- 600
 #' d <- seq(-2, 2, length.out = 8); g <- rep(c("a", "b"), each = n / 2)
@@ -446,9 +958,24 @@ print.rasch_dif <- function(x, ...) {
 #' @export
 dif_size <- function(fit, item, by, p_adjust = "holm", alpha = 0.05,
                      flag_logits = 0.5, min_n = 20) {
-  i <- .item_idx(fit, item)
-  if (is.na(i)) stop("no such item")
-  item <- fit$items$item[i]
+  if (!inherits(fit, "rasch")) stop("dif_size needs a rasch fit")
+  if (inherits(fit, "rasch_efrm"))
+    .refuse("resolved DIF magnitudes are not available for EFRM fits; the ",
+            "ordinary split refit would discard the fitted frame units")
+  if (!isTRUE(fit$est$converged))
+    stop("the fitted calibration did not converge; DIF magnitudes are unavailable")
+  mfrm_item <- inherits(fit, "rasch_mfrm") && !is.null(fit$virtual_map) &&
+    !(item %in% colnames(fit$X)) && item %in% fit$virtual_map$item
+  polytomous <- if (mfrm_item) {
+    vi <- fit$virtual_map$vkey[fit$virtual_map$item == item]
+    any(fit$m[match(vi, colnames(fit$X))] > 1L, na.rm = TRUE)
+  } else FALSE
+  if (!mfrm_item) {
+    i <- .item_idx(fit, item)
+    if (is.na(i)) stop("no such item")
+    item <- fit$items$item[i]
+    polytomous <- fit$m[i] > 1L
+  }
   if (is.character(by) && length(by) < nrow(fit$X)) {
     bad <- if (is.null(fit$factors)) by else setdiff(by, names(fit$factors))
     if (length(bad))
@@ -457,25 +984,30 @@ dif_size <- function(fit, item, by, p_adjust = "holm", alpha = 0.05,
   }
   factors <- .dif_factors(fit, by)
   grp <- if (ncol(factors) == 1L) factor(factors[[1]])
-         else interaction(factors, sep = ":", drop = TRUE)
+         else .factor_cells(factors, sep = ":")
   notes <- character(0)
-  # the same person appearing behind several levels (a stacked
-  # repeated-measures factor) couples the resolved locations within person;
-  # the sandwich carries no person clustering, so the Wald tests are
-  # conservative there
+  # Repeated persons couple the resolved locations. The calibration sandwich
+  # treats rows as independent, so it is not a sampling covariance for this
+  # design and cannot support Wald inference.
+  repeated_person <- FALSE
   if (!is.null(fit$person$id)) {
     idv <- as.character(fit$person$id)
     seen <- !is.na(grp)
-    if (anyDuplicated(unique(data.frame(id = idv[seen],
-                                        g = as.character(grp[seen])))$id))
+    repeated_person <- anyDuplicated(idv[seen]) > 0L
+    if (repeated_person)
       notes <- c(notes, paste(
-        "the same persons appear at several levels (within-person factor):",
-        "standard errors are conservative; see dif_contrasts for",
-        "person-level differencing"))
+        "person identifiers repeat across response rows: resolved point",
+        "differences remain descriptive, but sampling SEs, confidence",
+        "intervals and Wald tests are withheld; use dif_contrasts for",
+        "person-level inference or a whole-person bootstrap"))
   }
 
   # drop levels too thin on this item to resolve
-  n_lev <- table(grp[!is.na(fit$X[, i]) & !is.na(grp)])
+  obs_i <- if (mfrm_item)
+    rowSums(!is.na(fit$X[, fit$virtual_map$vkey[
+      fit$virtual_map$item == item], drop = FALSE])) > 0L
+  else !is.na(fit$X[, i])
+  n_lev <- table(grp[obs_i & !is.na(grp)])
   thin <- names(n_lev)[n_lev < min_n]
   if (length(thin)) {
     notes <- c(notes, sprintf("level(s) dropped with fewer than %d responders: %s",
@@ -486,43 +1018,97 @@ dif_size <- function(fit, item, by, p_adjust = "holm", alpha = 0.05,
     stop("fewer than two usable levels for item ", item)
   grp <- droplevels(grp)
 
-  refit <- split_items(fit, item, by = grp)
-  levs <- levels(grp)
-  split_names <- paste0(item, " (", levs, ")")
-  idx <- match(split_names, refit$items$item)
-  if (anyNA(idx))
-    stop("resolved item(s) missing after re-analysis (too little data): ",
-         paste(split_names[is.na(idx)], collapse = ", "))
+  if (mfrm_item) {
+    # underlying MFRM item: pooled virtual-level resolution (one joint
+    # unstructured refit of the virtual matrix; see .dif_resolve)
+    rs <- .dif_resolve(fit, item, grp, min_n)
+    if (is.null(rs))
+      stop("could not resolve item ", item, " (too little data per level)")
+    levs <- rs$levs; loc <- rs$loc; vloc <- rs$vloc; weak_lev <- rs$weak
+    m_cell <- rs$m_cell; category_signature <- rs$category_signature
+    area_level <- rs$area
+    notes <- c(notes, rs$notes)
+  } else {
+    refit <- split_items(fit, item, by = grp)
+    levs <- levels(grp)
+    split_names <- paste0(item, " (", levs, ")")
+    idx <- match(split_names, refit$items$item)
+    if (anyNA(idx))
+      stop("resolved item(s) missing after re-analysis (too little data): ",
+           paste(split_names[is.na(idx)], collapse = ", "))
 
-  # location covariance from the sandwich: var(mean of a threshold block)
-  thr <- refit$thresholds; cv <- refit$est$cov_tau
-  block <- lapply(idx, function(k) thr$id[thr$item == k])
-  loc <- refit$items$location[idx]
-  vloc <- matrix(NA_real_, length(levs), length(levs))
-  for (a in seq_along(levs)) for (b in seq_along(levs))
-    vloc[a, b] <- mean(cv[block[[a]], block[[b]], drop = FALSE])
-
-  n_item <- as.integer(table(grp[!is.na(fit$X[, i]) & !is.na(grp)])[levs])
+    # location covariance from the sandwich: var(mean of a threshold block)
+    thr <- refit$thresholds; cv <- refit$est$cov_tau
+    block <- lapply(idx, function(k) thr$id[thr$item == k])
+    loc <- refit$items$location[idx]
+    m_cell <- matrix(refit$m[idx], nrow = 1L,
+                     dimnames = list(item, levs))
+    category_signature <- matrix(vapply(levs, function(lv)
+      paste(sort(unique(fit$X[as.character(grp) == lv &
+                                !is.na(fit$X[, i]), i])), collapse = ","), ""),
+      nrow = 1L, dimnames = list(item, levs))
+    area_level <- refit$m[idx] * loc
+    vloc <- matrix(NA_real_, length(levs), length(levs))
+    for (a in seq_along(levs)) for (b in seq_along(levs))
+      vloc[a, b] <- mean(cv[block[[a]], block[[b]], drop = FALSE])
+    weak_lev <- .dif_weak_levels(refit, as.list(idx)); names(weak_lev) <- levs
+    if (any(weak_lev))
+      notes <- c(notes, sprintf(
+        "location(s) for level(s) %s rest on a near-empty category and are weakly identified; their DIF magnitude and significance are withheld",
+        paste(levs[weak_lev], collapse = ", ")))
+  }
+  n_item <- as.integer(table(grp[obs_i & !is.na(grp)])[levs])
+  lev_se <- sqrt(pmax(diag(vloc), 0)); lev_se[weak_lev] <- NA_real_
+  if (repeated_person) lev_se[] <- NA_real_
   levels_df <- data.frame(level = levs, location = loc,
-                          se = sqrt(pmax(diag(vloc), 0)), n = n_item)
+                          se = lev_se, weak = unname(weak_lev), n = n_item)
 
   pr <- t(utils::combn(seq_along(levs), 2))
+  pair_weak <- weak_lev[pr[, 1]] | weak_lev[pr[, 2]]
+  same_categories <- vapply(seq_len(nrow(pr)), function(k)
+    all(category_signature[, pr[k, 1]] ==
+          category_signature[, pr[k, 2]]), TRUE)
+  pair_invalid <- pair_weak | !same_categories
+  if (any(!same_categories)) {
+    bad_pairs <- paste0(levs[pr[!same_categories, 1]], " versus ",
+                        levs[pr[!same_categories, 2]])
+    notes <- c(notes, paste(
+      "DIF magnitude and inference are withheld where resolved groups have",
+      "different observed response-category structures:",
+      paste(bad_pairs, collapse = ", ")))
+  }
   pairs <- data.frame(
     level_a = levs[pr[, 1]], level_b = levs[pr[, 2]],
     difference = loc[pr[, 1]] - loc[pr[, 2]],
     se = sqrt(pmax(diag(vloc)[pr[, 1]] + diag(vloc)[pr[, 2]] -
                    2 * vloc[cbind(pr[, 1], pr[, 2])], 1e-12)))
+  # a pair touching a weakly-identified level carries no trustworthy
+  # magnitude: withhold its SE and every SE-derived verdict
+  pairs$difference[pair_invalid] <- NA_real_
+  pairs$se[pair_invalid] <- NA_real_
+  if (repeated_person) pairs$se[] <- NA_real_
   pairs$z <- pairs$difference / pairs$se
   pairs$p <- 2 * pnorm(-abs(pairs$z))
   pairs$p_adj <- p.adjust(pairs$p, method = p_adjust)
   pairs$lower <- pairs$difference - qnorm(0.975) * pairs$se
   pairs$upper <- pairs$difference + qnorm(0.975) * pairs$se
-  pairs$significant <- pairs$p_adj < alpha
-  pairs$practical <- abs(pairs$difference) >= flag_logits
+  pairs$significant <- ifelse(pair_invalid | repeated_person, NA,
+                              pairs$p_adj < alpha)
+  pairs$practical <- ifelse(pair_invalid, NA,
+                            abs(pairs$difference) >= flag_logits)
+  pairs$ets <- if (!polytomous)
+    .ets_category(pairs$difference, pairs$se, pairs$p, alpha) else NA_character_
+  pairs$signed_area <- if (polytomous)
+    area_level[pr[, 1]] - area_level[pr[, 2]] else NA_real_
+  pairs$signed_area[pair_invalid] <- NA_real_
 
   out <- list(item = item, by = paste(names(factors), collapse = ":"),
               levels = levels_df, pairs = pairs, alpha = alpha,
-              p_adjust = p_adjust, flag_logits = flag_logits, notes = notes)
+              p_adjust = p_adjust, flag_logits = flag_logits,
+              classification = if (polytomous)
+                "PCM signed expected-score area (descriptive)" else "ETS",
+              notes = notes)
+  out <- .tag_tables(out)
   class(out) <- "rasch_dif_size"
   out
 }
@@ -555,7 +1141,116 @@ print.rasch_dif_size <- function(x, ...) {
 # ---------------------------------------------------------------------------
 
 # Resolve one item over grouping cells: locations and sandwich covariance.
+# A resolved level is weakly identified when its split copy rests on a
+# near-empty category: split_items() already flags such thresholds
+# (weak = TRUE, se = NA) and leaves the item-location SE NA. A location
+# built on such a threshold is a boundary artefact, so its DIF magnitude
+# and significance must be withheld rather than recomputed from the ridged
+# covariance -- otherwise dif_size()/dif_contrasts() report a fabricated
+# finite SE and a spurious 'significant'/'practical' verdict. item_rows is
+# a list, one entry per level, of the refit$items row-index(es) whose
+# thresholds back that level's location.
+.dif_weak_levels <- function(refit, item_rows) {
+  wk <- refit$thresholds$weak
+  se <- refit$items$se
+  vapply(item_rows, function(ks) any(vapply(ks, function(k) {
+    (!is.null(wk) && isTRUE(any(wk[refit$thresholds$item == k], na.rm = TRUE))) ||
+      (!is.null(se) && k <= length(se) && is.na(se[k]))
+  }, logical(1))), logical(1))
+}
+
 .dif_resolve <- function(fit, item, grp, min_n) {
+  # an UNDERLYING MFRM item resolves at the virtual level: every one of
+  # its facet cells is split by the groups in one joint unstructured
+  # refit of the virtual matrix (the facet decomposition is not
+  # reimposed), and the per-level locations are precision-weighted means
+  # over the item's cells with the full covariance carried
+  if (inherits(fit, "rasch_mfrm") && !is.null(fit$virtual_map) &&
+      !(item %in% colnames(fit$X)) && item %in% fit$virtual_map$item) {
+    vm <- fit$virtual_map
+    cols <- vm$vkey[vm$item == item]
+    notes <- paste0(item, ": resolved at the virtual-item level, pooled ",
+                    "over its facet cells (facet structure not reimposed)")
+    obs <- rowSums(!is.na(fit$X[, cols, drop = FALSE])) > 0L
+    n_lev <- table(grp[obs & !is.na(grp)])
+    thin <- names(n_lev)[n_lev < min_n]
+    if (length(thin)) {
+      notes <- c(notes, sprintf(
+        "%s: level(s) dropped with fewer than %d responders: %s",
+        item, min_n, paste(thin, collapse = ", ")))
+      grp <- factor(ifelse(as.character(grp) %in% thin, NA,
+                           as.character(grp)))
+    }
+    grp <- droplevels(grp)
+    if (nlevels(grp) < 2) return(NULL)
+    vfit <- fit; class(vfit) <- "rasch"
+    vfit$model <- "PCM"   # unstructured virtual thresholds refit as PCM
+    refit <- tryCatch(split_items(vfit, cols, by = grp),
+                      error = function(e) NULL)
+    if (is.null(refit)) return(NULL)
+    levs <- levels(grp)
+    thr <- refit$thresholds; cv <- refit$est$cov_tau
+    # COMMON cells with COMMON weights: every facet cell used must be
+    # resolved for EVERY level, and each cell gets one weight shared by
+    # all levels, so the cell's facet severity cancels exactly from every
+    # level contrast. Group-specific precision weights let severity leak
+    # into the DIF magnitude when groups have different facet exposure
+    # (a no-DIF design with sex-linked rater allocation read -1.75
+    # logits, z = -6.5).
+    idx_m <- sapply(levs, function(l)
+      match(paste0(cols, " (", l, ")"), refit$items$item))
+    if (is.null(dim(idx_m))) idx_m <- matrix(idx_m, nrow = length(cols))
+    common <- rowSums(is.na(idx_m)) == 0L
+    if (sum(common) < 1L) return(NULL)
+    if (any(!common))
+      notes <- c(notes, sprintf(
+        "%s: facet cell(s) dropped from the magnitude (not resolvable for every level): %s",
+        item, paste(cols[!common], collapse = ", ")))
+    idx_m <- idx_m[common, , drop = FALSE]
+    cols_common <- cols[common]
+    category_signature <- vapply(levs, function(lv)
+      vapply(cols_common, function(cc)
+        paste(sort(unique(fit$X[as.character(grp) == lv &
+                                  !is.na(fit$X[, cc]), cc])),
+              collapse = ","), ""), character(length(cols_common)))
+    if (is.null(dim(category_signature)))
+      category_signature <- matrix(category_signature,
+                                   nrow = length(cols_common))
+    rownames(category_signature) <- cols_common
+    colnames(category_signature) <- levs
+    blocks <- lapply(seq_len(nrow(idx_m)), function(ci)
+      lapply(idx_m[ci, ], function(k) thr$id[thr$item == k]))
+    # one weight per cell: inverse of the level-averaged location variance
+    vr_c <- vapply(blocks, function(bl)
+      mean(vapply(bl, function(rws) mean(cv[rws, rws]), 0)), 0)
+    w_c <- 1 / pmax(vr_c, 1e-10); w_c <- w_c / sum(w_c)
+    cell_loc <- matrix(refit$items$location[idx_m], nrow = nrow(idx_m),
+                       ncol = length(levs), dimnames = list(NULL, levs))
+    m_cell <- matrix(refit$m[idx_m], nrow = nrow(idx_m),
+                     ncol = length(levs), dimnames = list(NULL, levs))
+    loc <- vapply(seq_along(levs), function(a)
+      sum(w_c * cell_loc[, a]), 0)
+    area <- vapply(seq_along(levs), function(a)
+      sum(w_c * m_cell[, a] * cell_loc[, a]), 0)
+    vloc <- matrix(NA_real_, length(levs), length(levs))
+    for (a in seq_along(levs)) for (b in seq_along(levs)) {
+      acc <- 0
+      for (ca in seq_along(blocks)) for (cb in seq_along(blocks))
+        acc <- acc + w_c[ca] * w_c[cb] *
+          mean(cv[blocks[[ca]][[a]], blocks[[cb]][[b]], drop = FALSE])
+      vloc[a, b] <- acc
+    }
+    weak_lev <- .dif_weak_levels(refit, lapply(seq_along(levs),
+                                               function(a) idx_m[, a]))
+    names(weak_lev) <- levs
+    if (any(weak_lev))
+      notes <- c(notes, sprintf(
+        "%s: location(s) for level(s) %s rest on a near-empty category and are weakly identified; their DIF magnitude and significance are withheld",
+        item, paste(levs[weak_lev], collapse = ", ")))
+    return(list(levs = levs, loc = loc, vloc = vloc, weak = weak_lev,
+                m_cell = m_cell, category_signature = category_signature,
+                area = area, notes = notes))
+  }
   i <- .item_idx(fit, item)
   item <- fit$items$item[i]
   notes <- character(0)
@@ -576,10 +1271,24 @@ print.rasch_dif_size <- function(x, ...) {
   thr <- refit$thresholds; cv <- refit$est$cov_tau
   block <- lapply(idx, function(k) thr$id[thr$item == k])
   loc <- refit$items$location[idx]
+  m_cell <- matrix(refit$m[idx], nrow = 1L,
+                   dimnames = list(item, levs))
+  category_signature <- matrix(vapply(levs, function(lv)
+    paste(sort(unique(fit$X[as.character(grp) == lv &
+                              !is.na(fit$X[, i]), i])), collapse = ","), ""),
+    nrow = 1L, dimnames = list(item, levs))
+  area <- refit$m[idx] * loc
   vloc <- matrix(NA_real_, length(levs), length(levs))
   for (a in seq_along(levs)) for (b in seq_along(levs))
     vloc[a, b] <- mean(cv[block[[a]], block[[b]], drop = FALSE])
-  list(levs = levs, loc = loc, vloc = vloc, notes = notes)
+  weak_lev <- .dif_weak_levels(refit, as.list(idx)); names(weak_lev) <- levs
+  if (any(weak_lev))
+    notes <- c(notes, sprintf(
+      "%s: location(s) for level(s) %s rest on a near-empty category and are weakly identified; their DIF magnitude and significance are withheld",
+      item, paste(levs[weak_lev], collapse = ", ")))
+  list(levs = levs, loc = loc, vloc = vloc, weak = weak_lev,
+       m_cell = m_cell, category_signature = category_signature,
+       area = area, notes = notes)
 }
 
 # A factor is treated as ordered when declared ordered or when its levels
@@ -675,9 +1384,9 @@ print.rasch_dif_size <- function(x, ...) {
       if (is.null(la) || is.null(lb)) next
       wa <- la$weights[as.character(cellmap[[fns[a]]])]
       wb <- lb$weights[as.character(cellmap[[fns[b]]])]
-      key <- paste(cellmap[[fns[a]]], cellmap[[fns[b]]])
+      key <- .factor_cells(cellmap[c(fns[a], fns[b])], sep = "\r")
       w <- .dif_norm(stats::setNames(
-        wa * wb / as.numeric(table(key)[key]), cellmap$cell))
+        wa * wb / as.numeric(table(key)[as.character(key)]), cellmap$cell))
       if (is.null(w)) next
       nm <- sprintf("%s(%s) x %s(%s)", fns[a], la$label, fns[b], lb$label)
       fam[[nm]] <- w
@@ -688,58 +1397,151 @@ print.rasch_dif_size <- function(x, ...) {
   list(family = fam, meta = meta)
 }
 
-# Welch test of a linear combination of independent group means.
-.welch_contrast <- function(vals, g, w) {
-  ok <- !is.na(vals) & !is.na(g)
-  vals <- vals[ok]; g <- droplevels(factor(g[ok]))
-  w <- w[levels(g)]
-  if (any(is.na(w)) || sum(abs(w)) < 1e-10) return(NULL)
-  m <- tapply(vals, g, mean); v <- tapply(vals, g, stats::var)
-  n <- tapply(vals, g, length)
-  if (any(n < 2)) return(NULL)
-  vv <- sum(w^2 * v / n)
+# Test any resolved-cell contrast in a stacked design without treating rows
+# from the same person as independent. The supplied cell weights already
+# encode the desired marginal comparison. Within each between-person cell we
+# first form one weighted residual score per person, then combine the
+# independent cell means with a Welch--Satterthwaite reference.
+.dif_paired_cell_contrast <- function(z, factors, grp, id, within,
+                                      cellmap, weights) {
+  id <- as.character(id)
+  between <- setdiff(names(factors), within)
+  bkey <- if (length(between))
+    as.character(.factor_cells(factors[between], sep = "\r"))
+  else rep("all", nrow(factors))
+  map_bkey <- if (length(between))
+    as.character(.factor_cells(cellmap[between], sep = "\r"))
+  else rep("all", nrow(cellmap))
+  names(weights) <- cellmap$cell
+
+  people <- split(seq_along(id), id)
+  score <- group <- rep(NA_character_, length(people))
+  score_num <- rep(NA_real_, length(people))
+  for (j in seq_along(people)) {
+    r <- people[[j]]
+    ok <- is.finite(z[r]) & !is.na(grp[r]) & !is.na(bkey[r])
+    if (!any(ok)) next
+    r <- r[ok]
+    bg <- unique(bkey[r])
+    if (length(bg) != 1L) next
+    use_cells <- cellmap$cell[map_bkey == bg & weights != 0]
+    if (!length(use_cells)) next
+    means <- tapply(z[r], as.character(grp[r]), mean)
+    if (anyNA(match(use_cells, names(means)))) next
+    score_num[j] <- sum(weights[use_cells] * means[use_cells])
+    group[j] <- bg
+  }
+  ok <- is.finite(score_num) & !is.na(group)
+  if (sum(ok) < 3L) return(NULL)
+  sp <- split(score_num[ok], group[ok])
+  sp <- sp[lengths(sp) >= 2L]
+  if (!length(sp)) return(NULL)
+  means <- vapply(sp, mean, 0)
+  vars <- vapply(sp, stats::var, 0)
+  ns <- lengths(sp)
+  parts <- vars / ns
+  vv <- sum(parts)
   if (!is.finite(vv) || vv <= 0) return(NULL)
-  df <- vv^2 / sum((w^2 * v / n)^2 / (n - 1))
-  t <- sum(w * m) / sqrt(vv)
-  list(stat = t, df = df, p = 2 * stats::pt(-abs(t), df))
+  df <- vv^2 / sum(parts^2 / (ns - 1))
+  stat <- sum(means) / sqrt(vv)
+  list(stat = stat, df = df, p = 2 * stats::pt(-abs(stat), df))
 }
 
-#' Planned DIF contrasts derived from the factor structure
+# Pairwise marginal comparisons for one term. For a main effect these are
+# differences between factor levels, averaged equally over complete cells of
+# the remaining factors. For an interaction they are tensor products of the
+# level differences: difference-in-differences for two factors and the direct
+# higher-order analogue beyond two.
+.dif_posthoc_family <- function(factors, cellmap, target, within) {
+  bad <- setdiff(target, names(factors))
+  if (length(bad))
+    stop("term factor(s) not found: ", paste(bad, collapse = ", "))
+  pairs <- lapply(target, function(fn) {
+    lv <- levels(factors[[fn]])
+    if (length(lv) < 2L) return(list())
+    pr <- utils::combn(lv, 2)
+    lapply(seq_len(ncol(pr)), function(j) {
+      w <- stats::setNames(numeric(length(lv)), lv)
+      w[pr[1, j]] <- -1; w[pr[2, j]] <- 1
+      list(weights = w, label = sprintf("%s - %s", pr[2, j], pr[1, j]))
+    })
+  })
+  if (any(!lengths(pairs))) stop("every term factor needs at least two levels")
+  grid <- expand.grid(lapply(pairs, seq_along), KEEP.OUT.ATTRS = FALSE)
+  nuisance <- setdiff(names(factors), target)
+  nkey <- if (length(nuisance))
+    as.character(.factor_cells(cellmap[nuisance], sep = "\r"))
+  else rep("all", nrow(cellmap))
+  family <- meta <- list()
+  for (r in seq_len(nrow(grid))) {
+    chosen <- lapply(seq_along(target), function(j) pairs[[j]][[grid[r, j]]])
+    raw <- rep(1, nrow(cellmap))
+    active <- rep(TRUE, nrow(cellmap))
+    for (j in seq_along(target)) {
+      fw <- chosen[[j]]$weights
+      cw <- unname(fw[as.character(cellmap[[target[j]]])])
+      cw[is.na(cw)] <- 0
+      raw <- raw * cw
+      active <- active & cw != 0
+    }
+    # Marginalise only over nuisance strata containing the complete target
+    # contrast. This avoids changing the estimand when an unbalanced design
+    # has a structurally absent target cell.
+    complete_n <- names(which(tapply(active, nkey, sum) == 2^length(target)))
+    raw[!active | !nkey %in% complete_n] <- 0
+    if (!length(complete_n)) next
+    w <- stats::setNames(raw / length(complete_n), cellmap$cell)
+    label <- paste(vapply(chosen, `[[`, "", "label"), collapse = " x ")
+    family[[label]] <- w
+    meta[[label]] <- list(
+      factors = target,
+      fweights = lapply(chosen, `[[`, "weights"),
+      within = any(target %in% within))
+  }
+  if (!length(family))
+    stop("no complete cells support post-hoc comparisons for term '",
+         .dif_term_label(target), "'")
+  list(family = family, meta = meta)
+}
+
+#' Planned DIF contrasts
 #'
-#' The confirmatory alternative to exhaustive post-hoc comparison: instead
-#' of every pair of design cells, a small family of one-degree-of-freedom
-#' questions is tested, so familywise control costs little power (Maxwell
-#' and Delaney 2004, ch. 5). By default the family is derived from the
-#' structure of the factors themselves -- a two-level factor contributes its
-#' difference; an ordered factor (declared ordered, or with numeric levels
-#' such as ages or waves) contributes its linear and quadratic trends; a
-#' nominal factor contributes all pairs when it has up to four levels and
-#' each-level-against-the-rest otherwise; and every pair of factors with a
-#' leading contrast (a difference or a linear trend) contributes the product
-#' interaction. Print the returned object to see the family in words before
-#' reading the results; a family endorsed in advance of the results is what
-#' makes the contrasts planned.
+#' Tests a specified family of one-degree-of-freedom DIF contrasts. By default,
+#' contrasts are derived from the factor structure: differences for two-level
+#' factors, polynomial trends for ordered factors, and pairwise or
+#' level-against-rest comparisons for nominal factors. Leading contrasts are
+#' crossed to form two-factor interactions. User-supplied cell weights are
+#' also accepted.
 #'
-#' Each contrast is estimated in logits from resolved item locations (the
-#' item split into one copy per design cell and the model refitted, as in
-#' \code{\link{dif_size}}), with cell weights scaled so every estimate is a
-#' difference between two weighted averages -- directly comparable to the
-#' practical-significance criterion. Because resolution is used, magnitudes
-#' are read from a calibration in which compensating artificial DIF has been
-#' removed (Andrich and Hagquist 2015).
+#' @details
+#' Each logit contrast is calculated from resolved item locations. Weights are
+#' scaled so their positive and negative parts each sum to one. With repeated
+#' persons, inference uses person-level residual contrast scores with the same
+#' cell weights as the resolved estimate. Nuisance-factor cells are averaged
+#' equally rather than in proportion to their sample sizes. Independent
+#' between-person cells are then combined with a Welch--Satterthwaite
+#' reference. The resolved logit estimate is retained, but its
+#' calibration-based standard error is withheld because it does not include
+#' repeated-person dependence.
 #'
-#' When \code{id} shows that persons repeat across rows (a stacked
-#' repeated-measures design), between-row independence fails and the usual
-#' tests would be invalid. Significance is then computed from person-level
-#' scores of the standardised residuals: a within-subject contrast (for
-#' example a trend over time) becomes one contrast score per person, tested
-#' against zero; a between-subjects contrast is tested on person-mean
-#' residuals; and a between-by-within interaction tests the person contrast
-#' scores across the between groups. Logit estimates are still reported from
-#' the resolved locations; their standard errors treat rows as independent
-#' and are conservative for within-subject differences.
+#' For independent rows, a contrast with weights \eqn{\mathbf{c}} is
+#' \deqn{\Delta_i=\mathbf{c}^{\mathsf T}\delta_i,\qquad
+#' \operatorname{SE}(\Delta_i)=
+#' \sqrt{\mathbf{c}^{\mathsf T}\mathbf{V}_i\mathbf{c}}.}
+#' In a repeated-measures design, a within-person contrast is formed from the
+#' standardised residuals,
+#' \deqn{s_p=\sum_l c_l z_{pl},}
+#' and tested over persons. The complete cell-weight vector is retained for
+#' main effects and interactions, so the residual test and resolved estimate
+#' address the same marginal contrast. The sign of each residual test is
+#' aligned with the resolved logit contrast. Contrasts require a converged
+#' calibration.
+#' For an MFRM fit, underlying items are pooled over their facet cells by
+#' default. EFRM fits are excluded because the required split refit would
+#' discard the frame units.
 #'
-#' @param fit A fitted object from \code{\link{rasch}}.
+#' @param fit A fitted object from \code{\link{rasch}} or
+#'   \code{\link{rasch_mfrm}}.
 #' @param factors A data frame of person factors, a character vector naming
 #'   factors nominated in the fit, or a single grouping vector. Defaults to
 #'   every factor stored in the fit.
@@ -748,15 +1550,15 @@ print.rasch_dif_size <- function(x, ...) {
 #'   time). Detected automatically when \code{id} is supplied and a factor
 #'   varies within an id.
 #' @param id Person identifier with one entry per row, or the name of a
-#'   nominated factor holding it; required for stacked designs where the
-#'   same person occupies several rows.
+#'   nominated factor holding it. By default the identifier stored by the
+#'   fitted model is used, so stacked designs retain their pairing.
 #' @param contrasts \code{"auto"} (derive the family from the factor
 #'   structure) or a named list of numeric cell-weight vectors, each named
 #'   by the design-cell labels (factor levels joined by \code{":"}).
 #'   Weights are rescaled so the positive and negative parts each sum to
 #'   one.
-#' @param p_adjust Familywise adjustment over the whole family (items by
-#'   contrasts); default \code{"holm"}.
+#' @param p_adjust Familywise adjustment across items and contrasts. The
+#'   default is \code{"holm"}.
 #' @param alpha Significance level for the adjusted probabilities.
 #' @param flag_logits Absolute estimate flagged as practically significant.
 #' @param min_n Cells with fewer responders to an item are dropped from that
@@ -767,16 +1569,18 @@ print.rasch_dif_size <- function(x, ...) {
 #'   \code{significant}, \code{practical}, \code{within}), \code{family}
 #'   (the derived questions with their cell weights), the settings, and any
 #'   \code{notes}.
-#' @references Maxwell, S. E., & Delaney, H. D. (2004). \emph{Designing
-#'   Experiments and Analyzing Data} (2nd ed.). Mahwah, NJ: Erlbaum.
+#' @references
+#' Maxwell, S. E. and Delaney, H. D. (2004). Designing Experiments and
+#' Analyzing Data (2nd ed.). Erlbaum.
 #'
-#'   Andrich, D., & Hagquist, C. (2015). Real and artificial differential
-#'   item functioning in polytomous items. \emph{Educational and
-#'   Psychological Measurement}, 75(2), 185-207.
+#' Andrich, D. and Hagquist, C. (2015). Real and artificial differential item
+#' functioning in polytomous items. Educational and Psychological Measurement,
+#' 75(2), 185--207.
 #'
-#'   Hagquist, C., & Andrich, D. (2017). Recent advances in analysis of
-#'   differential item functioning in health research using the Rasch
-#'   model. \emph{Health and Quality of Life Outcomes}, 15, 181.
+#' Hagquist, C. and Andrich, D. (2017). Recent advances in analysis of
+#' differential item functioning in health research using the Rasch model.
+#' Health and Quality of Life Outcomes, 15, 181.
+#' @seealso \code{\link{dif_anova}} and \code{\link{dif_size}}.
 #' @examples
 #' set.seed(1); n <- 600
 #' d <- seq(-2, 2, length.out = 8); g <- rep(c("a", "b"), each = n / 2)
@@ -789,22 +1593,34 @@ print.rasch_dif_size <- function(x, ...) {
 dif_contrasts <- function(fit, factors = NULL, items = NULL, within = NULL,
                           id = NULL, contrasts = "auto", p_adjust = "holm",
                           alpha = 0.05, flag_logits = 0.5, min_n = 20) {
+  if (!inherits(fit, "rasch")) stop("dif_contrasts needs a rasch fit")
+  if (inherits(fit, "rasch_efrm"))
+    .refuse("resolved DIF contrasts are not available for EFRM fits; the ",
+            "ordinary split refit would discard the fitted frame units")
+  if (!isTRUE(fit$est$converged))
+    stop("the fitted calibration did not converge; DIF contrasts are unavailable")
   factors <- .dif_factors(fit, factors)
   factors <- as.data.frame(lapply(factors, function(v) {
     f <- droplevels(if (is.ordered(v)) v else factor(v))
     f
   }), check.names = FALSE, stringsAsFactors = FALSE)
-  grp <- interaction(factors, sep = ":", drop = TRUE)
+  grp <- .factor_cells(factors, sep = ":")
   cellmap <- unique(data.frame(cell = as.character(grp), factors,
                                check.names = FALSE))
   cellmap <- cellmap[match(levels(grp), cellmap$cell), , drop = FALSE]
 
+  # The fitted response-row identifier is the analysis-unit identifier for a
+  # repeated-person design. Requiring it again would silently turn an omitted
+  # argument into an independent-row analysis.
+  if (is.null(id) && !is.null(fit$person$id)) id <- fit$person$id
   if (is.character(id) && length(id) == 1L && !is.null(fit$factors) &&
       id %in% names(fit$factors)) id <- fit$factors[[id]]
+  if (!is.null(id) && length(id) != nrow(factors))
+    stop("`id` must have one value per fitted response row")
   if (is.null(within) && !is.null(id) && anyDuplicated(id)) {
     within <- names(factors)[vapply(names(factors), function(fn)
-      any(tapply(as.character(factors[[fn]]), id,
-                 function(v) length(unique(v)) > 1L)), TRUE)]
+      any(tapply(as.character(factors[[fn]]), id, function(v)
+        length(unique(v[!is.na(v)])) > 1L), na.rm = TRUE), TRUE)]
   }
   if (is.null(within)) within <- character(0)
   within <- intersect(within, names(factors))
@@ -817,6 +1633,7 @@ dif_contrasts <- function(fit, factors = NULL, items = NULL, within = NULL,
   } else {
     if (!is.list(contrasts) || is.null(names(contrasts)))
       stop("`contrasts` must be \"auto\" or a named list of cell weights")
+    supplied_meta <- attr(contrasts, "dif_meta", exact = TRUE)
     fam <- list(family = list(), meta = list())
     for (nm in names(contrasts)) {
       w <- contrasts[[nm]]
@@ -825,17 +1642,35 @@ dif_contrasts <- function(fit, factors = NULL, items = NULL, within = NULL,
              paste(cellmap$cell, collapse = ", "))
       full <- stats::setNames(numeric(nrow(cellmap)), cellmap$cell)
       full[names(w)] <- w
-      w <- .dif_norm(full)
-      if (is.null(w)) stop("contrast '", nm, "' has no weight")
+      preserve_scale <- isTRUE(supplied_meta[[nm]]$preserve_scale)
+      w <- if (preserve_scale) full else .dif_norm(full)
+      if (is.null(w) || !any(w > 0) || !any(w < 0) ||
+          abs(sum(w)) > 1e-8)
+        stop("contrast '", nm, "' needs positive and negative weights that sum to zero")
       fam$family[[nm]] <- w
-      fam$meta[[nm]] <- list(factors = names(factors), fweights = NULL,
-                             within = FALSE)
+      fam$meta[[nm]] <- if (!is.null(supplied_meta[[nm]]))
+        supplied_meta[[nm]]
+      else list(factors = names(factors), fweights = NULL, within = FALSE)
     }
   }
   if (!length(fam$family)) stop("no contrasts could be formed")
 
-  its <- if (is.null(items)) fit$items$item else
-    fit$items$item[vapply(items, function(x) .item_idx(fit, x), 1L)]
+  underlying <- if (inherits(fit, "rasch_mfrm") &&
+                    !is.null(fit$virtual_map))
+    unique(as.character(fit$virtual_map$item)) else character(0)
+  if (is.null(items)) {
+    its <- if (length(underlying)) underlying else fit$items$item
+  } else {
+    its <- vapply(items, function(x) {
+      if (is.character(x) && length(x) == 1L && x %in% underlying) return(x)
+      ii <- .item_idx(fit, x)
+      if (length(ii) != 1L || is.na(ii)) return(NA_character_)
+      fit$items$item[ii]
+    }, character(1))
+    if (anyNA(its))
+      stop("item(s) not found in the fit: ",
+           paste(items[is.na(its)], collapse = ", "))
+  }
   Z <- fit$residuals
   notes <- character(0)
   rows <- list()
@@ -851,9 +1686,17 @@ dif_contrasts <- function(fit, factors = NULL, items = NULL, within = NULL,
       if (!is.null(rs)) {
         w <- w_full[rs$levs]
         w[is.na(w)] <- 0
-        if (sum(w > 0) > 0 && sum(w < 0) > 0 &&
-            abs(sum(abs(w)) - 2) < 0.5) {   # cells mostly intact
-          w <- .dif_norm(w)
+        # a contrast placing weight on a weakly-identified level rests on a
+        # boundary-artefact location: withhold its estimate and SE
+        touches_weak <- !is.null(rs$weak) && any(w != 0 & rs$weak)
+        preserve_scale <- isTRUE(mt$preserve_scale)
+        complete_support <- all(names(w_full)[w_full != 0] %in% rs$levs)
+        valid_weights <- sum(w > 0) > 0 && sum(w < 0) > 0 &&
+          abs(sum(w)) < 1e-8 &&
+          (if (preserve_scale) complete_support
+           else abs(sum(abs(w)) - 2) < 0.5)
+        if (valid_weights && !touches_weak) {
+          if (!preserve_scale) w <- .dif_norm(w)
           est <- sum(w * rs$loc)
           se <- sqrt(max(drop(t(w) %*% rs$vloc %*% w), 1e-12))
         }
@@ -863,56 +1706,18 @@ dif_contrasts <- function(fit, factors = NULL, items = NULL, within = NULL,
           stat <- est / se
           p <- 2 * stats::pnorm(-abs(stat))
         }
-      } else if (isTRUE(mt$within) && length(mt$factors) == 1L) {
-        # within-subject contrast: one score per (complete) person
-        fw <- .dif_norm(fam$meta[[nm]]$fweights[[1]])
-        lev <- as.character(factors[[mt$factors]])
-        zi <- Z[, i]
-        ps <- split(seq_along(zi), id)
-        psi <- vapply(ps, function(rws) {
-          l <- lev[rws]
-          if (anyDuplicated(l) || !all(names(fw) %in% l)) return(NA_real_)
-          sum(fw * zi[rws][match(names(fw), l)])
-        }, 0)
-        psi <- psi[!is.na(psi)]
-        if (length(psi) >= 10) {
-          # sign aligned with the logit estimate: a harder level has the
-          # higher resolved location but the lower residuals
-          stat <- -mean(psi) / (stats::sd(psi) / sqrt(length(psi)))
-          df <- length(psi) - 1
-          p <- 2 * stats::pt(-abs(stat), df)
-        }
-      } else if (isTRUE(mt$within) && length(mt$factors) == 2L) {
-        # between-by-within interaction: within contrast scores per person,
-        # tested across the between groups
-        wf <- intersect(mt$factors, within)[1]
-        bf <- setdiff(mt$factors, wf)[1]
-        fws <- fam$meta[[nm]]$fweights
-        fw <- .dif_norm(fws[[match(wf, mt$factors)]])
-        bw <- fws[[match(bf, mt$factors)]]
-        lev <- as.character(factors[[wf]])
-        blev <- as.character(factors[[bf]])
-        zi <- Z[, i]
-        ps <- split(seq_along(zi), id)
-        psi <- vapply(ps, function(rws) {
-          l <- lev[rws]
-          if (anyDuplicated(l) || !all(names(fw) %in% l)) return(NA_real_)
-          sum(fw * zi[rws][match(names(fw), l)])
-        }, 0)
-        pb <- vapply(ps, function(rws) blev[rws][1], "")
-        ok <- !is.na(psi)
-        wc <- .welch_contrast(psi[ok], pb[ok], bw / 2)
-        if (!is.null(wc)) { stat <- -wc$stat; df <- wc$df; p <- wc$p }
       } else {
-        # between-subjects question in a stacked design: test on person
-        # means of the residuals so each person counts once
-        zi <- Z[, i]
-        pm <- tapply(zi, id, mean, na.rm = TRUE)
-        pcell <- tapply(as.character(grp), id, function(v) v[1])
-        wc <- .welch_contrast(pm, factor(pcell, levels = cellmap$cell),
-                              w_full / 2)
+        # One person-level calculation covers every repeated design. Using
+        # the full resolved-cell weights is essential: a shortcut based on
+        # one score per person silently weights nuisance between-person cells
+        # by their sample sizes, while the reported resolved estimate averages
+        # those cells equally. The test and estimate must address the same
+        # marginal contrast.
+        wc <- .dif_paired_cell_contrast(
+          Z[, i], factors, grp, id, within, cellmap, w_full)
         if (!is.null(wc)) { stat <- -wc$stat; df <- wc$df; p <- wc$p }
       }
+      if (paired) se <- NA_real_
       rows[[length(rows) + 1L]] <- data.frame(
         item = item, contrast = nm, within = isTRUE(mt$within),
         estimate = est, se = se, statistic = stat, df = df, p = p)
@@ -937,8 +1742,152 @@ dif_contrasts <- function(fit, factors = NULL, items = NULL, within = NULL,
   out <- list(table = tab, family = fam_df, within = within,
               paired = paired, alpha = alpha, p_adjust = p_adjust,
               flag_logits = flag_logits, notes = unique(notes))
+  out <- .tag_tables(out)
   class(out) <- "rasch_dif_contrasts"
   out
+}
+
+#' Pairwise follow-up comparisons for a DIF term
+#'
+#' Resolves one item's locations over the complete person-factor design and
+#' follows up a selected main effect or interaction. Main effects are pairwise
+#' marginal differences. Interactions are differences between those
+#' differences, providing a logit-scale magnitude for the interaction itself.
+#'
+#' @details
+#' For levels \eqn{a,b} of one factor, the comparison is
+#' \deqn{\Delta_{ba}=\bar\delta_b-\bar\delta_a,}
+#' where the bars average equally over complete cells of the other nominated
+#' factors. For a two-factor interaction, levels \eqn{a,b} and \eqn{c,d} give
+#' \deqn{\Delta_{ba\mathbin{:}dc}=
+#' (\delta_{bd}-\delta_{ad})-(\delta_{bc}-\delta_{ac}).}
+#' Higher-order interactions use the corresponding tensor-product contrast.
+#' Standard errors use the full covariance of the resolved locations.
+#'
+#' This is the follow-up to a significant DIF term with more than two levels.
+#' It reports effects in Rasch logits, adjusts the chosen family of comparisons,
+#' and uses person-level scores with the same equal-cell marginal weights in
+#' repeated-measures designs.
+#'
+#' @param fit A fitted object from \code{\link{rasch}} or
+#'   \code{\link{rasch_mfrm}}. EFRM fits are excluded because resolved
+#'   comparisons would discard their frame units.
+#' @param item Item name or index.
+#' @param term A factor name for a main effect, or a character vector of
+#'   factor names for an interaction. A single colon-separated string is
+#'   also accepted when the factor names themselves contain no colon.
+#' @param factors The complete person-factor design, specified as for
+#'   \code{\link{dif_contrasts}}. Other factors are retained when calculating
+#'   marginal comparisons.
+#' @param within Within-person factor names, specified as for
+#'   \code{\link{dif_contrasts}}.
+#' @param id Person identifiers, specified as for
+#'   \code{\link{dif_contrasts}}.
+#' @param p_adjust Familywise adjustment over this post-hoc family; default
+#'   \code{"holm"}.
+#' @param alpha Significance level for adjusted probabilities.
+#' @param flag_logits Absolute logit magnitude flagged as practically
+#'   important.
+#' @param min_n Minimum responders required in a resolved design cell.
+#' @return An object of class \code{"rasch_dif_posthoc"}, extending the
+#'   \code{\link{dif_contrasts}} result. Its \code{table} contains the pairwise
+#'   marginal differences or interaction contrasts, with logit estimates,
+#'   standard errors where available, confidence intervals, raw and adjusted
+#'   probabilities, and statistical and practical flags.
+#' @references Holm, S. (1979). A simple sequentially rejective multiple test
+#'   procedure. Scandinavian Journal of Statistics, 6(2), 65--70.
+#' @seealso \code{\link{dif_anova}}, \code{\link{dif_size}}, and
+#'   \code{\link{dif_contrasts}}.
+#' @examples
+#' set.seed(1); n <- 800
+#' g <- factor(rep(c("A", "B", "C", "D"), each = n / 4))
+#' sex <- factor(rep(c("female", "male"), length.out = n))
+#' d <- seq(-1.5, 1.5, length.out = 6)
+#' sh <- matrix(0, n, 6); sh[g == "D", 2] <- 0.8
+#' X <- matrix(rbinom(n * 6, 1, plogis(outer(rnorm(n), d, "-") - sh)), n, 6)
+#' colnames(X) <- paste0("I", 1:6)
+#' fit <- rasch(data.frame(X, group = g, sex = sex),
+#'              factors = c("group", "sex"))
+#' dif_posthoc(fit, "I2", term = "group")
+#' @export
+dif_posthoc <- function(fit, item, term, factors = NULL, within = NULL,
+                        id = NULL, p_adjust = "holm", alpha = 0.05,
+                        flag_logits = 0.5, min_n = 20) {
+  if (!inherits(fit, "rasch")) stop("dif_posthoc needs a rasch fit")
+  if (inherits(fit, "rasch_efrm"))
+    .refuse("post-hoc resolved DIF comparisons are not available for EFRM ",
+            "fits; the ordinary split refit would discard the fitted frame units")
+  if (!is.character(term) || !length(term) || anyNA(term) || any(!nzchar(term)))
+    stop("`term` must contain one or more factor names")
+  if (length(item) != 1L)
+    stop("`item` must name one item; run dif_posthoc() per item so the ",
+         "multiplicity adjustment covers one post-hoc family at a time")
+  item_names <- if (!is.null(fit$items$item)) fit$items$item else colnames(fit$X)
+  if (inherits(fit, "rasch_mfrm") && !is.null(fit$virtual_map))
+    item_names <- unique(c(as.character(fit$virtual_map$item), item_names))
+  ok_item <- if (is.character(item)) item %in% item_names
+             else is.finite(item) && item >= 1 &&
+               item <= length(fit$items$item %||% colnames(fit$X))
+  if (!isTRUE(ok_item))
+    stop("item '", item, "' not found in the fit (items: ",
+         paste(utils::head(item_names, 8), collapse = ", "),
+         if (length(item_names) > 8) ", ..." else "", ")")
+  factors <- .dif_factors(fit, factors)
+  factors <- as.data.frame(lapply(factors, function(v)
+    droplevels(if (is.ordered(v)) v else factor(v))),
+    check.names = FALSE, stringsAsFactors = FALSE)
+  target <- if (all(term %in% names(factors))) term else if (length(term) == 1L)
+    .term_vars(term) else term
+  if (is.character(id) && length(id) == 1L && !is.null(fit$factors) &&
+      id %in% names(fit$factors)) id <- fit$factors[[id]]
+  if (is.null(id) && !is.null(fit$person$id)) id <- fit$person$id
+  if (is.null(within) && !is.null(id) && anyDuplicated(id)) {
+    within <- names(factors)[vapply(names(factors), function(fn)
+      any(tapply(as.character(factors[[fn]]), id, function(v)
+        length(unique(v[!is.na(v)])) > 1L), na.rm = TRUE), TRUE)]
+  }
+  if (is.null(within)) within <- character(0)
+  unknown_within <- setdiff(within, names(factors))
+  if (length(unknown_within))
+    stop("within-subject factor(s) not found: ",
+         paste(unknown_within, collapse = ", "))
+
+  grp <- .factor_cells(factors, sep = ":")
+  cellmap <- unique(data.frame(cell = as.character(grp), factors,
+                               check.names = FALSE))
+  cellmap <- cellmap[match(levels(grp), cellmap$cell), , drop = FALSE]
+  fam <- .dif_posthoc_family(factors, cellmap, target, within)
+  contrasts <- fam$family
+  fam$meta <- lapply(fam$meta, function(x) {
+    x$preserve_scale <- TRUE
+    x
+  })
+  attr(contrasts, "dif_meta") <- fam$meta
+  out <- dif_contrasts(
+    fit, factors = factors, items = item, within = within, id = id,
+    contrasts = contrasts, p_adjust = p_adjust, alpha = alpha,
+    flag_logits = flag_logits, min_n = min_n)
+  out$term <- .dif_term_label(target)
+  out$type <- if (length(target) > 1L)
+    "interaction magnitude" else "pairwise marginal difference"
+  if (nrow(out$table) && all(!is.finite(out$table$estimate)))
+    stop("no contrast in the '", out$term, "' family is estimable for item '",
+         item, "': every design cell fell below min_n = ", min_n,
+         " responders, or the resolved refits were not identified; lower ",
+         "min_n, pool sparse levels, or check the factor coding")
+  class(out) <- c("rasch_dif_posthoc", class(out))
+  out
+}
+
+#' @export
+print.rasch_dif_posthoc <- function(x, ...) {
+  cat(sprintf("DIF follow-up for %s (%s; %s)\n",
+              x$term, x$type, x$p_adjust))
+  show <- x$table[, c("item", "contrast", "estimate", "se", "statistic",
+                      "p_adj", "significant", "practical")]
+  print(.fmt_df(show), row.names = FALSE)
+  if (length(x$notes)) cat("\n", paste(x$notes, collapse = "\n"), "\n", sep = "")
+  invisible(x)
 }
 
 #' @export
@@ -951,7 +1900,7 @@ print.rasch_dif_contrasts <- function(x, ...) {
                 if (x$family$within[r]) "  [within subjects]" else ""))
   if (x$paired)
     cat("Stacked design: tests use person-level residual scores;",
-        "logit SEs are conservative for within contrasts.\n")
+        "logit SEs and intervals are withheld.\n")
   cat("\n")
   tab <- x$table
   show <- tab[, c("item", "contrast", "estimate", "se", "statistic", "p_adj",

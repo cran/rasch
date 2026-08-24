@@ -2,7 +2,7 @@
 % Please edit documentation in R/simulate.R
 \name{plot_recovery}
 \alias{plot_recovery}
-\title{Recovery scatter of planted against recovered parameters}
+\title{Plot fitted against generating parameters}
 \usage{
 plot_recovery(x, ...)
 }
@@ -17,4 +17,11 @@ Called for its plotting side effect.
 \description{
 One true-versus-estimated panel per parameter type, with the identity line
 and the correlation and RMSE.
+}
+\examples{
+\donttest{
+d <- simulate_rasch(300, 8, seed = 1)
+fit <- rasch(d, id = "id")
+plot_recovery(sim_recovery(fit, d))
+}
 }

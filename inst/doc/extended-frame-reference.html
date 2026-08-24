@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="utf-8" />
+<meta name="generator" content="pandoc" />
+<meta http-equiv="X-UA-Compatible" content="IE=EDGE" />
+
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+
+<meta name="author" content="Josh McGrane" />
+
+
+<title>The Extended Frame of Reference model</title>
+
+<script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
+// be compatible with the behavior of Pandoc < 2.8).
+document.addEventListener('DOMContentLoaded', function(e) {
+  var hs = document.querySelectorAll("div.section[class*='level'] > :first-child");
+  var i, h, a;
+  for (i = 0; i < hs.length; i++) {
+    h = hs[i];
+    if (!/^h[1-6]$/i.test(h.tagName)) continue;  // it should be a header h1-h6
+    a = h.attributes;
+    while (a.length > 0) h.removeAttribute(a[0].name);
+  }
+});
+</script>
+
+<style type="text/css">
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+span.underline{text-decoration: underline;}
+div.column{display: inline-block; vertical-align: top; width: 50%;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+</style>
+
+
+
+<style type="text/css">
+code {
+white-space: pre;
+}
+.sourceCode {
+overflow: visible;
+}
+</style>
+<style type="text/css" data-origin="pandoc">
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+<script>
+// apply pandoc div.sourceCode style to pre.sourceCode instead
+(function() {
+  var sheets = document.styleSheets;
+  for (var i = 0; i < sheets.length; i++) {
+    if (sheets[i].ownerNode.dataset["origin"] !== "pandoc") continue;
+    try { var rules = sheets[i].cssRules; } catch (e) { continue; }
+    var j = 0;
+    while (j < rules.length) {
+      var rule = rules[j];
+      // check if there is a div.sourceCode rule
+      if (rule.type !== rule.STYLE_RULE || rule.selectorText !== "div.sourceCode") {
+        j++;
+        continue;
+      }
+      var style = rule.style.cssText;
+      // check if color or background-color is set
+      if (rule.style.color === '' && rule.style.backgroundColor === '') {
+        j++;
+        continue;
+      }
+      // replace div.sourceCode by a pre.sourceCode rule
+      sheets[i].deleteRule(j);
+      sheets[i].insertRule('pre.sourceCode{' + style + '}', j);
+    }
+  }
+})();
+</script>
+
+
+
+
+<style type="text/css">body {
+background-color: #fff;
+margin: 1em auto;
+max-width: 700px;
+overflow: visible;
+padding-left: 2em;
+padding-right: 2em;
+font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+font-size: 14px;
+line-height: 1.35;
+}
+#TOC {
+clear: both;
+margin: 0 0 10px 10px;
+padding: 4px;
+width: 400px;
+border: 1px solid #CCCCCC;
+border-radius: 5px;
+background-color: #f6f6f6;
+font-size: 13px;
+line-height: 1.3;
+}
+#TOC .toctitle {
+font-weight: bold;
+font-size: 15px;
+margin-left: 5px;
+}
+#TOC ul {
+padding-left: 40px;
+margin-left: -1.5em;
+margin-top: 5px;
+margin-bottom: 5px;
+}
+#TOC ul ul {
+margin-left: -2em;
+}
+#TOC li {
+line-height: 16px;
+}
+table {
+margin: 1em auto;
+border-width: 1px;
+border-color: #DDDDDD;
+border-style: outset;
+border-collapse: collapse;
+}
+table th {
+border-width: 2px;
+padding: 5px;
+border-style: inset;
+}
+table td {
+border-width: 1px;
+border-style: inset;
+line-height: 18px;
+padding: 5px 5px;
+}
+table, table th, table td {
+border-left-style: none;
+border-right-style: none;
+}
+table thead, table tr.even {
+background-color: #f7f7f7;
+}
+p {
+margin: 0.5em 0;
+}
+blockquote {
+background-color: #f6f6f6;
+padding: 0.25em 0.75em;
+}
+hr {
+border-style: solid;
+border: none;
+border-top: 1px solid #777;
+margin: 28px 0;
+}
+dl {
+margin-left: 0;
+}
+dl dd {
+margin-bottom: 13px;
+margin-left: 13px;
+}
+dl dt {
+font-weight: bold;
+}
+ul {
+margin-top: 0;
+}
+ul li {
+list-style: circle outside;
+}
+ul ul {
+margin-bottom: 0;
+}
+pre, code {
+background-color: #f7f7f7;
+border-radius: 3px;
+color: #333;
+white-space: pre-wrap; 
+}
+pre {
+border-radius: 3px;
+margin: 5px 0px 10px 0px;
+padding: 10px;
+}
+pre:not([class]) {
+background-color: #f7f7f7;
+}
+code {
+font-family: Consolas, Monaco, 'Courier New', monospace;
+font-size: 85%;
+}
+p > code, li > code {
+padding: 2px 0px;
+}
+div.figure {
+text-align: center;
+}
+img {
+background-color: #FFFFFF;
+padding: 2px;
+border: 1px solid #DDDDDD;
+border-radius: 3px;
+border: 1px solid #CCCCCC;
+margin: 0 5px;
+}
+h1 {
+margin-top: 0;
+font-size: 35px;
+line-height: 40px;
+}
+h2 {
+border-bottom: 4px solid #f7f7f7;
+padding-top: 10px;
+padding-bottom: 2px;
+font-size: 145%;
+}
+h3 {
+border-bottom: 2px solid #f7f7f7;
+padding-top: 10px;
+font-size: 120%;
+}
+h4 {
+border-bottom: 1px solid #f7f7f7;
+margin-left: 8px;
+font-size: 105%;
+}
+h5, h6 {
+border-bottom: 1px solid #ccc;
+font-size: 105%;
+}
+a {
+color: #0033dd;
+text-decoration: none;
+}
+a:hover {
+color: #6666ff; }
+a:visited {
+color: #800080; }
+a:visited:hover {
+color: #BB00BB; }
+a[href^="http:"] {
+text-decoration: underline; }
+a[href^="https:"] {
+text-decoration: underline; }
+
+code > span.kw { color: #555; font-weight: bold; } 
+code > span.dt { color: #902000; } 
+code > span.dv { color: #40a070; } 
+code > span.bn { color: #d14; } 
+code > span.fl { color: #d14; } 
+code > span.ch { color: #d14; } 
+code > span.st { color: #d14; } 
+code > span.co { color: #888888; font-style: italic; } 
+code > span.ot { color: #007020; } 
+code > span.al { color: #ff0000; font-weight: bold; } 
+code > span.fu { color: #900; font-weight: bold; } 
+code > span.er { color: #a61717; background-color: #e3d2d2; } 
+</style>
+
+
+
+
+</head>
+
+<body>
+
+
+
+
+<h1 class="title toc-ignore">The Extended Frame of Reference model</h1>
+<h4 class="author">Josh McGrane</h4>
+
+
+
+<div class="sourceCode" id="cb1"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" tabindex="-1"></a><span class="fu">library</span>(rasch)</span></code></pre></div>
+<div id="frames-and-units" class="section level2">
+<h2>Frames and units</h2>
+<p>Rasch’s criterion of invariant comparison is stated within a frame of
+reference (Rasch 1961). The extended frame of reference model allows the
+unit to differ over linked combinations of item sets and person groups
+(Humphry 2005; Humphry and Andrich 2008). For item <span class="math inline">\(i\)</span> in set <span class="math inline">\(s\)</span> and person <span class="math inline">\(n\)</span> in group <span class="math inline">\(g\)</span>,</p>
+<p><span class="math display">\[
+P(X_{ni}=x)=
+\frac{\exp\{\rho_{sg}[x\theta_n-\sum_{k=1}^{x}\delta_{ik}]\}}
+{\sum_{y=0}^{m_i}\exp\{\rho_{sg}[y\theta_n-
+\sum_{k=1}^{y}\delta_{ik}]\}},\qquad
+\rho_{sg}=\alpha_s\phi_g .
+\]</span></p>
+<p>The item-set unit is <span class="math inline">\(\alpha_s\)</span>,
+and the person-group unit is <span class="math inline">\(\phi_g\)</span>. The partial credit model holds
+within each frame in its natural unit. Dichotomous items are the
+one-threshold case.</p>
+<p>Use this model when variation in the unit is part of the measurement
+account. Poor fit to an equal-unit model is not by itself evidence for a
+frame-dependent unit.</p>
+</div>
+<div id="fit-the-model" class="section level2">
+<h2>Fit the model</h2>
+<div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a>d <span class="ot">&lt;-</span> <span class="fu">simulate_efrm</span>(</span>
+<span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a>  <span class="at">n_per_group =</span> <span class="dv">150</span>,</span>
+<span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a>  <span class="at">items_per_set =</span> <span class="dv">8</span>,</span>
+<span id="cb2-4"><a href="#cb2-4" tabindex="-1"></a>  <span class="at">set_unit_ratio =</span> <span class="fl">1.30</span>,</span>
+<span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a>  <span class="at">group_unit_ratio =</span> <span class="fl">1.10</span>,</span>
+<span id="cb2-6"><a href="#cb2-6" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">25</span></span>
+<span id="cb2-7"><a href="#cb2-7" tabindex="-1"></a>)</span>
+<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a>truth <span class="ot">&lt;-</span> <span class="fu">attr</span>(d, <span class="st">&quot;truth&quot;</span>)</span></code></pre></div>
+<div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">rasch_efrm</span>(</span>
+<span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>  d,</span>
+<span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a>  <span class="at">item_sets =</span> truth<span class="sc">$</span>item_sets,</span>
+<span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a>  <span class="at">groups =</span> <span class="st">&quot;group&quot;</span>,</span>
+<span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a>  <span class="at">id =</span> <span class="st">&quot;id&quot;</span>,</span>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a>  <span class="at">boot_reps =</span> <span class="dv">30</span>,</span>
+<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">1</span></span>
+<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a>)</span>
+<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a>fit</span>
+<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a><span class="co">#&gt; rasch extended frame of reference analysis: 16 items in 2 set(s) x 2 group(s) = 4 frames, 300 persons</span></span>
+<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a><span class="co">#&gt; Within-frame pairwise conditional ML: converged in 10 iterations</span></span>
+<span id="cb3-12"><a href="#cb3-12" tabindex="-1"></a><span class="co">#&gt; PSI 0.781, power of fit: reasonable</span></span>
+<span id="cb3-13"><a href="#cb3-13" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-14"><a href="#cb3-14" tabindex="-1"></a><span class="co">#&gt; Person group units (phi):</span></span>
+<span id="cb3-15"><a href="#cb3-15" tabindex="-1"></a><span class="co">#&gt;  group   phi se_log_phi</span></span>
+<span id="cb3-16"><a href="#cb3-16" tabindex="-1"></a><span class="co">#&gt;     g1 0.897      0.040</span></span>
+<span id="cb3-17"><a href="#cb3-17" tabindex="-1"></a><span class="co">#&gt;     g2 1.115      0.040</span></span>
+<span id="cb3-18"><a href="#cb3-18" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-19"><a href="#cb3-19" tabindex="-1"></a><span class="co">#&gt; Item set units (alpha) and locations:</span></span>
+<span id="cb3-20"><a href="#cb3-20" tabindex="-1"></a><span class="co">#&gt;   set alpha se_log_alpha     mu n_items</span></span>
+<span id="cb3-21"><a href="#cb3-21" tabindex="-1"></a><span class="co">#&gt;  set1 0.840        0.049  0.081       8</span></span>
+<span id="cb3-22"><a href="#cb3-22" tabindex="-1"></a><span class="co">#&gt;  set2 1.190        0.049 -0.081       8</span></span>
+<span id="cb3-23"><a href="#cb3-23" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-24"><a href="#cb3-24" tabindex="-1"></a><span class="co">#&gt; Equal-unit comparison: 2(ll_EFRM - ll_equal) = 20.620 with 1 extra unit parameter(s)</span></span>
+<span id="cb3-25"><a href="#cb3-25" tabindex="-1"></a><span class="co">#&gt; (composite likelihood: descriptive; informative for group units (phi))</span></span>
+<span id="cb3-26"><a href="#cb3-26" tabindex="-1"></a><span class="co">#&gt; Omnibus Wald tests of equal units:</span></span>
+<span id="cb3-27"><a href="#cb3-27" tabindex="-1"></a><span class="co">#&gt;               term df   wald       p</span></span>
+<span id="cb3-28"><a href="#cb3-28" tabindex="-1"></a><span class="co">#&gt;  group units (phi)  1  7.442   0.006</span></span>
+<span id="cb3-29"><a href="#cb3-29" tabindex="-1"></a><span class="co">#&gt;  set units (alpha)  1 12.711 &lt; 0.001</span></span>
+<span id="cb3-30"><a href="#cb3-30" tabindex="-1"></a><span class="co">#&gt; Holm-adjusted exploratory unit contrasts (H0: unit = 1):</span></span>
+<span id="cb3-31"><a href="#cb3-31" tabindex="-1"></a><span class="co">#&gt;        parameter estimate    se      z       p p_adj significant</span></span>
+<span id="cb3-32"><a href="#cb3-32" tabindex="-1"></a><span class="co">#&gt;      log phi[g1]   -0.109 0.040 -2.728   0.006 0.013           *</span></span>
+<span id="cb3-33"><a href="#cb3-33" tabindex="-1"></a><span class="co">#&gt;      log phi[g2]    0.109 0.040  2.728   0.006 0.013           *</span></span>
+<span id="cb3-34"><a href="#cb3-34" tabindex="-1"></a><span class="co">#&gt;  log alpha[set1]   -0.174 0.049 -3.565 &lt; 0.001 0.001           *</span></span>
+<span id="cb3-35"><a href="#cb3-35" tabindex="-1"></a><span class="co">#&gt;  log alpha[set2]    0.174 0.049  3.565 &lt; 0.001 0.001           *</span></span>
+<span id="cb3-36"><a href="#cb3-36" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb3-37"><a href="#cb3-37" tabindex="-1"></a><span class="co">#&gt; Notes: person measures use the weighted score; per-group score curves replace the raw-score table (see score_curves); a universal raw-score conversion is not defined across the expanded frame response cells; use score_curves and design-specific information</span></span></code></pre></div>
+<p>The principal model-specific tables are:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a>fit<span class="sc">$</span>phi_table       <span class="co"># person-group units</span></span>
+<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a><span class="co">#&gt;  group   phi se_log_phi</span></span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a><span class="co">#&gt;     g1 0.897      0.040</span></span>
+<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a><span class="co">#&gt;     g2 1.115      0.040</span></span>
+<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a>fit<span class="sc">$</span>alpha_table     <span class="co"># item-set units</span></span>
+<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a><span class="co">#&gt;   set alpha se_log_alpha</span></span>
+<span id="cb4-7"><a href="#cb4-7" tabindex="-1"></a><span class="co">#&gt;  set1 0.840        0.049</span></span>
+<span id="cb4-8"><a href="#cb4-8" tabindex="-1"></a><span class="co">#&gt;  set2 1.190        0.049</span></span>
+<span id="cb4-9"><a href="#cb4-9" tabindex="-1"></a>fit<span class="sc">$</span>set_table       <span class="co"># linked set locations</span></span>
+<span id="cb4-10"><a href="#cb4-10" tabindex="-1"></a><span class="co">#&gt;   set     mu alpha n_items</span></span>
+<span id="cb4-11"><a href="#cb4-11" tabindex="-1"></a><span class="co">#&gt;  set1  0.081 0.840       8</span></span>
+<span id="cb4-12"><a href="#cb4-12" tabindex="-1"></a><span class="co">#&gt;  set2 -0.081 1.190       8</span></span>
+<span id="cb4-13"><a href="#cb4-13" tabindex="-1"></a>fit<span class="sc">$</span>frames          <span class="co"># complete frame units</span></span>
+<span id="cb4-14"><a href="#cb4-14" tabindex="-1"></a><span class="co">#&gt;   set group n_persons n_items alpha   phi   rho se_log_rho origin infit_ms</span></span>
+<span id="cb4-15"><a href="#cb4-15" tabindex="-1"></a><span class="co">#&gt;  set1    g1       150       8 0.840 0.897 0.754      0.061  0.081    1.031</span></span>
+<span id="cb4-16"><a href="#cb4-16" tabindex="-1"></a><span class="co">#&gt;  set2    g1       150       8 1.190 0.897 1.067      0.065 -0.081    1.048</span></span>
+<span id="cb4-17"><a href="#cb4-17" tabindex="-1"></a><span class="co">#&gt;  set1    g2       150       8 0.840 1.115 0.937      0.065  0.081    1.063</span></span>
+<span id="cb4-18"><a href="#cb4-18" tabindex="-1"></a><span class="co">#&gt;  set2    g2       150       8 1.190 1.115 1.327      0.061 -0.081    1.012</span></span>
+<span id="cb4-19"><a href="#cb4-19" tabindex="-1"></a><span class="co">#&gt;  outfit_ms fit_resid n_responses</span></span>
+<span id="cb4-20"><a href="#cb4-20" tabindex="-1"></a><span class="co">#&gt;      0.989     0.185        1168</span></span>
+<span id="cb4-21"><a href="#cb4-21" tabindex="-1"></a><span class="co">#&gt;      0.988    -0.316        1168</span></span>
+<span id="cb4-22"><a href="#cb4-22" tabindex="-1"></a><span class="co">#&gt;      1.008     0.422        1184</span></span>
+<span id="cb4-23"><a href="#cb4-23" tabindex="-1"></a><span class="co">#&gt;      0.865    -1.361        1184</span></span>
+<span id="cb4-24"><a href="#cb4-24" tabindex="-1"></a>fit<span class="sc">$</span>linking         <span class="co"># set-linking design</span></span>
+<span id="cb4-25"><a href="#cb4-25" tabindex="-1"></a><span class="co">#&gt; $phi_edges</span></span>
+<span id="cb4-26"><a href="#cb4-26" tabindex="-1"></a><span class="co">#&gt; $phi_edges[[1]]</span></span>
+<span id="cb4-27"><a href="#cb4-27" tabindex="-1"></a><span class="co">#&gt; [1] 2 1</span></span>
+<span id="cb4-28"><a href="#cb4-28" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-29"><a href="#cb4-29" tabindex="-1"></a><span class="co">#&gt; $phi_edges[[2]]</span></span>
+<span id="cb4-30"><a href="#cb4-30" tabindex="-1"></a><span class="co">#&gt; [1] 2 1</span></span>
+<span id="cb4-31"><a href="#cb4-31" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-32"><a href="#cb4-32" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-33"><a href="#cb4-33" tabindex="-1"></a><span class="co">#&gt; $alpha_edges</span></span>
+<span id="cb4-34"><a href="#cb4-34" tabindex="-1"></a><span class="co">#&gt;  set_a set_b   n log_slope converged edge_mass    loglik</span></span>
+<span id="cb4-35"><a href="#cb4-35" tabindex="-1"></a><span class="co">#&gt;   set1  set2 300     0.348         1     0.009 -3522.108</span></span>
+<span id="cb4-36"><a href="#cb4-36" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-37"><a href="#cb4-37" tabindex="-1"></a><span class="co">#&gt; $alpha_method</span></span>
+<span id="cb4-38"><a href="#cb4-38" tabindex="-1"></a><span class="co">#&gt; [1] &quot;finite-grid semiparametric maximum likelihood&quot;</span></span>
+<span id="cb4-39"><a href="#cb4-39" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb4-40"><a href="#cb4-40" tabindex="-1"></a><span class="co">#&gt; $alpha_grid</span></span>
+<span id="cb4-41"><a href="#cb4-41" tabindex="-1"></a><span class="co">#&gt;  lower  upper points </span></span>
+<span id="cb4-42"><a href="#cb4-42" tabindex="-1"></a><span class="co">#&gt;     -8      8     61</span></span></code></pre></div>
+<p>Person-group units are estimated from common threshold patterns
+across groups. Set units are estimated from persons observed in more
+than one set. For a linked pair, the natural coordinates satisfy <span class="math inline">\(u_b=r u_a+c\)</span>. The package estimates <span class="math inline">\(r\)</span>, <span class="math inline">\(c\)</span>, and masses for the nuisance person
+distribution on a finite grid by semiparametric likelihood:</p>
+<p><span class="math display">\[
+\prod_n \int P(X_{na}\mid u)P(X_{nb}\mid ru+c)\,dF_{g(n)}(u).
+\]</span></p>
+<p>The masses are estimated jointly with the link, separately for each
+observed person group, so neither a normal shape nor a common
+distribution across groups is prescribed. The link holds the conditional
+item thresholds and person-group units fixed while estimating only <span class="math inline">\(r\)</span>, <span class="math inline">\(c\)</span>, and the nuisance masses. The
+common-scale parameters are then</p>
+<p><span class="math display">\[
+\delta_{ik}=\widetilde\delta_{ik}/\alpha_s+\mu_s,
+\qquad \rho_{sg}=\alpha_s\phi_g.
+\]</span></p>
+<p>The item thresholds and person-group units remain pairwise
+conditional estimates; the mixing distribution is used only for the
+relative set unit, which is not identified by that conditional stage.
+The discrete nonparametric margin follows Follmann (1988); its use for
+linked item-set units is an extension implemented here.</p>
+<p>The group-by-set frame graph and the set-linking graph must each
+connect to a common scale. A linking response pattern must span a score
+range of at least four within a set. Overlapping item sets are not
+permitted.</p>
+<p>Several group factors may define crossed frames:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a>fit_crossed <span class="ot">&lt;-</span> <span class="fu">rasch_efrm</span>(</span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>  data,</span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a>  <span class="at">item_sets =</span> item_sets,</span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a>  <span class="at">groups =</span> <span class="fu">c</span>(<span class="st">&quot;language&quot;</span>, <span class="st">&quot;cohort&quot;</span>),</span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a>  <span class="at">id =</span> <span class="st">&quot;id&quot;</span></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a>)</span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a>fit_crossed<span class="sc">$</span>phi_factorial</span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a>fit_crossed<span class="sc">$</span>phi_factorial_tests</span></code></pre></div>
+<p>The factorial tables give the GLS decomposition of the estimated log
+group units. They do not replace the frame-level estimates.</p>
+</div>
+<div id="uncertainty-and-equal-unit-comparisons" class="section level2">
+<h2>Uncertainty and equal-unit comparisons</h2>
+<p>The default hybrid covariance combines the pairwise Godambe
+covariance with a person bootstrap for set linking. Within-frame
+thresholds and group units are jointly redrawn, and the link is rebuilt
+from each draw. The resulting covariance is retained for the
+common-scale thresholds and complete frame units. Set
+<code>se_method = &quot;bootstrap&quot;</code> to refit the complete model to each
+person resample.</p>
+<p>The linking calculations use a compiled numerical kernel. Bootstrap
+replicates run on four workers by default, or fewer where the system
+limit is lower. A fixed <code>seed</code> gives the same samples and
+results for every worker count without altering the caller’s
+random-number stream. In the Shiny application the fit runs in a
+separate process. The analyst can select up to four workers, follow
+completed batches, or cancel the process without replacing the current
+analysis. R scripts can supply <code>progress</code> and
+<code>cancel</code> callbacks for the same controls.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>fit<span class="sc">$</span>efrm_vs_rasch<span class="sc">$</span>unit_omnibus</span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a><span class="co">#&gt;               term df   wald       p</span></span>
+<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a><span class="co">#&gt;  group units (phi)  1  7.442   0.006</span></span>
+<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a><span class="co">#&gt;  set units (alpha)  1 12.711 &lt; 0.001</span></span>
+<span id="cb6-5"><a href="#cb6-5" tabindex="-1"></a>fit<span class="sc">$</span>efrm_vs_rasch<span class="sc">$</span>unit_tests</span>
+<span id="cb6-6"><a href="#cb6-6" tabindex="-1"></a><span class="co">#&gt;        parameter estimate    se      z       p p_adj significant</span></span>
+<span id="cb6-7"><a href="#cb6-7" tabindex="-1"></a><span class="co">#&gt;      log phi[g1]   -0.109 0.040 -2.728   0.006 0.013           *</span></span>
+<span id="cb6-8"><a href="#cb6-8" tabindex="-1"></a><span class="co">#&gt;      log phi[g2]    0.109 0.040  2.728   0.006 0.013           *</span></span>
+<span id="cb6-9"><a href="#cb6-9" tabindex="-1"></a><span class="co">#&gt;  log alpha[set1]   -0.174 0.049 -3.565 &lt; 0.001 0.001           *</span></span>
+<span id="cb6-10"><a href="#cb6-10" tabindex="-1"></a><span class="co">#&gt;  log alpha[set2]    0.174 0.049  3.565 &lt; 0.001 0.001           *</span></span></code></pre></div>
+<p>The omnibus Wald tests assess the set- and group-unit families.
+Individual unit contrasts are Holm-adjusted follow-ups. The raw
+composite-likelihood difference is descriptive and compares the
+group-unit stage only. Set units are identified in the linking stage and
+are assessed by their Wald test. Probabilities require at least 50
+persons or effective persons in every group and at least 50 common
+persons on every set-link edge. Sparse designs retain the unit estimates
+without an inferential probability.</p>
+<p>Simulation under normal, bimodal and deliberately different group
+distributions gave set-unit bias within 0.004 log-units,
+empirical-to-reported SE ratios from 0.97 to 1.05, and null rejection
+from 4.0 to 5.0 per cent for the hybrid method. The complete person
+bootstrap was mildly conservative in the corresponding null design. Sets
+with only three dichotomous items were not identified; four-item sets
+were recovered without bias.</p>
+</div>
+<div id="item-invariance-across-frames" class="section level2">
+<h2>Item invariance across frames</h2>
+<p>The fitted EFRM gives an item one location across its frames, scaled
+by the frame unit. <code>frame_invariance()</code> examines that
+restriction by calibrating each frame separately. Each compared frame
+needs at least 50 persons with two or more responses. Items with weak
+separate-frame standard errors are excluded from the comparison.</p>
+<p>For frame <span class="math inline">\(f\)</span>, the common-scale
+item location is <span class="math inline">\(\hat\delta_{if}^{*}=\hat\delta_{if}/\hat\rho_f\)</span>.
+The separate calibrations have independent origins, so differences are
+centred over the common thresholds before testing. Let <span class="math inline">\(w_i=m_i/\sum_jm_j\)</span>, where <span class="math inline">\(m_i\)</span> is the number of thresholds for item
+<span class="math inline">\(i\)</span>. The default covariance
+conditions on the fitted frame units:</p>
+<p><span class="math display">\[
+C\{V_1/\hat\rho_1^2+V_2/\hat\rho_2^2\}C^{\mathsf T},
+\qquad C=I-\mathbf 1\mathbf w^{\mathsf T} .
+\]</span></p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a>inv <span class="ot">&lt;-</span> <span class="fu">frame_invariance</span>(fit, <span class="at">se_method =</span> <span class="st">&quot;conditional&quot;</span>)</span>
+<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a>inv<span class="sc">$</span>summary</span>
+<span id="cb7-3"><a href="#cb7-3" tabindex="-1"></a>inv<span class="sc">$</span>locations</span>
+<span id="cb7-4"><a href="#cb7-4" tabindex="-1"></a>inv<span class="sc">$</span>discrimination</span></code></pre></div>
+<p>A person-within-frame bootstrap includes uncertainty in the fitted
+units:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>inv_boot <span class="ot">&lt;-</span> <span class="fu">frame_invariance</span>(</span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>  fit,</span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>  <span class="at">se_method =</span> <span class="st">&quot;bootstrap&quot;</span>,</span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a>  <span class="at">boot_reps =</span> <span class="dv">300</span>,</span>
+<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">1</span></span>
+<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a>)</span></code></pre></div>
+<p>The conditional method returns raw and Holm-adjusted probabilities
+for the location comparisons. Its standardised-infit and slope-ratio
+columns are descriptive. The bootstrap returns discrimination
+probabilities as well and applies Holm adjustment to the combined
+location and discrimination family.</p>
+<p>In 300 null simulations with 500 persons per frame, the bootstrap SE
+ratios were 1.00 for locations and 1.03 for log discrimination ratios;
+95 per cent coverage was 0.948 and 0.954, and combined Holm familywise
+error was 3.0 per cent. A separate 2,000-replicate check found that
+probabilities based only on the conditional standardised-infit
+comparison gave 7.1 per cent combined familywise error. The conditional
+method therefore leaves those probabilities undefined. At the same
+sample size, bootstrap power was 96.3 per cent for two items shifted by
+one logit, but 9.6 per cent for two items made 1.5 times as steep.
+Discrimination departures require appreciably more information.</p>
+<p>The location contrasts are relative to the mean difference of the
+common items. If a small number of items is shifted, centring also gives
+the remaining items non-zero relative contrasts. The table identifies
+the pattern of departures; item content or external anchors are needed
+to decide which items provide the defensible reference.</p>
+</div>
+<div id="refit-after-a-departure" class="section level2">
+<h2>Refit after a departure</h2>
+<p><code>resolve_frames()</code> gives an item a separate location in
+each frame. The item continues to contribute to person measurement but
+no longer links those frames. <code>drop_items()</code> removes it. Both
+functions refit the model and update the frame, item and person
+estimates.</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a>resolved <span class="ot">&lt;-</span> <span class="fu">resolve_frames</span>(fit, <span class="st">&quot;S1I02&quot;</span>)</span>
+<span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a>removed <span class="ot">&lt;-</span> <span class="fu">drop_items</span>(fit, <span class="st">&quot;S1I02&quot;</span>)</span></code></pre></div>
+<p>The remaining common items and linked sets must still identify the
+frame units. The functions preserve the original crossed factors,
+uncertainty method and fitting controls, and return a result only when
+the revised model converges.</p>
+</div>
+<div id="references" class="section level2">
+<h2>References</h2>
+<p>Follmann, D. (1988). Consistent estimation in the Rasch model based
+on nonparametric margins. <em>Psychometrika</em>, 53, 553–562. <a href="https://doi.org/10.1007/BF02294407" class="uri">https://doi.org/10.1007/BF02294407</a></p>
+<p>Humphry, S. M. (2005). <em>Maintaining a Common Arbitrary Unit in
+Social Measurement</em>. PhD thesis, Murdoch University.</p>
+<p>Humphry, S. M., and Andrich, D. (2008). Understanding the unit in the
+Rasch model. <em>Journal of Applied Measurement</em>, 9(3), 249–264.</p>
+<p>Rasch, G. (1961). On general laws and the meaning of measurement in
+psychology. In <em>Proceedings of the Fourth Berkeley Symposium on
+Mathematical Statistics and Probability</em> (Vol. 4, pp. 321–333).
+University of California Press.</p>
+</div>
+
+
+
+<!-- code folding -->
+
+
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+  (function () {
+    var script = document.createElement("script");
+    script.type = "text/javascript";
+    script.src  = "https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML";
+    document.getElementsByTagName("head")[0].appendChild(script);
+  })();
+</script>
+
+</body>
+</html>

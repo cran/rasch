@@ -4,7 +4,7 @@
 \alias{plot_scree}
 \title{Scree plot of the residual components with parallel analysis}
 \usage{
-plot_scree(fit, n_components = 10, parallel = TRUE, reps = 20)
+plot_scree(fit, n_components = 10, parallel = TRUE, reps = 50)
 }
 \arguments{
 \item{fit}{A fitted object from \code{\link{rasch}}.}
@@ -21,8 +21,9 @@ Called for its plotting side effect; invisibly the eigen table.
 \description{
 Eigenvalues of the residual correlation matrix for the leading components,
 with a model-simulated parallel-analysis reference: responses are simulated
-from the calibrated model (observed missingness kept), every person is
-re-estimated, and the residual eigenvalues recomputed. Because estimating
+from the calibrated model (observed missingness kept), the item calibration
+and every person are re-estimated, and the residual eigenvalues recomputed.
+Because estimating
 the person locations couples the residuals within a person, this reference
 sits above the classical random-normal one and is calibrated under the
 fitted model (Raiche 2005; Chou & Wang 2010). Observed eigenvalues above
@@ -33,12 +34,12 @@ set.seed(1)
 d <- seq(-2, 2, length.out = 8)
 X <- matrix(rbinom(500 * 8, 1, plogis(outer(rnorm(500), d, "-"))), 500, 8)
 colnames(X) <- paste0("I", 1:8)
-plot_scree(rasch(X))
+plot_scree(rasch(X), reps = 20)
 }
 \references{
-Raiche, G. (2005). Critical eigenvalue sizes in standardized
-  residual principal components analysis. \emph{Rasch Measurement
-  Transactions}, 19(1), 1012.
+Raiche, G. (2005). Critical eigenvalue sizes (variances) in
+  standardized residual principal components analysis. \emph{Rasch
+  Measurement Transactions}, 19(1), 1012.
 
   Chou, Y.-T., & Wang, W.-C. (2010). Checking dimensionality in item
   response models with principal component analysis on standardized

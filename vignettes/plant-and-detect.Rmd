@@ -1,9 +1,9 @@
 ---
-title: "Planting misfit and watching the diagnostics fire"
-author: "rasch"
+title: "Simulation-based checks of Rasch diagnostics"
+author: "Josh McGrane"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{Planting misfit and watching the diagnostics fire}
+  %\VignetteIndexEntry{Simulation-based checks of Rasch diagnostics}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
@@ -20,41 +20,27 @@ options(digits = 4)
 library(rasch)
 ```
 
-## 1. Why simulate
+## Simulating from the models
 
-A diagnostic is only trustworthy if it fires when it should and stays quiet
-when it should not. The surest way to check that is to *manufacture* the fault
-it is meant to detect and confirm that the statistic responds. The package
-ships a family of simulators (`simulate_rasch`, `simulate_btl`,
-`simulate_mfrm`, `simulate_efrm`) built around exactly this plant-and-detect
-loop: each generates data from the appropriate member of the Rasch family and
-lets a *known* departure from the model be dialled in, so the matching
-diagnostic can be watched as it responds.
+Simulation is useful when the sampling behaviour of an estimate or diagnostic
+depends on the test design. The package includes simulators for the ordinary
+Rasch models (Rasch 1960; Andrich and Marais 2019), many-facet models,
+extended frames of reference (Humphry 2005; Humphry and Andrich 2008), and
+comparative judgement of paired
+comparisons (Andrich 1978; Tutz 1986). They can generate model-conforming data or introduce a specified
+departure.
 
-Every simulator returns data ready for its fit function, with the generating
-parameters and the planted departures carried on the object as
-`attr(x, "truth")`. The print method reports what was planted, so a dataset
-never becomes anonymous once it leaves the call that made it.
+Each simulator stores the generating values in `attr(x, "truth")`.
 
-```{r whatplanted}
+```{r baseline-data}
 d <- simulate_rasch(n_persons = 400, n_items = 10, seed = 101)
-d                                   # the print method reports the plant
-names(attr(d, "truth"))            # the truth travels with the data
+names(attr(d, "truth"))
 ```
 
-With no departures requested the data conform to the model, and the print
-method says so. The rest of this vignette plants one fault at a time and runs
-the diagnostic built to find it. The diagnostics themselves follow the
-conventions of Andrich and Marais (2019); the simulators exist to test them.
+## Parameter recovery
 
-## 2. A clean baseline
-
-Before planting anything, it is worth seeing what recovery looks like when the
-model holds exactly, so that later departures are read against an honest null.
-`sim_recovery` compares the parameters a fit recovers against the ones the
-simulator planted (mean-centring the locations, which the model identifies
-only up to an origin), and `plot_recovery` draws each true-versus-estimated
-panel with its correlation and root-mean-square error.
+`sim_recovery` compares fitted parameters with the generating values. Location
+parameters are centred before comparison because their origin is arbitrary.
 
 ```{r baseline}
 fit <- rasch(d, id = "id")
@@ -62,192 +48,214 @@ rec <- sim_recovery(fit, d)
 rec
 ```
 
-```{r baseline-plot, fig.alt = "Recovery scatter plots of planted against recovered item difficulty and person ability."}
+```{r baseline-plot, fig.alt = "Planted and recovered item and person locations."}
 plot_recovery(rec)
 ```
 
-The two panels tell different stories, and the difference is not a defect of
-the estimator but the arithmetic of information. Each item difficulty pools
-evidence from all 400 persons, so it is recovered tightly: the correlation is
-near unity and the error is around a tenth of a logit. Each person ability, by
-contrast, rests on only the ten items that person answered, so its weighted
-likelihood estimate (Warm 1989) carries a standard error near seven tenths of
-a logit; the recovery correlation is correspondingly lower and the
-root-mean-square error much larger. The bias is negligible in both. A short
-test measures persons imprecisely *even when the model is exactly true* --- a
-point worth holding onto before reading any person-level result from a
-ten-item scale.
+Item locations pool information over persons. Each person location is based on
+the items answered by that person, so person recovery is usually less precise
+on a short test. This difference should be judged against the reported
+standard errors rather than the raw recovery correlations alone.
 
-## 3. Planting item misfit
+## Item misfit
 
-The `discrimination` argument scales an item's slope. A value above one makes
-an item over-discriminate --- its responses become more deterministic than the
-model expects, a Guttman-like pattern --- while a value below one makes it
-under-discriminate, adding noise. The fit residuals should separate both from
-the well-behaved items. Here one central item is given a slope of 2.5 and
-another a slope of 0.4.
+The `discrimination` argument changes an item's response slope. Values above
+one produce more deterministic responses than the Rasch model expects; values
+below one produce less deterministic responses.
 
 ```{r discrim}
-disc <- rep(1, 10); disc[5] <- 2.5; disc[6] <- 0.4
-d2  <- simulate_rasch(400, 10, discrimination = disc, seed = 21)
+disc <- rep(1, 10)
+disc[5] <- 2.5
+disc[6] <- 0.4
+
+d2 <- simulate_rasch(400, 10, discrimination = disc, seed = 21)
 fit2 <- rasch(d2, id = "id")
 fit2$items[, c("item", "location", "infit_ms", "outfit_ms")]
 ```
 
-The two planted items depart from the pack in opposite directions, as the
-log-of-mean-square fit statistics (Andrich and Marais 2019, ch. 23) require.
-The over-discriminating item (I05) produces standardised residuals that are
-*too small* --- responses more predictable than the model allows --- so its
-infit and outfit mean squares fall below one. The under-discriminating item
-(I06) produces residuals that are too large, so its mean squares rise above
-one. The remaining items sit near the expected value of one. With a
-400-by-10 draw these mean squares are themselves estimates; what matters is
-the direction of departure and that the planted items separate from the rest.
+Over-discrimination tends to give mean-square statistics below one;
+under-discrimination tends to give values above one. Their sampling variation
+still depends on the item location, sample, and test length.
 
-## 4. Planting DIF
+## Differential item functioning
 
-Differential item functioning is planted with `dif`, naming the affected items
-and the size of the group shift, with `n_groups = 2` so there is a group to
-differ. Here item I06 is given a uniform shift of one logit for the second
-group; the other nine items are invariant. `dif_anova` analyses the residuals
-by group over automatically sized trait class intervals (Hagquist and Andrich
-2017), and should flag I06 alone.
+The `dif` argument shifts selected items for a person group. Here I06 differs
+by one logit in the second group.
 
 ```{r dif}
-d3   <- simulate_rasch(500, 10, dif = list(items = "I06", uniform = 1),
-                       n_groups = 2, seed = 303)
+d3 <- simulate_rasch(
+  500, 10,
+  dif = list(items = "I06", uniform = 1),
+  n_groups = 2,
+  seed = 303
+)
+
 fit3 <- rasch(d3, id = "id", factors = "group")
-da   <- dif_anova(fit3)
+da <- dif_anova(fit3)
 da$summary[, c("item", "term", "F_uniform", "p_uniform_adj", "uniform_DIF")]
 ```
 
-Only I06 carries a significant group term after the Benjamini-Hochberg
-adjustment across items; the other nine are quiet, as invariant items should
-be. The analysis of variance answers *whether* there is DIF. To ask *how much*,
-and whether it matters on the measurement scale, `dif_size` resolves the item
-into one copy per group, refits, and reports the distance between the resolved
-locations in logits (Andrich and Marais 2019, ch. 16).
+`dif_anova` tests invariance. `dif_size` resolves the item by group and reports
+the difference between the resolved locations in logits.
 
-```{r difsize}
+```{r dif-size}
 dif_size(fit3, "I06", by = "group")
 ```
 
-The resolved gap recovers the planted shift of one logit and clears the
-half-logit practical criterion. Flagging and magnitude are complementary: a
-significant `dif_anova` term says the item is not invariant; the `dif_size`
-logit difference says whether the non-invariance is large enough to act on.
+A simulation study of DIF should record false-positive rates for invariant
+items as well as detection of the shifted item. Sample size, group imbalance,
+targeting, test length, and shift size should be varied separately.
 
-## 5. Planting local dependence
+## Local response dependence
 
-Response dependence --- one item's answer partly following another's --- is
-planted with `dependence`, naming the item pairs and a strength. It should
-raise the residual correlation of the planted pair above the small negative
-value expected under local independence. `residual_correlations` returns Yen's
-(1984) Q3 and, following Christensen, Makransky and Horton (2017), the adjusted
-Q3\* (each Q3 less the average off-diagonal value), flagging pairs whose excess
-passes a threshold.
+The `dependence` argument makes one item's response partly follow another.
+`residual_correlations` reports Yen's Q3 and adjusted Q3. Because adjusted Q3
+has no universal critical value, `flag` is a screening threshold supplied by
+the analyst (Yen 1984; Christensen, Makransky and Horton 2017).
 
 ```{r dependence}
-d4   <- simulate_rasch(500, 10,
-                       dependence = list(pairs = list(c("I04", "I05")),
-                                         strength = 1.8), seed = 41)
+d4 <- simulate_rasch(
+  500, 10,
+  dependence = list(
+    pairs = list(c("I04", "I05")),
+    strength = 1.8
+  ),
+  seed = 41
+)
+
 fit4 <- rasch(d4, id = "id")
-rc   <- residual_correlations(fit4)
-rc$average                          # near -1/(L-1) under independence
-head(rc$pairs, 3)                   # the planted pair leads the table
-rc$flagged
+rc <- residual_correlations(fit4, flag = 0.20)
+head(rc$pairs, 3)
 ```
 
-The planted I04--I05 pair sits at the top of the sorted table and is the only
-one flagged; the average off-diagonal value is close to the $-1/(L-1)$ expected
-when the items are locally independent. As with DIF, flagging is one thing and
-magnitude another. `dependence_magnitude` puts the effect on the logit scale by
-the resolution method of Andrich and Kreiner (2010): the dependent item is
-split by the category of the item it follows, refitted, and the threshold
-displacement read off.
+`dependence_magnitude` resolves the dependent item by the response to the
+independent item and expresses the displacement on the logit scale (Andrich
+and Kreiner 2010).
 
-```{r depmag}
+```{r dependence-size}
 dependence_magnitude(fit4, dependent = "I05", independent = "I04")
 ```
 
-The estimated dependence is around three quarters of a logit and highly
-significant --- a substantial displacement of I05's threshold by the response
-to I04, not a marginal correlation. (The residual principal components of the
-same fit, via `plot_scree`, are the complementary tool for a *second
-dimension* rather than a dependent pair.)
+## Paired comparisons
 
-## 6. Paired comparisons
-
-The paired-comparison simulator plants faults of its own. `erratic_judges` sets
-a proportion of judges who choose at random; their disorder should surface in
-the judge fit residuals and in the transitivity of their choices. Here two of
-eight judges are erratic.
+The paired-comparison simulator can introduce erratic judges, ties, position
+effects, or within-judge dependence. In this example, one quarter of the
+judges respond at random.
 
 ```{r btl}
-b  <- simulate_btl(n_objects = 7, n_judges = 8, reps_per_pair = 30,
-                   erratic_judges = 0.25, seed = 61)
+b <- simulate_btl(
+  n_objects = 7,
+  n_judges = 8,
+  reps_per_pair = 30,
+  erratic_judges = 0.25,
+  seed = 61
+)
+
 bt <- btl(b, "object_a", "object_b", winner = "winner", judge = "judge")
 bt$judges[order(-bt$judges$fit_resid), ]
 ```
 
-The two erratic judges (J1 and J2) carry the largest infit and outfit mean
-squares and the largest positive fit residuals; the well-behaved judges sit
-below one. The judge fit residual is the paired-comparison counterpart of
-person fit, and here it is the sharpest instrument.
-
-`btl_transitivity` asks the single-dimension question in its native
-paired-comparison form. A Bradley-Terry-Luce scale implies that preferences
-stack into one consistent order: if A beats B and B beats C then A should beat
-C. A *circular triad* (A beats B, B beats C, C beats A) is a local
-contradiction, and their rate is compared with the one quarter expected from
-pure guessing (Kendall and Babington Smith 1940).
+Judge fit describes agreement with the common object scale. Transitivity is a
+different summary: it counts circular triads in the observed comparisons.
 
 ```{r transitivity}
 tr <- btl_transitivity(bt)
-tr$summary[, c("n_objects", "n_triples", "n_circular",
-               "circular_rate", "consistency")]
-tr$judges[, c("judge", "n_triples", "circular_rate", "consistency")]
+tr$summary
+head(tr$judges)
 ```
 
-Pooled across all judges the object scale is nearly transitive --- majority
-verdicts stack into essentially one order --- so the overall consistency is
-high. The per-judge index separates the individuals, with the erratic judges
-falling toward the bottom of the table. With only a handful of complete triples
-per judge this index is noisier than the fit residual, but the two agree in
-direction. Where the concern is not judge noise but a second attribute steering
-some contests, `btl_dimensionality` provides the residual-"swirl" analogue of
-residual principal components.
+## Repeated simulation
 
-## 7. A small Monte Carlo power estimate
-
-The plant-and-detect loop scales up. `sim_replicate` calls a simulator many
-times with successive seeds, returning the datasets as a list, so a diagnostic
-can be run across all of them and its behaviour summarised. Asking how often a
-planted departure is flagged turns that into a detection-power estimate. Here a
-uniform DIF of 0.8 logits is planted on one item across ten datasets, and each
-is fitted and passed to `dif_anova`.
+`sim_replicate` generates datasets with successive seeds. The same analysis
+can then be applied to each dataset to estimate bias, coverage, rejection
+rates, or power.
 
 ```{r power}
-batch <- sim_replicate(simulate_rasch, 10, n_persons = 400, n_items = 8,
-                       dif = list(items = "I04", uniform = 0.8),
-                       n_groups = 2, seed = 700)
+batch <- sim_replicate(
+  simulate_rasch, 10,
+  n_persons = 400,
+  n_items = 8,
+  dif = list(items = "I04", uniform = 0.8),
+  n_groups = 2,
+  seed = 700
+)
+
 flagged <- vapply(batch, function(dd) {
   s <- dif_anova(rasch(dd, id = "id", factors = "group"))$summary
   isTRUE(s$uniform_DIF[s$item == "I04"])
 }, logical(1))
-mean(flagged)                       # proportion of runs that flagged I04
+
+mean(flagged)
 ```
 
-The estimate is the proportion of the ten runs in which the planted item was
-flagged after adjustment. A shift of 0.8 logits split over two groups of 200 is
-detected in a majority of runs but by no means all: a real departure of
-moderate size against a modest sample is caught only some of the time. Ten
-replicates suffice to demonstrate the loop, not to pin the number down --- the
-Monte Carlo error on ten draws is large --- but the same six lines, run with a
-few hundred replicates and swept over sample size and effect, are a complete
-power study.
+Ten replicates demonstrate the workflow but do not give a stable power
+estimate. For a Monte Carlo proportion $\hat p$ based on $R$ independent
+replicates, the estimated Monte Carlo standard error is
+
+$$
+\operatorname{MCSE}(\hat p)=
+\sqrt{\frac{\hat p(1-\hat p)}{R}}.
+$$
+
+The number of attempted, refused, and non-converged fits should be reported.
+Bias and coverage should be calculated for each generating condition rather
+than after pooling conditions with different true values.
+
+## Validation studies
+
+The repository contains the simulation studies used to check parameter
+recovery, standard errors, confidence-interval coverage, null rejection rates,
+power, and identification guards. The scripts and result tables are under
+`tools/simval/`; they are excluded from the CRAN source package for size,
+and are computationally intensive to re-run. The examples in this vignette
+use small runs and are intended as templates for design-specific studies.
+
+The principal calibration results, each carried with its script and
+provenance in the result tables:
+
+| Quantity | Design | Result |
+|---|---|---|
+| `lr_test` adjusted size | 500 persons, 8 items, 3 categories | 4.7% at the 0.05 level (2,000 replicates) |
+| `lr_test` small-sample edge | 300 persons, 12 items, 4 categories | 6.1% among 1,927/2,000 admissible replicates |
+| `dependence_magnitude` size | 800 persons, 10 items | 7.5% pooled-variance (pre-fix) to 4.8% covariance-based |
+| Class-interval item fit | 8--30 dichotomous items, 600 persons | HC3 was rejected (21.9--48.3% item-wise Type I); conventional ANOVA remained approximate, whereas item-trait Holm familywise error was 4.0--7.0% from ten items onward and 12.0--17.0% with eight items (200 replicates each) |
+| Repeated-measures DIF follow-up | 10:90 nuisance-cell imbalance | 5.25% size for a main effect and 5.4% for a mixed interaction (2,000 replicates each); the superseded person-frequency shortcut targeted a different contrast |
+| Ordinary DIF covariance | balanced, 1:4 ability imbalance, unequal observations/person, and a three-level 1:2:3 factor | hybrid HC3-uniform/residual-ANOVA-non-uniform familywise error 4.0%, 6.4%, 4.6%, and 6.2%; full HC3 reached 22.0% and 20.2% in the two imbalanced designs and was rejected (500 replicates each) |
+| Balanced homoskedastic DIF | two- and three-level factors, 10--150 observations per group-by-interval cell | hybrid familywise error 4.3--5.2%; under local alternatives the classical power advantage declined from 3.10 points at ten per cell to 0.84, 0.42, and 0.16 at 30, 75, and 150 for two levels, and from 1.72 at ten to 0.54 at 50 for three levels (5,000 paired replicates each) |
+| Conditional DIF bootstrap | dichotomous data, four-category PCM and RSM data, three-level groups, and correlated person factors | preserving raw scores and refitting under the Rasch null gave acceptable global-null calibration but was usually more conservative and less powerful than the hybrid analysis; under a partial alternative it reduced, but did not remove, artificial flags on invariant items, so it was not adopted as a replacement (100--300 datasets; 99--199 bootstrap refits each) |
+| DIF score purification | four-category PCM and RSM data, plus two correlated person factors | preselecting a five-item anchor scale was liberal and leave-one-out matching was rejected; the public split-and-refit procedure retained uniform-DIF power and left 4.0--5.6% familywise error among invariant items, while a strongest-item recalibration was promising for non-uniform DIF but is not yet an automatic remedy (500 replicates per refined condition) |
+| BTL-DIF pairwise inference | 6 objects, 8 or 10 judges per factor level | 5.5% and 4.83% size when balanced; 5.0% with 10 raw/9.31 effective judges per level (2,000-replicate top-up); omnibus and pairwise inference are withheld below eight judges or eight effective judges per level |
+| BTL-DIF omnibus under unequal precision | 8 versus 16 judges, fourfold variance ratio | classical Type I 11.7% or 1.8% depending on the allocation; HC3 Type I 5.6% and 4.0% (10,000 replicates each) |
+| BTL core cluster covariance | 10 balanced judges; 20 judges with one carrying 20% | CR1 Type I 5.4% and 4.2%, coverage 94.6% and 95.8%; delete-one-judge Type I 5.6% and 4.0%, coverage 94.4% and 96.0% (500 replicates each); no default change |
+| Superitem spread test | 900 persons, 8 items | 5.2% size at the binomial boundary (1,000 replicates); 100% power under the planted dependence condition (400 replicates) |
+| EFRM set-unit linking | 500-600 persons, 8 items/set | hybrid Type I 4.0-5.0%, SE ratios 0.97-1.05 and coverage 0.927-0.960 under normal, bimodal and contrasting group distributions; full-bootstrap Type I 2.5% and coverage 0.975; unit probabilities require 50 persons on every contributing group or link |
+| EFRM compiled-kernel parity | demonstration data, 30 seed-paired hybrid bootstrap replicates | largest absolute difference from the retained R implementation 1.30e-11 across set units, standard errors, origins, thresholds and edge likelihoods; all convergence flags agreed |
+| EFRM parallel-bootstrap parity | demonstration data, 300 hybrid replicates; simulated data, 30 full-bootstrap replicates | serial, two-worker and four-worker fits used the same pre-generated samples and agreed exactly on every checked estimate and convergence flag |
+| BTL-EFRM parallel-bootstrap parity | 3 sets, 2 panels, 20 judges, 200 judge-bootstrap replicates | serial and default four-worker fits used the same pre-generated judge resamples and agreed exactly on the complete reported result, apart from the recorded worker count; elapsed time fell from 17.34 to 5.47 seconds on the executing machine |
+| BTL-EFRM unit tests | 12 judges, 6 objects/set | judge-bootstrap Type I 3.3-5.3% for panel units, set units and origins; independent-outcome bootstrap 3.0-6.7% (300 replicates); judge-bootstrap probabilities require six judges and 5.5 effective judges per panel and eight per set link |
+| MFRM interaction omnibus | 50 or 200 persons, 6 raters, 25 df | 4.3% and 5.2% Type I error (600 fixed-truth replicates each); probabilities use the least-supported facet level and require `max(30, q + 2)` effective persons |
+| MFRM multifactor DIF | 500 persons, 8 items, 6 raters | 4.7% familywise error with balanced raters and 3.8% when one group has two raters (1,000 replicates) |
+| Frame-invariance bootstrap size | 500 persons/frame, 8 common items | 3.0% combined Holm familywise error; SE ratios 1.00 locations and 1.03 discrimination (300 replicates) |
+| Frame-invariance bootstrap power | two affected items, 500 persons/frame | 96.3% for a one-logit location shift; 9.6% for a 1.5-fold discrimination change (120 replicates) |
+| Comparative judgement contrasts | 10-50 judges, balanced | 5.0% size, 94.5% coverage (1,200 replicates) |
+| Effective-judge thresholds | one judge with 15-50% of comparisons | ~9% at 4 effective, ~7% at 6-7, nominal when balanced |
+| Equating familywise error | 3, 5, and 10 anchors | 4.8-5.0% under the Holm adjustment (2,000 replicates per anchor count) |
+| Person-measure coverage | 10-item test, central range | 0.945-0.983; conservative in the tails |
+| Tailored bootstrap | 300 persons, 8 items, 399 resamples | clean-item familywise error 0-2.5%; at least one of two hard items detected in 17.5% and 26.3% of datasets with guessing 0.15 and 0.30 (80 full-procedure replicates per effect) |
+| CL-AIC model selection | PCM vs RSM; free vs PC thresholds (items and CJ) | null false selection 4.5-5.2% multi-parameter, ~17% one-parameter (the theoretical AIC rates); at the strongest tested departures, selection was 50% for PCM vs RSM and 99.5-100% for the threshold-structure comparisons |
+| Paired-comparison effect tests | 8 objects, 14 judges | position/exposure nulls 5.8%/5.9%; carry-over 8.3% at 14 judges, 5.3% at 30; power 62/39/77% at 0.6 logits |
+| Cross-package agreement | sirt, eRm, TAM, BradleyTerry2, VGAM, lme4 | identical-likelihood comparators at solver precision; current EFRM set-unit bias +0.0036 vs TAM +0.0008 dichotomous and +0.0035 vs +0.0020 polytomous |
+| Cross-package diagnostics | eRm, TAM, psych, difR, PerFit, sirt | alpha exact; item fit r 0.97-0.99 aligned; person fit rho 0.97-0.98; DIF detection 80-88% across methods; dimensionality conservative (exact null, 67% power) vs DETECT (100%) |
+| EFRM boundary conditions | 3-8 items/set; 80-1,000 persons; ratios to 3.5; targeting, missingness and non-normality | absolute bias at most 0.022 under the model; all three-item links refused; at 80 persons 11% refused and 2% did not converge; 41- and 101-point grids agreed |
+| BTL-EFRM staged link | 6 objects/set, 12 judges | log set-unit bias decreased from -0.108 at 10 repetitions per pair to -0.041 at 20, -0.016 at 50 and -0.007 at 100; bootstrap coverage was 0.933-0.950 at 20 repetitions |
+| Explanatory Rasch models | LLTM, LPCM, dichotomous and ordered CJ, with independent or judge-clustered comparisons | coefficient bias at most 0.005 logits, empirical SD/mean SE 0.99-1.03, coverage 0.938-0.955, and Kent-adjusted null rejection 4.2-6.0% (1,000 replicates per condition); fixed-departure Holm familywise error 4.3-4.7% and power 98.3-100% for a 0.8-logit departure (300 replicates per condition) |
+| Explanatory edge cases | 300-2,000 persons; dichotomous, four-category and mixed-maximum-score items | empirical SD/mean SE 0.993-1.026, coverage 0.942-0.954, Kent-adjusted null rejection 4.3-5.8%, and no refusals or non-convergence (1,000 replicates per condition); the unscaled probability rejected 98.6-100% and is retained only as `p_naive` |
+| Explanatory calibration R-squared | uninformative and true designs, 12 and 24 items | the raw coefficient averaged 0.170 and 0.085 for uninformative designs where the adjusted coefficient centred at -0.015 and -0.002; a true design gave 0.948 raw and 0.936 adjusted (300 replicates per condition) |
 
 ## References
+
+Andrich, D. (1978). Relationships between the Thurstone and Rasch approaches
+to item scaling. *Applied Psychological Measurement*, 2(3), 451--462.
 
 Andrich, D., and Kreiner, S. (2010). Quantifying response dependence between
 two dichotomous items using the Rasch model. *Applied Psychological
@@ -259,15 +267,18 @@ Springer.
 Christensen, K. B., Makransky, G., and Horton, M. (2017). Critical values for
 Yen's Q3. *Applied Psychological Measurement*, 41, 178--194.
 
-Hagquist, C., and Andrich, D. (2017). Recent advances in analysis of
-differential item functioning in health research using the Rasch model.
-*Health and Quality of Life Outcomes*, 15, 181.
+Humphry, S. M. (2005). *Maintaining a Common Arbitrary Unit in Social
+Measurement*. PhD thesis, Murdoch University.
 
-Kendall, M. G., and Babington Smith, B. (1940). On the method of paired
-comparisons. *Biometrika*, 31, 324--345.
+Humphry, S. M., and Andrich, D. (2008). Understanding the unit in the
+Rasch model. *Journal of Applied Measurement*, 9(3), 249--264.
 
-Warm, T. A. (1989). Weighted likelihood estimation of ability in item response
-theory. *Psychometrika*, 54, 427--450.
+Rasch, G. (1960). *Probabilistic Models for Some Intelligence and Attainment
+Tests*. Danish Institute for Educational Research. Expanded edition,
+University of Chicago Press, 1980.
+
+Tutz, G. (1986). Bradley-Terry-Luce models with an ordered response.
+*Journal of Mathematical Psychology*, 30(3), 306--316.
 
 Yen, W. M. (1984). Effects of local item dependence on the fit and equating
 performance of the three-parameter logistic model. *Applied Psychological

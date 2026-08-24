@@ -13,14 +13,59 @@
 # null-coalescing helper (package-internal; base R gained %||% only in 4.4)
 `%||%` <- function(a, b) if (is.null(a)) b else a
 
+# A seeded simulator call should be reproducible without commandeering the
+# caller's random number stream: capture the stream, seed, and restore on
+# exit, so simulate_*(seed = s) twice gives the same data while code after
+# the call draws exactly what it would have drawn anyway. Restoring an
+# absent stream means removing the one set.seed() created.
+.sim_seed_capture <- function() {
+  if (exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+    get(".Random.seed", envir = globalenv(), inherits = FALSE)
+  else NULL
+}
+
+.sim_seed_restore <- function(old) {
+  if (is.null(old)) {
+    if (exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+      rm(".Random.seed", envir = globalenv())
+  } else {
+    assign(".Random.seed", old, envir = globalenv())
+  }
+  invisible(NULL)
+}
+
+.sim_count <- function(x, name, min = 1L) {
+  if (length(x) != 1L || !is.finite(x) || x != floor(x) || x < min)
+    stop(name, " must be one whole number >= ", min)
+  as.integer(x)
+}
+
+.sim_scalar <- function(x, name, lower = -Inf, upper = Inf,
+                        lower_open = FALSE, upper_open = FALSE) {
+  ok <- length(x) == 1L && is.finite(x) &&
+    if (lower_open) x > lower else x >= lower
+  ok <- ok && if (upper_open) x < upper else x <= upper
+  if (!ok) {
+    left <- if (lower_open) "(" else "["
+    right <- if (upper_open) ")" else "]"
+    stop(name, " must be one finite value in ", left, lower, ", ", upper, right)
+  }
+  as.numeric(x)
+}
+
 # person locations from one of a few distributions
 .sim_theta <- function(n, mean, sd, dist = "normal") {
+  n <- .sim_count(n, "n")
+  mean <- .sim_scalar(mean, "mean")
+  sd <- .sim_scalar(sd, "sd", lower = 0)
+  if (sd == 0) return(rep(mean, n))
   z <- switch(dist,
     normal  = stats::rnorm(n),
     uniform = stats::runif(n, -sqrt(3), sqrt(3)),
     skew    = { u <- stats::rgamma(n, 2, 1); (u - 2) / sqrt(2) },
     bimodal = { s <- sample(c(-1, 1), n, TRUE); s * 1.1 + stats::rnorm(n, 0, 0.5) },
     stats::rnorm(n))
+  if (n == 1L) return(mean)
   mean + sd * as.numeric(scale(z))
 }
 
@@ -28,6 +73,12 @@
 # item's thresholds (length m; dichotomous m = 1). disc scales the whole
 # exponent (a departure when != 1); guess is a lower asymptote (dichotomous).
 .sim_item <- function(theta, tau, disc = 1, guess = 0) {
+  if (!length(theta) || any(!is.finite(theta)) ||
+      !length(tau) || any(!is.finite(tau)))
+    stop("theta and tau must contain finite values")
+  disc <- .sim_scalar(disc, "disc", lower = 0, lower_open = TRUE)
+  guess <- .sim_scalar(guess, "guess", lower = 0, upper = 1,
+                       upper_open = TRUE)
   m <- length(tau); xs <- 0:m
   cum <- c(0, cumsum(tau))
   eta <- disc * (outer(theta, xs) - matrix(cum, length(theta), m + 1L, byrow = TRUE))
@@ -58,13 +109,12 @@
   tau
 }
 
-#' Simulate person-by-item Rasch data with dial-in misfit
+#' Simulate person-by-item Rasch data
 #'
-#' Generates dichotomous or polytomous (partial credit / rating scale) data
-#' from the Rasch model, with optional, individually controllable departures
-#' from it -- each of which the package's matching diagnostic is built to
-#' detect. The result is a data frame ready for \code{\link{rasch}}, with the
-#' true parameters attached as \code{attr(x, "truth")}.
+#' Generates dichotomous, partial credit, or rating scale data. Optional
+#' arguments introduce item misfit, guessing, multidimensionality, local
+#' dependence, DIF, response styles, or missingness. Generating values are
+#' stored in \code{attr(x, "truth")}.
 #'
 #' @param n_persons,n_items Sample size and test length.
 #' @param model \code{"dichotomous"}, \code{"PCM"}, or \code{"RSM"}. Under
@@ -72,40 +122,36 @@
 #'   differ by location only); under \code{"PCM"} each item's threshold
 #'   spacings and span are drawn afresh, as the partial credit model allows.
 #' @param n_categories Response categories for polytomous models (>= 3).
-#' @param theta_mean,theta_sd,theta_dist Person distribution: mean, SD, and
-#'   shape (\code{"normal"}, \code{"uniform"}, \code{"skew"}, \code{"bimodal"}).
-#' @param difficulty Two numbers giving the item-location range (evenly
-#'   spaced), or a length-\code{n_items} vector of locations.
+#' @param theta_mean,theta_sd Mean and standard deviation of the person
+#'   distribution.
+#' @param theta_dist Shape of the person distribution: \code{"normal"},
+#'   \code{"uniform"}, \code{"skew"}, or \code{"bimodal"}.
+#' @param difficulty Either the two endpoints of an evenly spaced location
+#'   range, or one location per item.
 #' @param threshold_spread Half-range of the category thresholds about each
 #'   item location (polytomous).
-#' @param discrimination Scalar or length-\code{n_items}: the slope of each
-#'   item. Values above 1 over-discriminate (Guttman-like, negative fit
-#'   residual); below 1 under-discriminate (noisy, positive residual). Feeds
-#'   infit/outfit and the item-fit F.
+#' @param discrimination The item slope, supplied as one value or one per item.
+#'   Values above 1 produce steeper responses and negative fit residuals.
+#'   Values below 1 produce flatter responses and positive fit residuals.
 #' @param guessing Scalar or length-\code{n_items} lower asymptote
-#'   (dichotomous): low-ability persons answer correctly by chance. Feeds
-#'   \code{\link{tailored_analysis}}.
+#'   (dichotomous): low-location persons answer correctly by chance.
 #' @param second_dim \code{NULL}, or \code{list(items=, rho=)}: the named items
-#'   load on a second trait correlated \code{rho} with the first. Feeds
-#'   \code{\link{dimensionality_test}}.
+#'   load on a second trait correlated \code{rho} with the first.
 #' @param dependence \code{NULL}, or \code{list(pairs=, strength=)}: each pair's
-#'   second item responds partly to the first (response dependence). Feeds
-#'   \code{\link{residual_correlations}} / \code{\link{dependence_magnitude}}.
+#'   second item responds partly to the first. This departure feeds the
+#'   residual-dependence diagnostics.
 #' @param dif \code{NULL}, or \code{list(items=, uniform=, nonuniform=)}: the
-#'   named items function differently for the last person group -- a location
+#'   named items function differently for the last person group: a location
 #'   shift (\code{uniform}) and/or a slope change (\code{nonuniform}). Needs
-#'   \code{n_groups >= 2}. Feeds \code{\link{dif_anova}} / \code{\link{dif_size}}.
-#' @param careless Proportion of persons who answer at random (person misfit;
-#'   feeds person infit/outfit).
+#'   \code{n_groups >= 2}.
+#' @param careless Proportion of persons who answer at random.
 #' @param response_style \code{NULL}, or \code{list(type=, prop=, strength=)}
 #'   with \code{type} \code{"extreme"} or \code{"middle"}: a proportion
 #'   \code{prop} of persons favour the end (or middle) categories regardless
 #'   of the trait, with distortion \code{strength} (default 1.6) on the
-#'   log-probability scale (polytomous; feeds the category diagnostics and
-#'   person fit).
-#' @param speeded Proportion not-reached at the last item: a growing tail of
-#'   missing responses over the final items, as under time pressure (feeds the
-#'   item statistics and the missingness pattern).
+#'   log-probability scale (polytomous).
+#' @param speeded Proportion not reached at the last item: a growing tail of
+#'   missing responses over the final items.
 #' @param disordered \code{NULL} or item names/indices given disordered
 #'   thresholds (polytomous; feeds the threshold diagnostics).
 #' @param n_groups Number of equal person groups (a \code{group} factor column
@@ -134,10 +180,27 @@ simulate_rasch <- function(n_persons = 500, n_items = 20,
                            dif = NULL, careless = 0, response_style = NULL,
                            speeded = 0, disordered = NULL,
                            n_groups = 1, missing = 0, seed = NULL) {
-  if (!is.null(seed)) set.seed(seed)
+  if (!is.null(seed)) {
+    .old_stream <- .sim_seed_capture()
+    on.exit(.sim_seed_restore(.old_stream), add = TRUE)
+    set.seed(seed)
+  }
   model <- match.arg(model)
+  N <- .sim_count(n_persons, "n_persons", 2L)
+  I <- .sim_count(n_items, "n_items", 2L)
+  n_groups <- .sim_count(n_groups, "n_groups")
+  if (n_groups > N) stop("n_groups cannot exceed n_persons")
+  theta_mean <- .sim_scalar(theta_mean, "theta_mean")
+  theta_sd <- .sim_scalar(theta_sd, "theta_sd", lower = 0)
+  threshold_spread <- .sim_scalar(threshold_spread, "threshold_spread",
+                                  lower = 0, lower_open = TRUE)
+  careless <- .sim_scalar(careless, "careless", lower = 0, upper = 1)
+  speeded <- .sim_scalar(speeded, "speeded", lower = 0, upper = 1)
+  missing <- .sim_scalar(missing, "missing", lower = 0, upper = 1)
+  theta_dist <- match.arg(theta_dist, c("normal", "uniform", "skew", "bimodal"))
+  if (model != "dichotomous")
+    n_categories <- .sim_count(n_categories, "n_categories", 3L)
   m <- if (model == "dichotomous") 1L else as.integer(n_categories) - 1L
-  I <- as.integer(n_items); N <- as.integer(n_persons)
   inm <- sprintf("I%02d", seq_len(I))
   as_idx <- function(x) {
     if (is.null(x) || !length(x)) return(integer(0))
@@ -152,10 +215,18 @@ simulate_rasch <- function(n_persons = 500, n_items = 20,
   }
 
   # item locations, thresholds, slopes, guessing (with per-item overrides)
+  if (!(length(difficulty) %in% c(2L, I)) || any(!is.finite(difficulty)))
+    stop("difficulty must contain two finite endpoints or one finite value per item")
   delta <- setNames(if (length(difficulty) == I) difficulty
                     else seq(difficulty[1], difficulty[2], length.out = I), inm)
   disc <- if (length(discrimination) == I) discrimination else rep(discrimination[1], I)
   guess <- if (length(guessing) == I) guessing else rep(guessing[1], I)
+  if (!(length(discrimination) %in% c(1L, I)) ||
+      any(!is.finite(disc) | disc <= 0))
+    stop("discrimination must be positive and have length 1 or n_items")
+  if (!(length(guessing) %in% c(1L, I)) ||
+      any(!is.finite(guess) | guess < 0 | guess >= 1))
+    stop("guessing must be in [0, 1) and have length 1 or n_items")
   if (m > 1L && any(guess > 0)) {
     warning("guessing applies to dichotomous items only; ignored for ", model)
     guess[] <- 0
@@ -203,6 +274,13 @@ simulate_rasch <- function(n_persons = 500, n_items = 20,
   dif_items <- as_idx(if (is.null(dif)) NULL else dif$items)
   if (length(dif_items) && n_groups < 2L)
     stop("dif needs n_groups >= 2 (the last group carries the DIF)")
+  if (!is.null(dif)) {
+    du <- .sim_scalar(dif$uniform %||% 0, "dif$uniform")
+    dn <- .sim_scalar(dif$nonuniform %||% 0, "dif$nonuniform")
+    if (length(dif_items) && any(disc[dif_items] + dn <= 0))
+      stop("dif$nonuniform makes a planted item discrimination non-positive")
+    dif$uniform <- du; dif$nonuniform <- dn
+  }
   dif_grp <- if (n_groups > 1L) levels(group)[n_groups] else NA
 
   # every regeneration of an item must honour that item's OWN generating
@@ -244,9 +322,13 @@ simulate_rasch <- function(n_persons = 500, n_items = 20,
   # the regeneration keeps i2's own DIF / second-dimension structure
   dep_pairs <- list()
   if (!is.null(dependence)) {
-    d_str <- dependence$strength %||% 1
+    d_str <- .sim_scalar(dependence$strength %||% 1,
+                         "dependence$strength")
     for (pp in dependence$pairs) {
-      ij <- as_idx(pp); i1 <- ij[1]; i2 <- ij[2]
+      ij <- as_idx(pp)
+      if (length(ij) != 2L || ij[1L] == ij[2L])
+        stop("each dependence pair must name two different items")
+      i1 <- ij[1]; i2 <- ij[2]
       # the expectation must match X1's actual generating structure
       # (guessing, DIF, second dimension), or the "residual" x1 - E1 has a
       # systematic mean and leaks an unplanted shift into the second item
@@ -261,10 +343,16 @@ simulate_rasch <- function(n_persons = 500, n_items = 20,
   # probabilities keep each item's own structure (trait, DIF) per person
   style_idx <- integer(0)
   if (!is.null(response_style) && m >= 2L) {
-    style_idx <- sample(N, round((response_style$prop %||% 0.15) * N))
-    ss <- response_style$strength %||% 1.6; mid <- m / 2
+    stype <- match.arg(response_style$type %||% "extreme",
+                       c("extreme", "middle"))
+    sprop <- .sim_scalar(response_style$prop %||% 0.15,
+                         "response_style$prop", lower = 0, upper = 1)
+    style_idx <- sample(N, round(sprop * N))
+    ss <- .sim_scalar(response_style$strength %||% 1.6,
+                      "response_style$strength", lower = 0)
+    mid <- m / 2
     dev2 <- ((0:m - mid) / mid)^2
-    w <- if ((response_style$type %||% "extreme") == "extreme") exp(ss * dev2)
+    w <- if (stype == "extreme") exp(ss * dev2)
          else exp(-ss * dev2)
     for (p in style_idx) for (i in seq_len(I)) {
       if (is.na(X[p, i])) next
@@ -359,33 +447,31 @@ print.rasch_sim <- function(x, ...) {
   invisible(x)
 }
 
-#' Simulate paired-comparison (BTL) data with dial-in misfit
+#' Simulate paired-comparison data
 #'
-#' Generates dichotomous or graded paired comparisons from the
-#' Bradley-Terry-Luce model, with optional departures each of which a
-#' paired-comparison diagnostic is built to detect. The result is a data frame
-#' ready for \code{\link{btl}}, with the truth attached.
+#' Generates dichotomous or ordered paired comparisons from the
+#' Bradley--Terry--Luce model. Optional arguments introduce a second object
+#' attribute, erratic judges, or within-judge dependence. Generating values are
+#' stored in \code{attr(x, "truth")}.
 #'
 #' @param n_objects,n_judges Objects to scale and judges comparing them.
 #' @param reps_per_pair Comparisons made of each object pair.
-#' @param model \code{"dichotomous"} (a winner) or \code{"graded"} (a rated
-#'   margin in \code{n_categories} categories).
-#' @param n_categories Categories for the graded model.
+#' @param model \code{"dichotomous"} (a winner) or \code{"polytomous"} (a rated
+#'   margin in \code{n_categories} categories; an earlier development-era value
+#'   \code{"graded"} is accepted as an alias).
+#' @param n_categories Categories for the polytomous model.
 #' @param object_sd Spread of the object locations (evenly spaced, sum-zero).
 #' @param second_attribute \code{NULL}, or \code{list(rho=)}: half the judges
-#'   rank by a second object attribute correlated \code{rho} with the first --
-#'   genuine multidimensionality. Feeds \code{\link{btl_dimensionality}} and
-#'   \code{\link{btl_transitivity}}.
-#' @param erratic_judges Proportion of judges who choose at random. Feeds the
-#'   judge fit residual, \code{\link{btl_transitivity}} consistency, and
-#'   \code{\link{judge_surprise}}.
+#'   rank by a second object attribute correlated \code{rho} with the first.
+#'   This introduces residual dimensionality and possible intransitivity.
+#' @param erratic_judges Proportion of judges who choose at random.
 #' @param dependence \code{NULL}, or \code{list(exposure=, carry_over=)}:
 #'   within-judge order effects (a seen-before advantage and a pull from the
 #'   judge's own earlier verdicts). Adds an \code{order} column. Feeds the
-#'   dependence effects of \code{\link{btl}}.
+#'   dependence effects fitted by \code{\link{btl}}.
 #' @param seed Optional RNG seed.
 #' @return A data frame of class \code{"rasch_sim"}: \code{object_a},
-#'   \code{object_b}, \code{winner} (or \code{response} when graded),
+#'   \code{object_b}, \code{winner} (or \code{response} when polytomous),
 #'   \code{judge}, and \code{order} when dependence is planted; with
 #'   \code{attr(x, "truth")}.
 #' @examples
@@ -394,13 +480,28 @@ print.rasch_sim <- function(x, ...) {
 #' bt$judges          # the erratic judges carry large fit residuals
 #' @export
 simulate_btl <- function(n_objects = 8, n_judges = 12, reps_per_pair = 25,
-                         model = c("dichotomous", "graded"), n_categories = 4,
+                         model = c("dichotomous", "polytomous", "graded"),
+                         n_categories = 4,
                          object_sd = 1, second_attribute = NULL,
                          erratic_judges = 0, dependence = NULL, seed = NULL) {
-  if (!is.null(seed)) set.seed(seed)
+  if (!is.null(seed)) {
+    .old_stream <- .sim_seed_capture()
+    on.exit(.sim_seed_restore(.old_stream), add = TRUE)
+    set.seed(seed)
+  }
   model <- match.arg(model)
-  m <- if (model == "graded") as.integer(n_categories) - 1L else 1L
-  K <- as.integer(n_objects); J <- as.integer(n_judges)
+  # "graded" is an earlier development name for the polytomous comparison model,
+  # kept as a working alias for released user code
+  if (model == "graded") model <- "polytomous"
+  K <- .sim_count(n_objects, "n_objects", 3L)
+  J <- .sim_count(n_judges, "n_judges", 2L)
+  reps_per_pair <- .sim_count(reps_per_pair, "reps_per_pair")
+  object_sd <- .sim_scalar(object_sd, "object_sd", lower = 0)
+  erratic_judges <- .sim_scalar(erratic_judges, "erratic_judges",
+                                lower = 0, upper = 1)
+  if (model == "polytomous")
+    n_categories <- .sim_count(n_categories, "n_categories", 3L)
+  m <- if (model == "polytomous") as.integer(n_categories) - 1L else 1L
   objs <- sprintf("O%d", seq_len(K)); jids <- sprintf("J%d", seq_len(J))
   beta <- setNames(as.numeric(scale(seq_len(K))) * object_sd, objs)
   tau <- if (m > 1L) .sim_thresholds(0, m, 1.2) else NULL
@@ -409,6 +510,7 @@ simulate_btl <- function(n_objects = 8, n_judges = 12, reps_per_pair = 25,
   beta2 <- NULL; camp <- NULL
   if (!is.null(second_attribute)) {
     rho <- second_attribute$rho %||% 0.3
+    rho <- .sim_scalar(rho, "second_attribute$rho", lower = -1, upper = 1)
     beta2 <- setNames(rho * beta + sqrt(1 - rho^2) *
       as.numeric(scale(stats::rnorm(K))) * object_sd, objs)
     camp <- setNames(rep(c("a", "b"), length.out = J), jids)
@@ -435,7 +537,8 @@ simulate_btl <- function(n_objects = 8, n_judges = 12, reps_per_pair = 25,
     seen <- new.env(parent = emptyenv()); hs <- new.env(parent = emptyenv())
     hc <- new.env(parent = emptyenv())
     g0 <- function(e, k) if (is.null(v <- e[[k]])) 0 else v
-    exq <- dependence$exposure %||% 0; cry <- dependence$carry_over %||% 0
+    exq <- .sim_scalar(dependence$exposure %||% 0, "dependence$exposure")
+    cry <- .sim_scalar(dependence$carry_over %||% 0, "dependence$carry_over")
     resp <- integer(nrow(d))
     for (r in seq_len(nrow(d))) {
       j <- d$judge[r]; a <- d$object_a[r]; b <- d$object_b[r]
@@ -487,11 +590,10 @@ simulate_btl <- function(n_objects = 8, n_judges = 12, reps_per_pair = 25,
   d
 }
 
-#' Simulate many-facet (rated) data with dial-in misfit
+#' Simulate many-facet Rasch data
 #'
-#' Generates ratings from the many-facet Rasch model (Linacre 1989): every
-#' rater rates every person on every item, from person ability, item
-#' difficulty, and rater severity. Departures each feed an MFRM diagnostic.
+#' Generates fully crossed ratings from a many-facet Rasch model (Linacre
+#' 1989), with optional erratic raters, item-by-rater interaction, or halo.
 #'
 #' @param n_persons,n_items,n_raters Facet sizes (fully crossed).
 #' @param n_categories Rating categories.
@@ -520,9 +622,23 @@ simulate_mfrm <- function(n_persons = 80, n_items = 5, n_raters = 6,
                           n_categories = 4, theta_sd = 1.2, item_sd = 1,
                           rater_severity_sd = 0.6, erratic_raters = 0,
                           interaction = NULL, halo = 0, seed = NULL) {
-  if (!is.null(seed)) set.seed(seed)
-  m <- as.integer(n_categories) - 1L
-  N <- as.integer(n_persons); I <- as.integer(n_items); R <- as.integer(n_raters)
+  if (!is.null(seed)) {
+    .old_stream <- .sim_seed_capture()
+    on.exit(.sim_seed_restore(.old_stream), add = TRUE)
+    set.seed(seed)
+  }
+  N <- .sim_count(n_persons, "n_persons", 2L)
+  I <- .sim_count(n_items, "n_items", 2L)
+  R <- .sim_count(n_raters, "n_raters", 2L)
+  n_categories <- .sim_count(n_categories, "n_categories", 2L)
+  theta_sd <- .sim_scalar(theta_sd, "theta_sd", lower = 0)
+  item_sd <- .sim_scalar(item_sd, "item_sd", lower = 0)
+  rater_severity_sd <- .sim_scalar(rater_severity_sd, "rater_severity_sd",
+                                   lower = 0)
+  erratic_raters <- .sim_scalar(erratic_raters, "erratic_raters",
+                                lower = 0, upper = 1)
+  halo <- .sim_scalar(halo, "halo", lower = 0, upper = 1)
+  m <- n_categories - 1L
   pids <- sprintf("P%03d", seq_len(N)); iids <- sprintf("I%d", seq_len(I))
   rids <- sprintf("R%d", seq_len(R))
   theta <- .sim_theta(N, 0, theta_sd)
@@ -538,8 +654,13 @@ simulate_mfrm <- function(n_persons = 80, n_items = 5, n_raters = 6,
     pool[seq_len(min(length(pool), round(halo * R)))]
   } else character(0)
   int_bias <- matrix(0, I, R, dimnames = list(iids, rids))
-  if (!is.null(interaction))
+  if (!is.null(interaction)) {
+    if (length(interaction$item) != 1L || !(interaction$item %in% iids) ||
+        length(interaction$rater) != 1L || !(interaction$rater %in% rids))
+      stop("interaction$item and interaction$rater must each name one generated level")
+    interaction$bias <- .sim_scalar(interaction$bias, "interaction$bias")
     int_bias[interaction$item, interaction$rater] <- interaction$bias
+  }
 
   grid <- expand.grid(p = seq_len(N), i = seq_len(I), r = seq_len(R))
   score <- integer(nrow(grid))
@@ -588,23 +709,42 @@ simulate_mfrm <- function(n_persons = 80, n_items = 5, n_raters = 6,
 #' @param n_sets,n_groups Numbers of item sets and person groups.
 #' @param set_unit_ratio,group_unit_ratio Geometric span of the set and group
 #'   units across their levels (1 = equal units, i.e. an ordinary Rasch fit).
+#' @param n_categories Response categories per item: 2 (the default) gives
+#'   dichotomous items; larger values give partial credit items whose
+#'   evenly spaced thresholds are centred on the item locations, with the
+#'   frame unit scaling the whole exponent as in the dichotomous case.
 #' @param theta_sd Spread of person ability.
 #' @param seed Optional RNG seed.
-#' @return A wide data frame of class \code{"rasch_sim"} (\code{id}, item
-#'   columns, \code{group}) with \code{attr(x, "truth")$item_sets} the set map
-#'   to pass to \code{\link{rasch_efrm}}.
+#' @return A wide data frame of class \code{"rasch_sim"}, containing an ID,
+#'   item columns, and group. Its truth attribute contains the item-set map
+#'   required by \code{\link{rasch_efrm}}.
 #' @examples
-#' d <- simulate_efrm(300, 8, set_unit_ratio = 1.3, seed = 1)
+#' d <- simulate_efrm(200, 6, set_unit_ratio = 1.3, seed = 1)
 #' tr <- attr(d, "truth")
-#' ef <- rasch_efrm(d, item_sets = tr$item_sets, groups = "group")
-#' ef$alpha_table   # recovers the ~1.3 set-unit ratio
+#' ef <- rasch_efrm(d, item_sets = tr$item_sets, groups = "group",
+#'                  boot_reps = 0)    # point estimates only
+#' ef$alpha_table   # planted ratio 1.3, recovered within small-sample noise
 #' @export
 simulate_efrm <- function(n_per_group = 300, items_per_set = 8, n_sets = 2,
                           n_groups = 2, set_unit_ratio = 1.3,
-                          group_unit_ratio = 1, theta_sd = 1.3, seed = NULL) {
-  if (!is.null(seed)) set.seed(seed)
-  S <- as.integer(n_sets); G <- as.integer(n_groups); K <- as.integer(items_per_set)
-  npg <- as.integer(n_per_group)
+                          group_unit_ratio = 1, n_categories = 2,
+                          theta_sd = 1.3, seed = NULL) {
+  if (!is.null(seed)) {
+    .old_stream <- .sim_seed_capture()
+    on.exit(.sim_seed_restore(.old_stream), add = TRUE)
+    set.seed(seed)
+  }
+  S <- .sim_count(n_sets, "n_sets")
+  G <- .sim_count(n_groups, "n_groups")
+  K <- .sim_count(items_per_set, "items_per_set", 2L)
+  npg <- .sim_count(n_per_group, "n_per_group", 2L)
+  n_categories <- .sim_count(n_categories, "n_categories", 2L)
+  m <- as.integer(n_categories) - 1L
+  set_unit_ratio <- .sim_scalar(set_unit_ratio, "set_unit_ratio",
+                                lower = 0, lower_open = TRUE)
+  group_unit_ratio <- .sim_scalar(group_unit_ratio, "group_unit_ratio",
+                                  lower = 0, lower_open = TRUE)
+  theta_sd <- .sim_scalar(theta_sd, "theta_sd", lower = 0)
   # set and group units span the ratio geometrically, normalised to mean 1
   gspan <- function(ratio, n) { u <- exp(seq(0, log(ratio), length.out = n)); u / exp(mean(log(u))) }
   alpha <- gspan(set_unit_ratio, S)
@@ -614,12 +754,24 @@ simulate_efrm <- function(n_per_group = 300, items_per_set = 8, n_sets = 2,
   delta <- setNames(rep(seq(-1.5, 1.5, length.out = K), S), inm)
   set_of <- setNames(rep(seq_len(S), each = K), inm)
 
+  tau_list <- lapply(inm, function(nm) .sim_thresholds(delta[nm], m, 0.8))
+  names(tau_list) <- inm
+
   grp <- factor(rep(sprintf("g%d", seq_len(G)), each = npg))
   N <- length(grp); theta <- .sim_theta(N, 0, theta_sd)
   X <- matrix(NA_integer_, N, length(inm), dimnames = list(NULL, inm))
   for (col in seq_along(inm)) {
     s <- set_of[inm[col]]; rho <- alpha[s] * phi[as.integer(grp)]  # per-person unit
-    X[, col] <- as.integer(stats::runif(N) < stats::plogis(rho * (theta - delta[inm[col]])))
+    if (m == 1L) {
+      X[, col] <- as.integer(stats::runif(N) <
+                    stats::plogis(rho * (theta - delta[inm[col]])))
+    } else {
+      ct <- cumsum(tau_list[[inm[col]]])
+      E <- cbind(0, sapply(seq_len(m), function(k) rho * (k * theta - ct[k])))
+      P <- exp(E - apply(E, 1, max)); P <- P / rowSums(P)
+      cum <- P %*% upper.tri(diag(m + 1L), diag = TRUE)
+      X[, col] <- as.integer(rowSums(stats::runif(N) > cum))
+    }
   }
   out <- data.frame(id = sprintf("P%04d", seq_len(N)), X, group = grp,
                     check.names = FALSE, stringsAsFactors = FALSE)
@@ -630,9 +782,11 @@ simulate_efrm <- function(n_per_group = 300, items_per_set = 8, n_sets = 2,
                                   group_unit_ratio, G))
   attr(out, "truth") <- list(
     layout = "efrm",
-    description = sprintf("%d persons, %d sets x %d groups, %d items",
-                          N, S, G, length(inm)),
-    theta = theta, difficulty = delta, alpha = alpha, phi = phi,
+    description = sprintf("%d persons, %d sets x %d groups, %d items (%d categories)",
+                          N, S, G, length(inm), m + 1L),
+    theta = theta, difficulty = delta,
+    thresholds = if (m > 1L) tau_list else NULL,
+    alpha = alpha, phi = phi,
     item_sets = setNames(set_items, sprintf("set%d", seq_len(S))),
     groups = grp, planted = planted)
   class(out) <- c("rasch_sim", "data.frame")
@@ -652,18 +806,68 @@ simulate_efrm <- function(n_per_group = 300, items_per_set = 8, n_sets = 2,
 #' @return A list of class \code{"rasch_sim_batch"}, one simulated dataset per
 #'   element.
 #' @examples
-#' # 20 datasets with a planted DIF item; how often is it flagged?
-#' batch <- sim_replicate(simulate_rasch, 20, n_persons = 400, n_items = 10,
+#' # 8 datasets with a planted DIF item; how often is it flagged?
+#' batch <- sim_replicate(simulate_rasch, 8, n_persons = 400, n_items = 10,
 #'                        dif = list(items = "I05", uniform = 0.8), n_groups = 2,
 #'                        seed = 1)
-#' mean(vapply(batch, function(d)
-#'   dif_anova(rasch(d, id = "id", factors = "group"))$summary$uniform_DIF[5], TRUE))
+#' # sim_apply() is resilient: a replicate the estimator refuses (e.g. a
+#' # small or disconnected draw) contributes NA instead of aborting the run
+#' flagged <- sim_apply(batch, function(d)
+#'   dif_anova(rasch(d, id = "id", factors = "group"))$summary$uniform_DIF[5])
+#' mean(flagged, na.rm = TRUE)
 #' @export
 sim_replicate <- function(FUN, n, ..., seed = NULL) {
-  base <- if (is.null(seed)) sample.int(1e6, 1L) else as.integer(seed)
+  if (!is.function(FUN)) stop("FUN must be a simulation function")
+  n <- .sim_count(n, "n")
+  base <- if (is.null(seed)) sample.int(1e6, 1L)
+          else .sim_count(seed, "seed", 0L)
   reps <- lapply(seq_len(n), function(k) FUN(..., seed = base + k - 1L))
-  structure(reps, class = "rasch_sim_batch", n = as.integer(n),
+  structure(reps, class = "rasch_sim_batch", n = n,
             layout = attr(reps[[1]], "truth")$layout)
+}
+
+#' Apply a statistic across a simulation batch
+#'
+#' Applies \code{FUN} to each replicate of a \code{\link{sim_replicate}}
+#' batch, catching replicates on which \code{FUN} errors -- for example a
+#' small or disconnected draw the estimator refuses as unidentified -- so a
+#' single failure does not abort the whole Monte-Carlo run. Failed
+#' replicates contribute \code{NA}; the number of failures and the distinct
+#' error messages are attached as attributes.
+#'
+#' @param batch A \code{"rasch_sim_batch"} from \code{\link{sim_replicate}}
+#'   (or any list of datasets).
+#' @param FUN A function of one dataset returning a scalar statistic.
+#' @param ... Further arguments passed to \code{FUN}.
+#' @return A vector of per-replicate statistics, with \code{NA} where the
+#'   function failed. Attribute \code{n_failed} gives the failure count;
+#'   \code{failure_messages} contains the distinct messages.
+#' @examples
+#' batch <- sim_replicate(simulate_rasch, 10, n_persons = 300, n_items = 8,
+#'                        seed = 1)
+#' psi <- sim_apply(batch, function(d) rasch(d)$psi$PSI)
+#' mean(psi, na.rm = TRUE)
+#' @export
+sim_apply <- function(batch, FUN, ...) {
+  if (!is.list(batch) || !length(batch)) stop("batch must be a non-empty list")
+  if (!is.function(FUN)) stop("FUN must be a function")
+  res <- lapply(batch, function(d)
+    tryCatch(list(ok = TRUE, v = FUN(d, ...)),
+             error = function(e) list(ok = FALSE, v = NA, msg = conditionMessage(e))))
+  valid <- vapply(res, function(r)
+    isTRUE(r$ok) && !is.null(r$v) && length(r$v) == 1L, TRUE)
+  for (i in which(!valid & vapply(res, `[[`, logical(1), "ok"))) {
+    res[[i]]$ok <- FALSE
+    res[[i]]$msg <- "FUN must return one scalar value"
+  }
+  ok <- vapply(res, `[[`, logical(1), "ok")
+  vals <- lapply(res, function(r) {
+    v <- r$v; if (is.null(v) || length(v) != 1L) NA else v[[1]]
+  })
+  out <- tryCatch(unlist(vals, use.names = FALSE),
+                  error = function(e) vals)
+  msgs <- unique(vapply(res[!ok], function(r) r$msg, ""))
+  structure(out, n_failed = sum(!ok), failure_messages = msgs)
 }
 
 #' @export
@@ -675,10 +879,10 @@ print.rasch_sim_batch <- function(x, ...) {
   invisible(x)
 }
 
-#' Parameter recovery of a fit against the simulation truth
+#' Compare fitted and generating parameters
 #'
-#' Compares the parameters recovered by a fit with the ones a
-#' \code{simulate_*} function planted (carried on the data as
+#' Compares fitted parameters with the generating values from a
+#' \code{simulate_*} function (carried on the data as
 #' \code{attr(sim, "truth")}): item difficulties and person abilities for a
 #' Rasch fit, object locations for a paired-comparison fit, rater severities
 #' (with item and person measures) for a many-facet fit, and the set units for
@@ -698,7 +902,7 @@ print.rasch_sim_batch <- function(x, ...) {
 sim_recovery <- function(fit, sim) {
   tr <- attr(sim, "truth")
   if (is.null(tr)) stop("`sim` carries no simulation truth")
-  pieces <- list()
+  pieces <- list(); centred <- list()
   add <- function(name, true, est, label = NULL, centre = FALSE) {
     true <- as.numeric(true); est <- as.numeric(est)
     keep <- is.finite(true) & is.finite(est)
@@ -706,6 +910,7 @@ sim_recovery <- function(fit, sim) {
     if (centre) {                       # location-type: identified up to origin
       true <- true - mean(true[keep]); est <- est - mean(est[keep])
     }
+    centred[[name]] <<- isTRUE(centre)
     pieces[[name]] <<- data.frame(
       parameter = name,
       label = if (is.null(label)) NA_character_ else as.character(label)[keep],
@@ -741,14 +946,31 @@ sim_recovery <- function(fit, sim) {
     # log scale (a ratio); the planted alpha is normalised the same way
     add("set unit (log)", log(tr$alpha), log(at$alpha[match(
       sprintf("set%d", seq_along(tr$alpha)), at$set)]),
-      sprintf("set%d", seq_along(tr$alpha)))
+      sprintf("set%d", seq_along(tr$alpha)), centre = TRUE)
+    # the person-group units phi are a fitted, reported quantity too --
+    # recover them, not only the set units
+    if (!is.null(tr$phi) && !is.null(fit$phi_table)) {
+      glab <- if (!is.null(names(tr$phi))) names(tr$phi) else
+        sprintf("g%d", seq_along(tr$phi))
+      ephi <- fit$phi_table$phi[match(glab, fit$phi_table$group)]
+      add("group unit (log)", log(tr$phi), log(ephi), glab, centre = TRUE)
+    }
   } else stop("unsupported layout: ", lay)
 
-  summ <- do.call(rbind, lapply(pieces, function(d) data.frame(
-    parameter = d$parameter[1], n = nrow(d),
+  # bias after centring is structurally zero for any parameter identified
+  # only up to an origin/scale convention: it is not identifiable, so report
+  # NA rather than a misleading ~0. Correlation and RMSE (scatter about the
+  # aligned scale) remain meaningful.
+  if (!length(pieces))
+    stop("the fit and simulation truth have no comparable parameters")
+  summ <- do.call(rbind, lapply(pieces, function(d) {
+    nm <- d$parameter[1]
+    data.frame(
+    parameter = nm, n = nrow(d),
     correlation = if (nrow(d) > 2) stats::cor(d$true, d$estimated) else NA_real_,
     rmse = sqrt(mean((d$estimated - d$true)^2)),
-    bias = mean(d$estimated - d$true), stringsAsFactors = FALSE)))
+    bias = if (isTRUE(centred[[nm]])) NA_real_ else mean(d$estimated - d$true),
+    stringsAsFactors = FALSE)}))
   rownames(summ) <- NULL
   structure(list(summary = summ, pieces = pieces, layout = lay),
             class = "rasch_recovery")
@@ -764,7 +986,7 @@ print.rasch_recovery <- function(x, ...) {
   invisible(x)
 }
 
-#' Recovery scatter of planted against recovered parameters
+#' Plot fitted against generating parameters
 #'
 #' One true-versus-estimated panel per parameter type, with the identity line
 #' and the correlation and RMSE.
@@ -772,6 +994,12 @@ print.rasch_recovery <- function(x, ...) {
 #' @param x A \code{"rasch_recovery"} object.
 #' @param ... Unused.
 #' @return Called for its plotting side effect.
+#' @examples
+#' \donttest{
+#' d <- simulate_rasch(300, 8, seed = 1)
+#' fit <- rasch(d, id = "id")
+#' plot_recovery(sim_recovery(fit, d))
+#' }
 #' @export
 plot_recovery <- function(x, ...) {
   stopifnot(inherits(x, "rasch_recovery"))
@@ -830,7 +1058,8 @@ plot_recovery <- function(x, ...) {
 #' d <- simulate_btl_efrm(6, 2, set_units = c(1, 1.4), seed = 1)
 #' bt <- btl_efrm(d, "object_a", "object_b", winner = "winner",
 #'                judge = "judge", panels = "panel",
-#'                object_sets = attr(d, "truth")$object_sets)
+#'                object_sets = attr(d, "truth")$object_sets,
+#'                se_method = "conditional")
 #' bt$alpha_table   # recovers the ~1.4 set unit
 #' @export
 simulate_btl_efrm <- function(n_objects_per_set = 8, n_sets = 2,
@@ -838,18 +1067,31 @@ simulate_btl_efrm <- function(n_objects_per_set = 8, n_sets = 2,
                               reps_within = 20, reps_cross = 20,
                               panel_units = NULL, set_units = NULL,
                               set_origins = NULL, object_sd = 1, seed = NULL) {
-  if (!is.null(seed)) set.seed(seed)
-  S <- as.integer(n_sets); G <- as.integer(n_panels)
-  Kp <- as.integer(n_objects_per_set); Jp <- as.integer(n_judges_per_panel)
+  if (!is.null(seed)) {
+    .old_stream <- .sim_seed_capture()
+    on.exit(.sim_seed_restore(.old_stream), add = TRUE)
+    set.seed(seed)
+  }
+  S <- .sim_count(n_sets, "n_sets")
+  G <- .sim_count(n_panels, "n_panels")
+  Kp <- .sim_count(n_objects_per_set, "n_objects_per_set", 2L)
+  Jp <- .sim_count(n_judges_per_panel, "n_judges_per_panel")
+  reps_within <- .sim_count(reps_within, "reps_within")
+  reps_cross <- .sim_count(reps_cross, "reps_cross")
+  object_sd <- .sim_scalar(object_sd, "object_sd", lower = 0,
+                           lower_open = TRUE)
 
   phi <- if (is.null(panel_units)) rep(1, G) else as.numeric(panel_units)
-  if (length(phi) != G) stop("panel_units must have length n_panels")
+  if (length(phi) != G || any(!is.finite(phi) | phi <= 0))
+    stop("panel_units must contain n_panels positive finite values")
   phi <- phi / exp(mean(log(phi)))                    # geometric mean one
   alpha <- if (is.null(set_units)) rep(1, S) else as.numeric(set_units)
-  if (length(alpha) != S) stop("set_units must have length n_sets")
+  if (length(alpha) != S || any(!is.finite(alpha) | alpha <= 0))
+    stop("set_units must contain n_sets positive finite values")
   alpha <- alpha / alpha[1]                            # alpha_1 = 1
   kappa <- if (is.null(set_origins)) rep(0, S) else as.numeric(set_origins)
-  if (length(kappa) != S) stop("set_origins must have length n_sets")
+  if (length(kappa) != S || any(!is.finite(kappa)))
+    stop("set_origins must contain n_sets finite values")
   kappa <- kappa - kappa[1]                            # kappa_1 = 0
 
   set_nm <- sprintf("set%d", seq_len(S))

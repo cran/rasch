@@ -2,7 +2,7 @@
 % Please edit documentation in R/dif.R
 \name{dif_contrasts}
 \alias{dif_contrasts}
-\title{Planned DIF contrasts derived from the factor structure}
+\title{Planned DIF contrasts}
 \usage{
 dif_contrasts(
   fit,
@@ -18,7 +18,8 @@ dif_contrasts(
 )
 }
 \arguments{
-\item{fit}{A fitted object from \code{\link{rasch}}.}
+\item{fit}{A fitted object from \code{\link{rasch}} or
+\code{\link{rasch_mfrm}}.}
 
 \item{factors}{A data frame of person factors, a character vector naming
 factors nominated in the fit, or a single grouping vector. Defaults to
@@ -31,8 +32,8 @@ time). Detected automatically when \code{id} is supplied and a factor
 varies within an id.}
 
 \item{id}{Person identifier with one entry per row, or the name of a
-nominated factor holding it; required for stacked designs where the
-same person occupies several rows.}
+nominated factor holding it. By default the identifier stored by the
+fitted model is used, so stacked designs retain their pairing.}
 
 \item{contrasts}{\code{"auto"} (derive the family from the factor
 structure) or a named list of numeric cell-weight vectors, each named
@@ -40,8 +41,8 @@ by the design-cell labels (factor levels joined by \code{":"}).
 Weights are rescaled so the positive and negative parts each sum to
 one.}
 
-\item{p_adjust}{Familywise adjustment over the whole family (items by
-contrasts); default \code{"holm"}.}
+\item{p_adjust}{Familywise adjustment across items and contrasts. The
+default is \code{"holm"}.}
 
 \item{alpha}{Significance level for the adjusted probabilities.}
 
@@ -59,39 +60,39 @@ A list of class \code{"rasch_dif_contrasts"}: \code{table} (one row
   \code{notes}.
 }
 \description{
-The confirmatory alternative to exhaustive post-hoc comparison: instead
-of every pair of design cells, a small family of one-degree-of-freedom
-questions is tested, so familywise control costs little power (Maxwell
-and Delaney 2004, ch. 5). By default the family is derived from the
-structure of the factors themselves -- a two-level factor contributes its
-difference; an ordered factor (declared ordered, or with numeric levels
-such as ages or waves) contributes its linear and quadratic trends; a
-nominal factor contributes all pairs when it has up to four levels and
-each-level-against-the-rest otherwise; and every pair of factors with a
-leading contrast (a difference or a linear trend) contributes the product
-interaction. Print the returned object to see the family in words before
-reading the results; a family endorsed in advance of the results is what
-makes the contrasts planned.
+Tests a specified family of one-degree-of-freedom DIF contrasts. By default,
+contrasts are derived from the factor structure: differences for two-level
+factors, polynomial trends for ordered factors, and pairwise or
+level-against-rest comparisons for nominal factors. Leading contrasts are
+crossed to form two-factor interactions. User-supplied cell weights are
+also accepted.
 }
 \details{
-Each contrast is estimated in logits from resolved item locations (the
-item split into one copy per design cell and the model refitted, as in
-\code{\link{dif_size}}), with cell weights scaled so every estimate is a
-difference between two weighted averages -- directly comparable to the
-practical-significance criterion. Because resolution is used, magnitudes
-are read from a calibration in which compensating artificial DIF has been
-removed (Andrich and Hagquist 2015).
+Each logit contrast is calculated from resolved item locations. Weights are
+scaled so their positive and negative parts each sum to one. With repeated
+persons, inference uses person-level residual contrast scores with the same
+cell weights as the resolved estimate. Nuisance-factor cells are averaged
+equally rather than in proportion to their sample sizes. Independent
+between-person cells are then combined with a Welch--Satterthwaite
+reference. The resolved logit estimate is retained, but its
+calibration-based standard error is withheld because it does not include
+repeated-person dependence.
 
-When \code{id} shows that persons repeat across rows (a stacked
-repeated-measures design), between-row independence fails and the usual
-tests would be invalid. Significance is then computed from person-level
-scores of the standardised residuals: a within-subject contrast (for
-example a trend over time) becomes one contrast score per person, tested
-against zero; a between-subjects contrast is tested on person-mean
-residuals; and a between-by-within interaction tests the person contrast
-scores across the between groups. Logit estimates are still reported from
-the resolved locations; their standard errors treat rows as independent
-and are conservative for within-subject differences.
+For independent rows, a contrast with weights \eqn{\mathbf{c}} is
+\deqn{\Delta_i=\mathbf{c}^{\mathsf T}\delta_i,\qquad
+\operatorname{SE}(\Delta_i)=
+\sqrt{\mathbf{c}^{\mathsf T}\mathbf{V}_i\mathbf{c}}.}
+In a repeated-measures design, a within-person contrast is formed from the
+standardised residuals,
+\deqn{s_p=\sum_l c_l z_{pl},}
+and tested over persons. The complete cell-weight vector is retained for
+main effects and interactions, so the residual test and resolved estimate
+address the same marginal contrast. The sign of each residual test is
+aligned with the resolved logit contrast. Contrasts require a converged
+calibration.
+For an MFRM fit, underlying items are pooled over their facet cells by
+default. EFRM fits are excluded because the required split refit would
+discard the frame units.
 }
 \examples{
 set.seed(1); n <- 600
@@ -103,14 +104,17 @@ fit <- rasch(data.frame(X, grp = g), factors = "grp")
 dif_contrasts(fit, items = c("I3", "I5"))
 }
 \references{
-Maxwell, S. E., & Delaney, H. D. (2004). \emph{Designing
-  Experiments and Analyzing Data} (2nd ed.). Mahwah, NJ: Erlbaum.
+Maxwell, S. E. and Delaney, H. D. (2004). Designing Experiments and
+Analyzing Data (2nd ed.). Erlbaum.
 
-  Andrich, D., & Hagquist, C. (2015). Real and artificial differential
-  item functioning in polytomous items. \emph{Educational and
-  Psychological Measurement}, 75(2), 185-207.
+Andrich, D. and Hagquist, C. (2015). Real and artificial differential item
+functioning in polytomous items. Educational and Psychological Measurement,
+75(2), 185--207.
 
-  Hagquist, C., & Andrich, D. (2017). Recent advances in analysis of
-  differential item functioning in health research using the Rasch
-  model. \emph{Health and Quality of Life Outcomes}, 15, 181.
+Hagquist, C. and Andrich, D. (2017). Recent advances in analysis of
+differential item functioning in health research using the Rasch model.
+Health and Quality of Life Outcomes, 15, 181.
+}
+\seealso{
+\code{\link{dif_anova}} and \code{\link{dif_size}}.
 }

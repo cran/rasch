@@ -33,11 +33,22 @@ for category \eqn{x_i} is shifted by \eqn{-d} when \eqn{k \le x_i} and
 \eqn{+d} otherwise, so each threshold yields
 \eqn{\hat d_k = (\hat\delta_{ji(k)}(x_i = k-1) - \hat\delta_{ji(k)}(x_i = k))/2}
 and \eqn{\hat d} is their mean (eq. 24.7 of Andrich and Marais 2019).
-Because the resolved items are answered by disjoint persons, the
-estimates are independent, and the standard error pools the threshold
-variances: \eqn{\hat\sigma^2_k = (\hat\sigma^2_{(k)(k-1)} +
-\hat\sigma^2_{(k)(k)})/4}, with \eqn{V[\hat d] = \bar{\hat\sigma^2_k}/m}
-(eqs. 24.9-24.11).
+The resolved threshold estimates share the calibration of the remaining
+items and are therefore correlated. The standard error of \eqn{\hat d} is
+calculated from their full sandwich covariance.
+}
+\details{
+Polytomous resolution requires an unconstrained partial credit model so
+that each resolved threshold can move independently. A rating scale or
+principal-component threshold constraint is therefore refused. The refit
+otherwise retains the original fit grouping, keyed scoring, anchors on
+items that remain, and optimisation controls. Both calibrations must
+converge before the magnitude and its standard error are reported. MFRM
+virtual items are resolved through this unconstrained PCM. EFRM virtual
+frames are mutually exclusive and must first be reduced to an observable
+frame or linked design block. For an explanatory fit, the remaining items
+retain their explanatory restrictions and the resolved copies receive free
+fixed departures.
 }
 \examples{
 set.seed(1); N <- 700

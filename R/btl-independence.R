@@ -50,17 +50,16 @@
 
 #' Transitivity of paired comparisons
 #'
-#' The single-dimension analogue for paired comparisons of the
-#' unidimensionality question. A Bradley-Terry-Luce scale implies that
-#' preferences stack into one consistent order: if A beats B and B beats C
-#' then A should beat C. A \emph{circular triad} (A beats B, B beats C, C
-#' beats A) is a local contradiction, like rock-paper-scissors. A few are
-#' sampling noise; many, systematically, mean the comparisons are not being
-#' driven by a single attribute. The rate of circular triads is compared with
-#' the value expected from pure guessing (one quarter of triples), and, when
-#' every pair has been compared, Kendall's coefficient of consistency is
-#' reported (Kendall & Babington Smith 1940). With judges, each judge's own
-#' consistency is reported too, flagging judges whose choices approach chance.
+#' Summarises circular triads in the observed paired comparisons. A triad is
+#' circular when A is preferred to B, B to C, and C to A. For a complete
+#' tournament, the function reports Kendall's coefficient of consistency
+#' (Kendall and Babington Smith 1940). Judge-specific summaries are returned
+#' when judges are available.
+#'
+#' A circular-triad rate of one quarter is the benchmark for a random
+#' tournament. It is not the expected rate under a fitted BTL model with
+#' unequal object locations, so this function is a descriptive consistency
+#' measure rather than a calibrated goodness-of-fit test.
 #'
 #' @param fit A paired-comparison fit from \code{\link{btl}}.
 #' @param min_triples A judge is reported only if this many complete triples
@@ -87,7 +86,9 @@ btl_transitivity <- function(fit, min_triples = 5L) {
   objs <- fit$objects$object; K <- length(objs); m <- fit$m
   cmp <- fit$comparisons
   ia <- match(cmp$object_a, objs); ib <- match(cmp$object_b, objs)
-  notes <- character(0)
+  notes <- paste(
+    "the 0.25 chance rate is a random-tournament benchmark, not the fitted",
+    "BTL expected circular rate; transitivity is descriptive")
 
   tournament <- function(rows) {
     S <- .btl_scores(ia[rows], ib[rows], cmp$response[rows], cmp$weight[rows],
@@ -154,6 +155,7 @@ btl_transitivity <- function(fit, min_triples = 5L) {
 
   out <- list(summary = summary, objects = objects, judges = judges,
               notes = notes)
+  out <- .tag_tables(out)
   class(out) <- "rasch_btl_transitivity"
   out
 }
@@ -163,7 +165,7 @@ print.rasch_btl_transitivity <- function(x, ...) {
   s <- x$summary
   cat(sprintf("Paired-comparison transitivity: %d objects, %d complete triples\n",
               s$n_objects, s$n_triples))
-  cat(sprintf("Circular triads: %d (%.1f%% of triples; chance %.0f%%) -> consistency %.2f\n",
+  cat(sprintf("Circular triads: %d (%.1f%% of triples; random-tournament benchmark %.0f%%) -> consistency %.2f\n",
               s$n_circular, 100 * s$circular_rate, 100 * s$chance_rate,
               s$consistency))
   if (!is.na(s$zeta))
@@ -188,6 +190,27 @@ print.rasch_btl_transitivity <- function(x, ...) {
   (R - t(R)) / 2                                     # enforce skew-symmetry
 }
 
+# Residual log-odds when the fitted expectation varies within an object pair,
+# as it does across panel-by-set frames. The observed pair logit is compared
+# with the pooled fitted probability for that same allocation.
+.btl_resid_matrix_expected <- function(ia, ib, resp, w, K, expected_a) {
+  S <- .btl_scores(ia, ib, resp, w, 1L, K)
+  E <- matrix(0, K, K)
+  add <- function(rows, cols, val) {
+    idx <- (cols - 1L) * K + rows
+    ag <- rowsum(val, idx)
+    E[as.integer(rownames(ag))] <<- E[as.integer(rownames(ag))] + ag[, 1]
+  }
+  add(ia, ib, w * expected_a)
+  add(ib, ia, w * (1 - expected_a))
+  tot <- S + t(S)
+  Pobs <- (S + .5) / (tot + 1)
+  Pexp <- pmin(pmax(E / pmax(tot, 1e-12), 1e-8), 1 - 1e-8)
+  R <- stats::qlogis(Pobs) - stats::qlogis(Pexp)
+  R[tot == 0] <- 0
+  (R - t(R)) / 2
+}
+
 # real skew-symmetric R has eigenvalues in +/- i*lambda pairs; the positive
 # lambda are the "bimension" strengths, each a plane of cyclic residual
 # structure. Returns strengths (desc) and the leading plane's coordinates.
@@ -202,38 +225,75 @@ print.rasch_btl_transitivity <- function(x, ...) {
        coord = cbind(x = Re(v), y = Im(v)))
 }
 
-#' Residual dimensionality of paired comparisons
+.btl_dimensionality_efrm <- function(fit, reps) {
+  objs <- fit$objects$object; K <- length(objs)
+  if (K < 3L) stop("need at least three objects")
+  cmp <- fit$comparisons
+  ia <- match(cmp$object_a, objs); ib <- match(cmp$object_b, objs)
+  w <- cmp$weight
+  R <- .btl_resid_matrix_expected(ia, ib, cmp$response, w, K,
+                                  cmp$expected)
+  bm <- .btl_bimensions(R)
+  if (!length(bm$strength)) stop("no residual structure to decompose")
+  S_seen <- .btl_scores(ia, ib, cmp$response, w, 1L, K)
+  n_seen <- sum(((S_seen + t(S_seen)) > 0)[upper.tri(diag(K))])
+  complete_pairs <- n_seen == choose(K, 2)
+  lead_ref <- vapply(seq_len(reps), function(r) {
+    yr <- stats::rbinom(nrow(cmp), 1L, cmp$expected)
+    rr <- .btl_resid_matrix_expected(ia, ib, yr, w, K, cmp$expected)
+    s <- .btl_bimensions(rr)$strength
+    if (length(s)) s[1] else 0
+  }, 0)
+  ref_mean <- mean(lead_ref)
+  ref_p95 <- stats::quantile(lead_ref, .95, names = FALSE)
+  nb <- length(bm$strength)
+  prop <- 2 * bm$strength^2 / bm$total
+  lead_flag <- if (complete_pairs) bm$strength[1] > ref_p95 else NA
+  bimensions <- data.frame(
+    bimension = seq_len(nb), strength = bm$strength,
+    prop_residual = prop,
+    ref_mean = c(ref_mean, rep(NA_real_, nb - 1L)),
+    ref_p95 = c(ref_p95, rep(NA_real_, nb - 1L)),
+    above_reference = c(lead_flag, rep(NA, nb - 1L)))
+  coords <- data.frame(object = objs, location = fit$objects$location,
+                       x = bm$coord[, "x"], y = bm$coord[, "y"])
+  notes <- paste(
+    "the simulated reference retains each comparison's fitted panel-by-set",
+    "probability and the observed frame allocation")
+  if (!complete_pairs)
+    notes <- c(notes, sprintf(
+      paste0("%d of %d pairs compared; unseen pairs contribute no residual ",
+             "information, so the categorical verdict is withheld"),
+      n_seen, choose(K, 2)))
+  out <- list(
+    bimensions = bimensions, coords = coords,
+    leading_structured = lead_flag,
+    reference = list(mean = ref_mean, p95 = ref_p95, reps = reps,
+                     draws = lead_ref),
+    residual_matrix = R, notes = notes)
+  class(out) <- "rasch_btl_dim"
+  out
+}
+
+#' Experimental residual dimensionality of paired comparisons
 #'
-#' The residual-PCA analogue for paired comparisons. The fitted model predicts
-#' how often each object should beat each other from their locations; the
-#' object-by-object matrix of departures from that prediction (on the
-#' log-odds scale) is \emph{skew-symmetric}, so its structure decomposes into
-#' rotational planes -- Gower's (1977) bimensions -- rather than the ordinary
-#' components of a symmetric residual-correlation matrix. A dominant leading
-#' bimension is a coherent \dQuote{swirl} in the residuals (A over-beats B, B
-#' over-beats C, C over-beats A): a second attribute steering some contests. A
-#' flat spectrum is noise: the single scale suffices. The leading bimension is
-#' judged against a reference built by simulating unidimensional data from the
-#' fitted model with the observed pair counts (a parametric bootstrap, as in
-#' \code{\link{plot_scree}}); an observed strength above the reference is
-#' structure the one-dimensional model does not explain. For graded fits the
-#' residual log-odds are taken on the points-proportion scale, whose model
-#' mean is not exactly \code{plogis(beta_i - beta_j)}; the simulated reference
-#' carries the same construction, so the test stays calibrated (verified
-#' mildly conservative on model-true graded data) rather than anticonservative.
-#' Likewise, when the fit carries within-judge dependence effects
-#' (\code{order}), the reference is simulated sequentially through each
-#' judge's comparisons WITH the fitted exposure and carry-over coefficients:
-#' order effects push the marginal pair rates around in a structured way, and
-#' a reference without them would read that structure as a second attribute.
-#' The price is power: carry-over and a judge-camp second attribute are
-#' partially confounded (both appear as consistent within-judge deviation),
-#' so with \code{order} modelled the test is conservative about attributing
-#' the ambiguous share to a second dimension.
-#' The reference simulates from the point estimates without refitting each
-#' replicate, so it carries sampling noise in the responses but not
-#' estimation noise in the parameters -- adequate for the screening use
-#' here, slightly liberal in tiny designs.
+#' Decomposes the skew-symmetric matrix of observed-minus-expected pair
+#' log-odds into Gower's (1977) rotational planes, or bimensions. A large
+#' leading bimension indicates a structured cycle in the residual comparisons.
+#' Its strength is compared with simulations from the fitted one-dimensional
+#' model using the observed comparison counts.
+#'
+#' This is an experimental diagnostic. The reference is conditional on the
+#' fitted point estimates because the model is not re-estimated in each
+#' replicate. Ordered-response fits use the same points-proportion residual in
+#' the data and simulations. Fits with exposure or carry-over effects simulate
+#' those effects through each judge's observed sequence. The fitted model must
+#' have converged.
+#'
+#' A categorical result is withheld if any object pair is unobserved. It is
+#' also withheld when every judge receives essentially the same comparison
+#' sequence and an order effect is fitted, because order and residual structure
+#' are then confounded.
 #'
 #' @param fit A paired-comparison fit from \code{\link{btl}}.
 #' @param reps Model-simulated replicates for the noise reference.
@@ -254,8 +314,16 @@ print.rasch_btl_transitivity <- function(x, ...) {
 #' d$win <- ifelse(runif(nrow(d)) < plogis(beta[d$a] - beta[d$b]), d$a, d$b)
 #' btl_dimensionality(btl(d, "a", "b", "win"), reps = 20)
 #' @export
-btl_dimensionality <- function(fit, reps = 50L) {
+btl_dimensionality <- function(fit, reps = 200L) {
   if (!inherits(fit, "rasch_btl")) stop("not a paired-comparison (btl) fit")
+  if (!isTRUE(fit$converged))
+    stop("the paired-comparison calibration did not converge; dimensionality inference is unavailable")
+  if (length(reps) != 1L || !is.finite(reps) || reps < 20L ||
+      reps != floor(reps))
+    stop("reps must be one whole number of at least 20")
+  reps <- as.integer(reps)
+  if (inherits(fit, "rasch_btl_efrm"))
+    return(.btl_dimensionality_efrm(fit, reps))
   objs <- fit$objects$object; K <- length(objs); m <- fit$m
   if (K < 3L) stop("need at least three objects")
   beta <- setNames(fit$objects$location, objs)
@@ -263,6 +331,9 @@ btl_dimensionality <- function(fit, reps = 50L) {
   ia <- match(cmp$object_a, objs); ib <- match(cmp$object_b, objs)
   w <- cmp$weight
   notes <- character(0)
+  S_seen <- .btl_scores(ia, ib, cmp$response, w, m, K)
+  n_seen <- sum(((S_seen + t(S_seen)) > 0)[upper.tri(diag(K))])
+  complete_pairs <- n_seen == choose(K, 2)
 
   R <- .btl_resid_matrix(ia, ib, cmp$response, w, m, K, beta)
   bm <- .btl_bimensions(R)
@@ -294,9 +365,13 @@ btl_dimensionality <- function(fit, reps = 50L) {
       cnt <- new.env(hash = TRUE, parent = emptyenv())
       tot <- new.env(hash = TRUE, parent = emptyenv())
       gets <- function(e, k) if (is.null(v <- e[[k]])) 0 else v
+      key_a <- .factor_keys(data.frame(judge = sjd, object = sa,
+                                       stringsAsFactors = FALSE))
+      key_b <- .factor_keys(data.frame(judge = sjd, object = sb,
+                                       stringsAsFactors = FALSE))
       resp <- integer(length(sa))
       for (r in seq_along(sa)) {
-        ka <- paste0(sjd[r], "\r", sa[r]); kb <- paste0(sjd[r], "\r", sb[r])
+        ka <- key_a[r]; kb <- key_b[r]
         na_ <- gets(cnt, ka); nb_ <- gets(cnt, kb)
         z_exp <- as.numeric(na_ > 0) - as.numeric(nb_ > 0)
         z_cry <- (if (na_ > 0) gets(tot, ka) / na_ else 0) -
@@ -333,6 +408,32 @@ btl_dimensionality <- function(fit, reps = 50L) {
     Pcat_pair <- if (m == 1L) NULL else
       vapply(d_pair, function(dd) item_moments(dd, tau)$P, numeric(m + 1L))
   }
+  # Shared fixed comparison order confounds the dimensionality test. When
+  # every judge is given the same comparison sequence, a real within-judge
+  # order effect cannot be separated from the object locations (the fitted
+  # order coefficient attenuates, the locations absorb the structured order
+  # signal), and the fixed-estimate reference cannot reproduce that
+  # bias-induced residual structure -- so the observed matrix clears it in
+  # almost every unidimensional draw, a false second dimension. Refitting
+  # the reference per replicate does not rescue this: it inflates the
+  # reference and destroys power even for randomised orders. The honest
+  # course is to detect the shared order and withhold the second-dimension
+  # verdict, since the design does not identify it. When the order varies
+  # across judges the fixed-estimate reference is well calibrated.
+  shared_order <- FALSE
+  if (!is.null(seq_sim)) {
+    dd <- fit$dependence_data
+    pk <- paste(pmin(match(dd$object_a, objs), match(dd$object_b, objs)),
+                pmax(match(dd$object_a, objs), match(dd$object_b, objs)))
+    posfrac <- unlist(tapply(seq_along(dd$order), dd$judge, function(ix) {
+      o <- rank(dd$order[ix], ties.method = "first")
+      if (length(o) > 1L) (o - 1) / (length(o) - 1) else 0
+    }), use.names = FALSE)[order(order(dd$judge, dd$order))]
+    # a pair's position varies as ~Uniform(0,1) across judges under random
+    # order (variance ~1/12); near-zero variance means a shared fixed order
+    pv <- tapply(posfrac, pk, stats::var)
+    shared_order <- isTRUE(mean(pv, na.rm = TRUE) < (1 / 12) * 0.25)
+  }
   lead_ref <- vapply(seq_len(reps), function(r) {
     if (is.null(seq_sim)) {
       resp <- if (m == 1L)
@@ -355,24 +456,37 @@ btl_dimensionality <- function(fit, reps = 50L) {
 
   nb <- length(bm$strength)
   prop <- 2 * bm$strength^2 / bm$total
+  # under a shared fixed order the verdict is not identifiable: withhold it
+  # (NA) rather than report a confounded flag
+  lead_flag <- if (shared_order || !complete_pairs) NA else
+    bm$strength[1] > ref_p95
   bimensions <- data.frame(
     bimension = seq_len(nb), strength = bm$strength,
     prop_residual = prop,
     ref_mean = c(ref_mean, rep(NA_real_, nb - 1L)),
     ref_p95 = c(ref_p95, rep(NA_real_, nb - 1L)),
-    above_reference = c(bm$strength[1] > ref_p95, rep(NA, nb - 1L)))
+    above_reference = c(lead_flag, rep(NA, nb - 1L)))
+  if (shared_order)
+    notes <- c(notes, paste0(
+      "every judge shares (nearly) the same comparison order, so the ",
+      "within-judge order effect is confounded with the object locations ",
+      "and a second dimension cannot be separated from it: the ",
+      "second-dimension verdict is withheld. Randomise the comparison ",
+      "order across judges to test dimensionality with an order effect ",
+      "present"))
 
   coords <- data.frame(object = objs, location = unname(beta),
                        x = bm$coord[, "x"], y = bm$coord[, "y"])
-  S <- .btl_scores(ia, ib, cmp$response, w, m, K)
-  n_seen <- sum(((S + t(S)) > 0)[upper.tri(diag(K))])
-  if (n_seen < choose(K, 2))
+  if (!complete_pairs)
     notes <- c(notes, sprintf(
-      "%d of %d pairs compared; unseen pairs contribute no residual",
+      paste0("%d of %d pairs compared; unseen pairs contribute no residual ",
+             "information, so the categorical verdict is withheld"),
       n_seen, choose(K, 2)))
 
   out <- list(bimensions = bimensions, coords = coords,
-              leading_structured = isTRUE(bm$strength[1] > ref_p95),
+              # keep the public verdict consistent with above_reference:
+              # TRUE/FALSE when identified, NA when shared order confounds it
+              leading_structured = lead_flag,
               reference = list(mean = ref_mean, p95 = ref_p95, reps = reps,
                                draws = lead_ref),
               residual_matrix = R, notes = notes)
@@ -383,12 +497,15 @@ btl_dimensionality <- function(fit, reps = 50L) {
 #' @export
 print.rasch_btl_dim <- function(x, ...) {
   b <- x$bimensions
+  verdict <- if (is.na(x$leading_structured))
+    "categorical verdict withheld"
+  else if (x$leading_structured) "above the conditional reference; investigate"
+  else "within the conditional reference"
   cat(sprintf("Paired-comparison residual dimensionality: %d bimension(s)\n",
               nrow(b)))
   cat(sprintf("Leading bimension strength %.3f (%.0f%% of residual; reference 95%%: %.3f) -> %s\n",
               b$strength[1], 100 * b$prop_residual[1], x$reference$p95,
-              if (x$leading_structured) "structured (a second attribute)"
-              else "within noise (one scale suffices)"))
+              verdict))
   for (n in x$notes) cat("Note:", n, "\n")
   invisible(x)
 }
@@ -407,6 +524,13 @@ print.rasch_btl_dim <- function(x, ...) {
 #'   or \code{"object"}.
 #' @param ... Unused.
 #' @return Called for its plotting side effect.
+#' @examples
+#' \donttest{
+#' d <- simulate_btl(6, 10, reps_per_pair = 20, seed = 1)
+#' fit <- btl(d, "object_a", "object_b", winner = "winner", judge = "judge")
+#' tr <- btl_transitivity(fit)
+#' plot_btl_transitivity(tr)
+#' }
 #' @export
 plot_btl_transitivity <- function(x, by = c("auto", "judge", "object"), ...) {
   stopifnot(inherits(x, "rasch_btl_transitivity"))
@@ -454,6 +578,13 @@ plot_btl_transitivity <- function(x, by = c("auto", "judge", "object"), ...) {
 #' @param x A \code{"rasch_btl_dim"} object.
 #' @param ... Unused.
 #' @return Called for its plotting side effect.
+#' @examples
+#' \donttest{
+#' d <- simulate_btl(7, 12, reps_per_pair = 20, seed = 1)
+#' fit <- btl(d, "object_a", "object_b", winner = "winner", judge = "judge")
+#' dimensions <- btl_dimensionality(fit, reps = 20)
+#' plot_btl_scree(dimensions)
+#' }
 #' @export
 plot_btl_scree <- function(x, ...) {
   stopifnot(inherits(x, "rasch_btl_dim"))
@@ -461,15 +592,15 @@ plot_btl_scree <- function(x, ...) {
   ref_m <- x$reference$mean; ref_p <- x$reference$p95
   ymax <- max(c(b$strength, ref_p)) * 1.15
   op <- .rr_canvas(c(0.5, k + 0.5), c(0, ymax), "Bimension", "Strength",
-                   grid_x = FALSE)
+                   grid_x = FALSE, xaxis = FALSE)
   on.exit(par(op))
   rect(seq_len(k) - 0.32, 0, seq_len(k) + 0.32, b$strength,
-       col = ifelse(c(x$leading_structured, rep(FALSE, k - 1)),
+       col = ifelse(c(isTRUE(x$leading_structured), rep(FALSE, k - 1)),
                     .rr$blue, .rr$soft), border = NA)
   # noise reference: mean line with a shaded band up to the 95th percentile
   rect(0.5, ref_m, k + 0.5, ref_p, col = "#dc262622", border = NA)
   abline(h = ref_m, col = .rr$red, lty = 5, lwd = 1.6)
-  axis(1, at = seq_len(k), col = NA, col.ticks = NA)
+  axis(1, at = seq_len(k), col = .rr$grid, col.ticks = .rr$soft)
   .rr_legend("topright", c("Observed", "Noise reference (mean, 95%)"),
              fill = c(.rr$blue, "#dc262633"), border = NA)
 }
@@ -485,6 +616,13 @@ plot_btl_scree <- function(x, ...) {
 #' @param x A \code{"rasch_btl_dim"} object.
 #' @param ... Unused.
 #' @return Called for its plotting side effect.
+#' @examples
+#' \donttest{
+#' d <- simulate_btl(7, 12, reps_per_pair = 20, seed = 1)
+#' fit <- btl(d, "object_a", "object_b", winner = "winner", judge = "judge")
+#' dimensions <- btl_dimensionality(fit, reps = 20)
+#' plot_btl_dim_map(dimensions)
+#' }
 #' @export
 plot_btl_dim_map <- function(x, ...) {
   stopifnot(inherits(x, "rasch_btl_dim"))
@@ -501,6 +639,40 @@ plot_btl_dim_map <- function(x, ...) {
   text(d$x, d$y, d$object, pos = 3, cex = 0.8, col = .rr$ink, offset = 0.5)
 }
 
+# Row-level moments under the complete fitted paired-comparison model. This
+# includes position, exposure, and carry-over terms retained in comparisons;
+# diagnostics based on beta_a - beta_b alone are mis-centred whenever one of
+# those effects is present.
+.btl_fitted_moments <- function(fit, cmp) {
+  # Frame fits store the row-specific expectation because panel units and
+  # object-set units mean it cannot be reconstructed from one location gap.
+  if (inherits(fit, "rasch_btl_efrm") && "expected" %in% names(cmp)) {
+    E <- pmin(pmax(as.numeric(cmp$expected), 1e-12), 1 - 1e-12)
+    return(list(E = E, V = E * (1 - E), lp = stats::qlogis(E)))
+  }
+  objs <- fit$objects$object
+  beta <- setNames(fit$objects$location, objs)
+  m <- fit$m
+  lp <- unname(beta[cmp$object_a] - beta[cmp$object_b])
+  if (!is.null(fit$dependence)) {
+    eff <- fit$dependence$effect
+    if (!all(eff %in% names(cmp)))
+      stop("fitted dependence covariates are unavailable in comparisons")
+    Z <- as.matrix(cmp[, eff, drop = FALSE])
+    lp <- lp + drop(Z %*% fit$dependence$estimate)
+  }
+  if (m == 1L) {
+    E <- stats::plogis(lp)
+    V <- E * (1 - E)
+  } else {
+    tau <- fit$thresholds$tau
+    mo <- lapply(lp, item_moments, tau = tau)
+    E <- vapply(mo, `[[`, 0, "E")
+    V <- vapply(mo, `[[`, 0, "V")
+  }
+  list(E = E, V = pmax(V, 1e-12), lp = lp)
+}
+
 #' Unexpected judgements of one judge
 #'
 #' The paired-comparison counterpart of the kidmap. A judge has no ability to
@@ -511,7 +683,8 @@ plot_btl_dim_map <- function(x, ...) {
 #' its consensus location predicts. A surprise is an object the judge treated
 #' against its standing: a strong object under-rated, or a weak object
 #' over-rated (residual opposite in sign to the location), beyond
-#' \code{flag_z} and seen at least \code{min_n} times.
+#' \code{flag_z} and seen at least \code{min_n} times. The fitted model must
+#' have converged.
 #'
 #' @param fit A paired-comparison fit from \code{\link{btl}} with judges.
 #' @param judge The judge to profile (a value of the fit's judge column).
@@ -532,6 +705,8 @@ plot_btl_dim_map <- function(x, ...) {
 #' @export
 judge_surprise <- function(fit, judge, min_n = 2L, flag_z = 1.96) {
   if (!inherits(fit, "rasch_btl")) stop("not a paired-comparison (btl) fit")
+  if (!isTRUE(fit$converged))
+    stop("the paired-comparison calibration did not converge; judge residuals are unavailable")
   cmp <- fit$comparisons
   if (all(is.na(cmp$judge))) stop("no judges in this fit")
   judge <- as.character(judge)
@@ -539,22 +714,16 @@ judge_surprise <- function(fit, judge, min_n = 2L, flag_z = 1.96) {
   if (!length(sel)) stop("no comparisons for judge ", judge)
   objs <- fit$objects$object; K <- length(objs); m <- fit$m
   beta <- setNames(fit$objects$location, objs)
-  tau <- if (m > 1L) fit$thresholds$tau else NULL
-  moments <- function(dd) if (m == 1L) {
-    p <- stats::plogis(dd); list(E = p, V = p * (1 - p))
-  } else { mo <- item_moments(dd, tau); list(E = mo$E, V = mo$V) }
-
   d <- cmp[sel, , drop = FALSE]
+  mo <- .btl_fitted_moments(fit, d)
   ia <- match(d$object_a, objs); ib <- match(d$object_b, objs)
   obs <- exq <- vr <- nn <- numeric(K)
   for (r in seq_len(nrow(d))) {
     a <- ia[r]; b <- ib[r]; w <- d$weight[r]; x <- d$response[r]
-    ma <- moments(beta[a] - beta[b])
-    obs[a] <- obs[a] + w * x;         exq[a] <- exq[a] + w * ma$E
-    vr[a]  <- vr[a]  + w * ma$V;      nn[a]  <- nn[a]  + w
-    mb <- moments(beta[b] - beta[a])
-    obs[b] <- obs[b] + w * (m - x);   exq[b] <- exq[b] + w * mb$E
-    vr[b]  <- vr[b]  + w * mb$V;      nn[b]  <- nn[b]  + w
+    obs[a] <- obs[a] + w * x;         exq[a] <- exq[a] + w * mo$E[r]
+    vr[a]  <- vr[a]  + w * mo$V[r];   nn[a]  <- nn[a]  + w
+    obs[b] <- obs[b] + w * (m - x);   exq[b] <- exq[b] + w * (m - mo$E[r])
+    vr[b]  <- vr[b]  + w * mo$V[r];   nn[b]  <- nn[b]  + w
   }
   keep <- nn > 0
   z <- (obs - exq) / sqrt(pmax(vr, 1e-9))
@@ -595,6 +764,7 @@ print.rasch_btl_judge <- function(x, ...) {
 #' underdog. A matchup is an unexpected judgement when \code{z} falls at or
 #' below \code{-flag_z} and the pair was seen at least \code{min_n} times, i.e.
 #' the judge favoured the weaker object further than sampling noise explains.
+#' The fitted model must have converged.
 #'
 #' @param fit A paired-comparison fit from \code{\link{btl}} with judges.
 #' @param judge The judge to profile.
@@ -615,6 +785,8 @@ print.rasch_btl_judge <- function(x, ...) {
 #' @export
 judge_pair_surprise <- function(fit, judge, min_n = 1L, flag_z = 1.96) {
   if (!inherits(fit, "rasch_btl")) stop("not a paired-comparison (btl) fit")
+  if (!isTRUE(fit$converged))
+    stop("the paired-comparison calibration did not converge; judge residuals are unavailable")
   cmp <- fit$comparisons
   if (all(is.na(cmp$judge))) stop("no judges in this fit")
   judge <- as.character(judge)
@@ -622,19 +794,21 @@ judge_pair_surprise <- function(fit, judge, min_n = 1L, flag_z = 1.96) {
   if (!length(sel)) stop("no comparisons for judge ", judge)
   objs <- fit$objects$object; K <- length(objs); m <- fit$m
   beta <- setNames(fit$objects$location, objs)
-  tau <- if (m > 1L) fit$thresholds$tau else NULL
   d <- cmp[sel, , drop = FALSE]
+  mo <- .btl_fitted_moments(fit, d)
   ia <- match(d$object_a, objs); ib <- match(d$object_b, objs)
-  S <- .btl_scores(ia, ib, d$response, d$weight, m, K)   # points i scored on j
-  N <- (S + t(S)) / m                                     # comparisons per pair
   rows <- list()
   for (i in seq_len(K - 1L)) for (j in (i + 1L):K) {
-    if (N[i, j] <= 0) next
     hi <- if (beta[i] >= beta[j]) i else j; lo <- if (hi == i) j else i
-    n <- N[hi, lo]; obs <- S[hi, lo]; dd <- beta[hi] - beta[lo]
-    mo <- if (m == 1L) { p <- stats::plogis(dd); list(E = p, V = p * (1 - p)) }
-          else { z <- item_moments(dd, tau); list(E = z$E, V = z$V) }
-    zed <- (obs - n * mo$E) / sqrt(max(n * mo$V, 1e-9))
+    take <- (ia == hi & ib == lo) | (ia == lo & ib == hi)
+    if (!any(take)) next
+    hi_first <- ia[take] == hi
+    obs_r <- ifelse(hi_first, d$response[take], m - d$response[take])
+    exp_r <- ifelse(hi_first, mo$E[take], m - mo$E[take])
+    ww <- d$weight[take]
+    n <- sum(ww); obs <- sum(ww * obs_r); ex <- sum(ww * exp_r)
+    vv <- sum(ww * mo$V[take]); dd <- beta[hi] - beta[lo]
+    zed <- (obs - ex) / sqrt(max(vv, 1e-9))
     rows[[length(rows) + 1L]] <- data.frame(
       object_hi = objs[hi], object_lo = objs[lo],
       loc_hi = unname(beta[hi]), loc_lo = unname(beta[lo]),
@@ -682,6 +856,12 @@ print.rasch_btl_judge_pairs <- function(x, ...) {
 #' @param ... Unused.
 #' @return Called for its plotting side effect; invisibly the
 #'   \code{rasch_btl_judge_pairs} object.
+#' @examples
+#' \donttest{
+#' d <- simulate_btl(6, 10, reps_per_pair = 20, seed = 1)
+#' fit <- btl(d, "object_a", "object_b", winner = "winner", judge = "judge")
+#' plot_btl_judge_map(fit, judge = "J1")
+#' }
 #' @export
 plot_btl_judge_map <- function(fit, judge, min_n = 1L, flag_z = 1.96, ...) {
   jp <- judge_pair_surprise(fit, judge, min_n = min_n, flag_z = flag_z)

@@ -15,6 +15,7 @@ rasch_mfrm(
   adjust_N = NA,
   na_codes = -1,
   interaction = NULL,
+  factors = NULL,
   maxit = 60,
   tol = 1e-08
 )
@@ -49,53 +50,67 @@ non-extreme persons per interval, at most 10 intervals, at least 2).}
 negative score is also treated as missing.}
 
 \item{interaction}{Optional name of one facet to interact with the items
-(interactive facet mode). Adds item-by-facet terms
-\code{gamma[item, level]} with double sum-to-zero constraints on top of
-the additive severities, so each level may be more or less severe on
-particular items; estimates are returned in \code{interaction_effects}.
-The interactive model remains in the Rasch class (all discriminations
-equal one and the parameters are additive), but a significant
-interaction qualifies specific objectivity in practice: comparisons of
-the interacting facet's levels become item-dependent, which is itself
-the substantive finding.}
+(interactive facet mode). See Details.}
+
+\item{factors}{Optional person factors for DIF analysis: a character
+vector naming columns constant within person, or a data frame with one
+row per data row or unique person. Facets belong in \code{facets}, not
+here.}
 
 \item{maxit, tol}{Newton-Raphson iteration cap and convergence tolerance.}
 }
 \value{
-An object of classes \code{"rasch_mfrm"} and \code{"rasch"}. In
-  addition to every component of a \code{\link{rasch}} fit (computed over
-  the virtual items), it carries \code{facet_effects} (per facet: level,
-  severity, standard error, observation count, pooled fit),
-  \code{item_effects} (underlying item locations and pooled fit),
-  \code{item_thresholds} (the structural \code{delta_ik} with standard
-  errors), and \code{facet_spec}. Two fit residuals are reported per
-  facet level and per underlying item. \code{fit_resid} is the
-  facet-margin statistic of the published three-facet fit tables
-  (Andrich and Marais 2019, ch. 26 and app. C), the mean of the
-  constituent virtual items'
-  fit residuals; it weighs each virtual item equally, so an erratic level
-  shows the average of its per-item misfit. \code{fit_resid_pooled} is
-  the log-of-mean-square statistic summed over the margin's
-  observed cells of non-extreme persons, with its degrees of freedom in
-  \code{df_fit}; it weighs each response equally and is the more
-  powerful statistic when misfit is spread evenly over the level's
-  cells.
+An object of classes \code{"rasch_mfrm"} and \code{"rasch"}.
+  Model-specific components describe the facets, items, thresholds, and
+  facet specification. Interactive fits also contain an omnibus test and
+  the corresponding item-by-facet effects. The component \code{fit_resid}
+  averages virtual-item residuals within a margin. Its response-weighted
+  counterpart is \code{fit_resid_pooled}; its degrees of freedom are in
+  \code{df_fit}.
 }
 \description{
-Estimates the many-facet Rasch model (Linacre 1989) for long-format data
-in which each row is one scored response carrying a person, an item, a
-score, and one or more facet levels (for example the rater). Every
-item-by-facet combination becomes a virtual item whose thresholds are the
-item's thresholds shifted by the facet severities, and the whole structure
-is estimated in one pass of the pairwise conditional likelihood, in which
-the person parameter cancels. Facet severities are reported with standard
-errors and pooled fit statistics; the returned object is also a full
-\code{\link{rasch}} fit at the virtual-item level, so every diagnostic
-table and plot in the package applies to it.
+Fits an additive many-facet Rasch model (Linacre 1989) to scored responses
+indexed by person, item, and one or more facets such as rater, task, or
+occasion. Facet severities, item thresholds, person locations, and fit
+statistics are reported on a common logit scale.
+}
+\details{
+For person \eqn{n}, item \eqn{i}, and facet levels
+\eqn{f_1,\ldots,f_Q}, the additive model is
+\deqn{P(X_{ni\mathbf{f}}=x)=\frac{\exp\{x\theta_n-
+  \sum_{k=1}^{x}[\delta_{ik}+\sum_{q=1}^{Q}\rho_{qf_q}]\}}
+  {\sum_{y=0}^{m_i}\exp\{y\theta_n-
+  \sum_{k=1}^{y}[\delta_{ik}+\sum_{q=1}^{Q}\rho_{qf_q}]\}}.}
+Positive facet values therefore denote greater severity. The item
+thresholds have a common sum-zero origin and the levels of each facet sum
+to zero. If \code{interaction} is requested, an item-by-level term is
+added with both its item and facet margins constrained to sum to zero.
+
+Estimation represents each observed item-by-facet combination as a virtual
+item and imposes the additive structure in the pairwise conditional
+likelihood. The person parameter cancels before calibration. The covariance
+of the structural parameters is the transformed Godambe sandwich covariance.
+
+Facet levels must be connected through common persons and items. A facet
+nested within an item or a person-disjoint block can be confounded with the
+item location. The function checks the structural rank and response graph
+before fitting the model.
+
+An item-by-facet interaction retains equal discrimination but allows facet
+differences to vary by item. The omnibus Wald test in
+\code{interaction_test} is the primary test; cell tests are Holm-adjusted
+follow-ups. Interaction probabilities require at least
+\eqn{\max\{30,q+2\}} persons and effective persons at every level of the
+interactive facet, where \eqn{q} is the omnibus degrees of freedom.
+Estimates remain descriptive when this condition is not met.
 }
 \examples{
 set.seed(1)
-simP <- function(th, tau) { x <- 0:length(tau); p <- exp(x * th - c(0, cumsum(tau))); p / sum(p) }
+simP <- function(th, tau) {
+  x <- 0:length(tau)
+  p <- exp(x * th - c(0, cumsum(tau)))
+  p / sum(p)
+}
 persons <- sprintf("P\%03d", 1:120); raters <- paste0("R", 1:4)
 th <- setNames(rnorm(120, 0, 1.3), persons)
 rho <- setNames(c(-0.6, -0.2, 0.2, 0.6), raters)
@@ -103,8 +118,19 @@ tau <- list(A = c(-1, 1), B = c(-0.5, 1.2), C = c(-1.2, 0.4))
 d <- expand.grid(person = persons, item = names(tau), rater = raters,
                  stringsAsFactors = FALSE)
 d$score <- mapply(function(p, i, r)
-  sample(0:2, 1, prob = simP(th[p], tau[[i]] + rho[r])), d$person, d$item, d$rater)
+  sample(0:2, 1, prob = simP(th[p], tau[[i]] + rho[r])),
+  d$person, d$item, d$rater)
 fit <- rasch_mfrm(d, person = "person", item = "item", score = "score",
                   facets = "rater")
 fit$facet_effects$rater
+}
+\references{
+Andrich, D. and Marais, I. (2019). A Course in Rasch Measurement Theory:
+Measuring in the Educational, Social and Health Sciences. Springer.
+
+Linacre, J. M. (1989). Many-Facet Rasch Measurement. Chicago: MESA Press.
+}
+\seealso{
+\code{\link{rasch}}, \code{\link{rasch_efrm}},
+  \code{\link{dif_anova}}, and \code{\link{simulate_mfrm}}.
 }

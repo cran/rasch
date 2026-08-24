@@ -1,0 +1,301 @@
+---
+title: "Rasch measurement analysis"
+params:
+  title: "Rasch measurement analysis"
+  fit_file: null
+output:
+  html_document:
+    self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      fig.width = 8.5, fig.height = 5.4,
+                      dpi = 150, out.width = "100%")
+fit <- readRDS(params$fit_file)
+is_btl <- inherits(fit, "rasch_btl")
+show_table <- function(x, n = 250L, digits = 3L) {
+  if (is.null(x) || !NROW(x)) return(invisible(NULL))
+  x <- as.data.frame(x)
+  if (nrow(x) > n) x <- x[seq_len(n), , drop = FALSE]
+  labels <- c(
+    max_raw = "maximum", theta = "location", fit_resid = "fit residual",
+    infit_ms = "infit", outfit_ms = "outfit", p_adj = "adjusted p",
+    p_uniform_adj = "uniform p", eta2_uniform = "uniform eta2",
+    p_nonuniform_adj = "non-uniform p",
+    eta2_nonuniform = "non-uniform eta2", se_log_rho = "SE log(rho)",
+    se_log_phi = "SE log(phi)", se_log_alpha = "SE log(alpha)",
+    n_responses = "responses", two_delta_loglik = "2 delta logLik"
+  )
+  hit <- intersect(names(labels), names(x))
+  names(x)[match(hit, names(x))] <- unname(labels[hit])
+  knitr::kable(x, digits = digits, row.names = FALSE)
+}
+report_columns <- function(x, columns) {
+  if (is.null(x)) return(NULL)
+  x[, intersect(columns, names(x)), drop = FALSE]
+}
+safe_plot <- function(expr) {
+  tryCatch(force(expr), error = function(e) {
+    plot.new()
+    text(.5, .5, paste("Plot unavailable:", conditionMessage(e)), cex = .9)
+  })
+}
+```
+
+```{r report-title, results='asis'}
+cat(format(Sys.time(), "%d %B %Y, %H:%M"), "\n\n")
+```
+
+```{r html-layout, results='asis'}
+if (knitr::is_html_output()) cat(
+  "<style>table{display:block;max-width:100%;overflow-x:auto;white-space:nowrap}",
+  "img{max-width:100%;height:auto}</style>\n", sep = "")
+```
+
+# Analysis summary
+
+```{r summary-table, results='asis'}
+show_table(fit_summary_table(fit))
+```
+
+```{r notes, results='asis'}
+if (length(fit$notes))
+  cat("\n", paste("*", fit$notes, collapse = "\n"), "\n")
+```
+
+```{r rasch-results, results='asis'}
+if (!is_btl) {
+  if (inherits(fit, "rasch_explanatory")) {
+    cat("\n# Explanatory model\n\n")
+    cat("Formula: `", fit$explanatory$formula_text, "`\n\n", sep = "")
+    cat("\n## Comparison with free calibration\n\n")
+    print(show_table(explanatory_test(fit)))
+    cat("\n## Predictor effects\n\n")
+    print(show_table(fit$est$coefficients))
+    cat("\n## Fixed-departure diagnostics\n\n")
+    print(show_table(explanatory_diagnostics(fit)))
+    if (nrow(fit$explanatory$relaxations)) {
+      cat("\n## Fixed departures\n\n")
+      print(show_table(fit$explanatory$relaxations))
+    }
+  }
+  cat("\n# Item estimates\n\n")
+  item_tab <- if (inherits(fit, "rasch_mfrm")) fit$item_effects else
+    if (inherits(fit, "rasch_efrm")) fit$item_arbitrary else fit$items
+  print(show_table(report_columns(item_tab,
+    c("item", "max", "location", "se", "fit_resid", "infit_ms",
+      "outfit_ms", "p_adj"))))
+  cat("\n# Threshold estimates\n\n")
+  th <- if (inherits(fit, "rasch_mfrm")) fit$item_thresholds else
+    if (inherits(fit, "rasch_efrm")) fit$thresholds_arbitrary else
+      fit$thresholds
+  if ("delta" %in% names(th) && !"tau" %in% names(th))
+    names(th)[names(th) == "delta"] <- "tau"
+  if (!is.null(th$item) && is.numeric(th$item)) {
+    item_names <- if (inherits(fit, "rasch_efrm")) names(fit$set_of) else
+      fit$items$item
+    th$item <- item_names[th$item]
+  }
+  print(show_table(report_columns(th, c("item", "k", "tau", "se"))))
+  if (inherits(fit, c("rasch_mfrm", "rasch_efrm"))) {
+    cat("\n## Response-cell fit\n\n")
+    cat("These rows describe the observed item-by-frame or item-by-facet",
+        " cells used in estimation.\n\n")
+    print(show_table(report_columns(fit$items,
+      c("item", "location", "se", "fit_resid", "infit_ms", "outfit_ms",
+        "p_adj"))))
+  }
+  cat("\n# Targeting and reliability\n\n")
+  print(show_table(targeting_table(fit)))
+  cat("\n# Person estimates\n\n")
+  print(show_table(report_columns(fit$person,
+    c("id", "raw", "max_raw", "theta", "se", "extreme", "fit_resid"))))
+
+  if (inherits(fit, "rasch_mfrm")) {
+    cat("\n# Facets\n\n")
+    for (nm in names(fit$facet_effects)) {
+      cat("\n## ", nm, "\n\n", sep = "")
+      print(show_table(report_columns(fit$facet_effects[[nm]],
+        c("level", "severity", "se", "n", "fit_resid", "infit_ms",
+          "outfit_ms"))))
+    }
+    if (!is.null(fit$interaction_effects)) {
+      cat("\n## Item-by-facet interactions\n\n")
+      cat("The omnibus test assesses the complete interaction. Cell rows are",
+          " Holm-adjusted follow-ups.\n\n")
+      print(show_table(fit$interaction_test))
+      print(show_table(report_columns(fit$interaction_effects,
+        c("item", "level", "gamma", "se", "z", "p_adj",
+          "significant"))))
+    }
+  }
+  if (inherits(fit, "rasch_efrm")) {
+    cat("\n# Frame-dependent units\n\n")
+    cat("Within-frame thresholds and group units use pairwise conditional",
+        " calibration. Item-set units use common persons and a finite-grid",
+        " semiparametric link with a separate nuisance distribution for each",
+        " observed person group.\n\n")
+    cat("\n## Frame model comparison\n\n")
+    cat("The likelihood difference describes the group-unit stage. The Wald",
+        " tests below provide inference for the group- and set-unit families.\n\n")
+    x <- fit$efrm_vs_rasch
+    print(show_table(data.frame(
+      model = c("Equal group units", "Group-dependent units"),
+      loglik = c(x$ll_equal, x$ll_efrm),
+      unit_parameters = c(0, x$extra_parameters),
+      two_delta_loglik = c(NA, x$two_delta_ll))))
+    cat("\n## Omnibus tests of equal units\n\n")
+    print(show_table(x$unit_omnibus))
+    cat("\n## Unit contrasts\n\n")
+    print(show_table(x$unit_tests))
+    cat("\n## Frames\n\n")
+    print(show_table(report_columns(fit$frames,
+      c("set", "group", "rho", "se_log_rho", "origin", "fit_resid",
+        "n_responses"))))
+    cat("\n## Group units\n\n")
+    print(show_table(report_columns(fit$phi_table,
+      c("group", "phi", "se_log_phi", "p_adj", "significant"))))
+    cat("\n## Item-set units\n\n")
+    print(show_table(report_columns(fit$alpha_table,
+      c("set", "alpha", "se_log_alpha", "p_adj", "significant"))))
+    inv <- tryCatch(frame_invariance(fit), error = function(e) e)
+    cat("\n## Item invariance across frames\n\n")
+    if (inherits(inv, "error")) {
+      cat("Frame invariance was unavailable: ", conditionMessage(inv), "\n",
+          sep = "")
+    } else {
+      cat("The conditional analysis tests relative item locations. Its",
+          " discrimination columns describe the separate calibrations; use",
+          " bootstrap uncertainty for discrimination tests.\n\n")
+      print(show_table(inv$summary))
+      if (!is.null(inv$excluded) && nrow(inv$excluded)) {
+        cat("\n### Excluded comparisons\n\n")
+        print(show_table(inv$excluded))
+      }
+      cat("\n### Location comparisons\n\n")
+      print(show_table(report_columns(inv$locations,
+        c("set", "frame_1", "frame_2", "item", "difference", "se",
+          "statistic", "p_adj", "flagged"))))
+      cat("\n### Descriptive discrimination comparisons\n\n")
+      print(show_table(report_columns(inv$discrimination,
+        c("set", "frame_1", "frame_2", "item", "infit_1", "infit_2",
+          "infit_z", "disc_1", "disc_2", "disc_ratio", "disc_boundary"))))
+    }
+  }
+  if (!is.null(fit$factors) && length(names(fit$factors))) {
+    da <- tryCatch(dif_anova(fit), error = function(e) NULL)
+    if (!is.null(da)) {
+      cat("\n# Differential item functioning\n\n")
+      print(show_table(report_columns(da$summary,
+        c("item", "term", "p_uniform_adj", "eta2_uniform",
+          "p_nonuniform_adj", "eta2_nonuniform", "uniform_DIF",
+          "nonuniform_DIF"))))
+    }
+  }
+}
+```
+
+```{r btl-results, results='asis'}
+if (is_btl) {
+  if (inherits(fit, "rasch_btl_explanatory")) {
+    cat("\n# Explanatory model\n\n")
+    cat("Formula: `", fit$explanatory$formula_text, "`\n\n", sep = "")
+    cat("\n## Comparison with free calibration\n\n")
+    print(show_table(explanatory_test(fit)))
+    cat("\n## Predictor effects\n\n")
+    print(show_table(fit$object_coefficients))
+    cat("\n## Fixed-departure diagnostics\n\n")
+    print(show_table(explanatory_diagnostics(fit)))
+    if (nrow(fit$explanatory$relaxations)) {
+      cat("\n## Fixed departures\n\n")
+      print(show_table(fit$explanatory$relaxations))
+    }
+  }
+  cat("\n# Object estimates\n\n")
+  print(show_table(report_columns(fit$objects,
+    c("object", "location", "se", "fit_resid", "infit_ms", "outfit_ms"))))
+  cat("\n# Pair fit\n\n")
+  print(show_table(report_columns(fit$pairs,
+    c("object_1", "object_2", "n", "fit_resid", "infit_ms",
+      "outfit_ms"))))
+  if (!is.null(fit$judges)) {
+    cat("\n# Judge fit\n\n")
+    print(show_table(report_columns(fit$judges,
+      c("judge", "n", "fit_resid", "infit_ms", "outfit_ms"))))
+  }
+  if (inherits(fit, "rasch_btl_efrm")) {
+    cat("\n# Frame-dependent units\n\n")
+    cat("Within-set comparisons estimate object locations and panel units.",
+        " Cross-set comparisons then estimate set units and origins directly;",
+        " no person distribution is used.\n\n")
+    cat("\n## Frame model comparison\n\n")
+    if (identical(fit$se_method, "conditional"))
+      cat("The likelihood difference is descriptive. Unit probabilities are",
+          " withheld because conditional errors omit first-stage",
+          " uncertainty.\n\n")
+    else
+      cat("The likelihood difference is descriptive. The Wald tests below",
+          " provide inference for the unit families.\n\n")
+    x <- fit$equal_unit
+    print(show_table(data.frame(
+      model = c("Equal units", "Frame-dependent units"),
+      loglik = c(x$loglik_single, x$loglik_frames),
+      parameters = c(x$parameters_single, x$parameters_frames),
+      two_delta_loglik = c(NA, x$two_delta_ll))))
+    cat("\n## Omnibus tests of equal units\n\n")
+    print(show_table(fit$unit_omnibus))
+    cat("\n## Panel units\n\n")
+    print(show_table(report_columns(fit$phi_table,
+      c("panel", "phi", "se_log_phi", "p_adj", "significant"))))
+    cat("\n## Set units and origins\n\n")
+    au <- merge(
+      fit$alpha_table[, c("set", "alpha", "se_log_alpha", "p_adj")],
+      fit$kappa_table[, c("set", "kappa", "se_kappa", "p_adj")],
+      by = "set", sort = FALSE)
+    names(au)[names(au) == "p_adj.x"] <- "adjusted p (alpha)"
+    names(au)[names(au) == "p_adj.y"] <- "adjusted p (kappa)"
+    print(show_table(au))
+    cat("\n## Frame fit\n\n")
+    print(show_table(report_columns(fit$frames,
+      c("set", "panel", "rho", "kappa", "fit_resid", "n"))))
+  }
+}
+```
+
+# Diagnostic figures
+
+```{r rasch-plots, fig.show='hold'}
+if (!is_btl) {
+  safe_plot(plot_pimap(fit))
+  safe_plot(plot_tif(fit))
+  safe_plot(plot_item_map(fit))
+  safe_plot(plot_person_fit(fit))
+  if (inherits(fit, "rasch_efrm")) {
+    safe_plot(plot_icc_frames(fit, unique(fit$virtual_map$item)[1]))
+    safe_plot(plot_frames(fit))
+  } else {
+    safe_plot(plot_icc(fit, fit$items$item[1]))
+  }
+  if (inherits(fit, "rasch_mfrm") && length(fit$facet_spec))
+    safe_plot(plot_facets(fit, fit$facet_spec[1]))
+}
+```
+
+```{r btl-plots, fig.show='hold'}
+if (is_btl) {
+  safe_plot(plot_btl(fit))
+  safe_plot(plot_btl_targeting(fit))
+  safe_plot(plot_btl_icc(fit, fit$objects$object[1]))
+  if (inherits(fit, "rasch_btl_efrm")) safe_plot(plot_btl_units(fit))
+}
+```
+
+# Reproducibility
+
+```{r reproducibility, results='asis'}
+pv <- tryCatch(as.character(utils::packageVersion("rasch")),
+               error = function(e) "development")
+cat("Generated by rasch version ", pv, " under R ",
+    as.character(getRversion()), ".\n", sep = "")
+```

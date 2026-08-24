@@ -69,6 +69,24 @@ test_that("CL-ICs detect a planted BTL position effect and reject an absent one"
   expect_equal(cmp0$label[which.min(cmp0$cl_bic)], "plain")
 })
 
+test_that("BTL covariance inference and CL-ICs are withheld with few judges", {
+  set.seed(74)
+  K <- 6; n <- 600; beta <- seq(-1, 1, length.out = K)
+  ia <- sample(K, n, TRUE)
+  ib <- (ia + sample(K - 1L, n, TRUE) - 1L) %% K + 1L
+  win <- rbinom(n, 1, plogis(beta[ia] - beta[ib]))
+  d <- data.frame(a = paste0("O", ia), b = paste0("O", ib),
+                  winner = paste0("O", ifelse(win == 1L, ia, ib)),
+                  judge = sample(paste0("J", 1:6), n, TRUE))
+  f <- btl(d, "a", "b", "winner", judge = "judge")
+  expect_false(f$cl$inference_available)
+  expect_true(all(is.na(f$objects$se)))
+  expect_true(is.na(f$osi$PSI))
+  cmp <- compare_fits(a = f, b = f)
+  expect_true(all(is.na(cmp$cl_aic)) && all(is.na(cmp$cl_bic)))
+  expect_match(attr(cmp, "note"), "too few independent clusters")
+})
+
 test_that("mixtures are refused; MFRM fits get NA ICs with the reason noted", {
   X <- gen_pcm(150, seq(-1, 1, length.out = 5),
                matrix(rep(c(-0.5, 0.5), each = 5), 5, 2), 9)
@@ -87,4 +105,70 @@ test_that("mixtures are refused; MFRM fits get NA ICs with the reason noted", {
   cmp <- compare_fits(a = mf, b = mf)
   expect_true(all(is.na(cmp$cl_aic)))
   expect_match(attr(cmp, "note"), "MFRM/EFRM")
+})
+
+test_that("compare_fits withholds ICs for an unconverged fit", {
+  set.seed(50); N <- 300; L <- 5
+  d <- seq(-1.5, 1.5, length.out = L)
+  X <- matrix(rbinom(N * L, 1, plogis(outer(rnorm(N), d, "-"))), N, L)
+  colnames(X) <- paste0("I", 1:L)
+  good <- rasch(as.data.frame(X))
+  bad <- suppressWarnings(rasch(as.data.frame(X), maxit = 1L))  # non-convergence
+  expect_false(isTRUE(bad$est$converged))
+  cmp <- compare_fits(good = good, bad = bad)
+  expect_true("converged" %in% names(cmp))
+  expect_true(is.na(cmp$cl_aic[cmp$label == "bad"]))
+  expect_true(is.na(cmp$loglik[cmp$label == "bad"]))
+})
+
+test_that("compare_fits same_data compares actual responses", {
+  set.seed(51); N <- 300; L <- 5
+  d <- seq(-1.5, 1.5, length.out = L)
+  mk <- function(s) { set.seed(s)
+    X <- matrix(rbinom(N * L, 1, plogis(outer(rnorm(N), d, "-"))), N, L)
+    colnames(X) <- paste0("I", 1:L); rasch(as.data.frame(X)) }
+  f1 <- mk(1); f2 <- mk(2)      # same items/max/N, different responses
+  cmp <- compare_fits(a = f1, b = f2)
+  expect_false(cmp$same_data[cmp$label == "b"])
+  expect_true(is.na(cmp$two_delta_ll[cmp$label == "b"]))
+})
+
+test_that("BTL same_data is exact and invariant to row order", {
+  set.seed(3)
+  pr <- t(combn(LETTERS[1:4], 2))
+  d <- data.frame(a = rep(pr[, 1], each = 40),
+                  b = rep(pr[, 2], each = 40))
+  x <- rbinom(nrow(d), 1, 0.5); x[1:3] <- c(0, 0, 1)
+  d$win <- ifelse(x == 1, d$a, d$b)
+  f1 <- btl(d, "a", "b", "win")
+  frev <- btl(d[rev(seq_len(nrow(d))), ], "a", "b", "win")
+  same <- compare_fits(original = f1, reordered = frev)
+  expect_true(same$same_data[2])
+  expect_equal(same$two_delta_ll[2], 0, tolerance = 1e-8)
+
+  # This outcome change has zero change under the old positional checksum:
+  # +1 on rows 1 and 2, -1 on row 3. It must nevertheless be different data.
+  d2 <- d; x2 <- x; x2[1:3] <- c(1, 1, 0)
+  d2$win <- ifelse(x2 == 1, d2$a, d2$b)
+  f2 <- btl(d2, "a", "b", "win")
+  different <- compare_fits(original = f1, changed = f2)
+  expect_false(different$same_data[2])
+  expect_true(is.na(different$two_delta_ll[2]))
+
+  # Equal total comparison count is insufficient when row weights differ.
+  dw1 <- d; dw1$count <- 2
+  dw2 <- dw1; dw2$count[1:2] <- c(3, 1)
+  fw1 <- btl(dw1, "a", "b", "win", count = "count")
+  fw2 <- btl(dw2, "a", "b", "win", count = "count")
+  weighted <- compare_fits(original = fw1, reweighted = fw2)
+  expect_false(weighted$same_data[2])
+
+  # Judge allocation defines the independent clusters even when outcomes
+  # and the number of judges are unchanged.
+  dj1 <- d; dj1$judge <- rep(sprintf("J%02d", 1:12), length.out = nrow(d))
+  dj2 <- dj1; dj2$judge[c(1, 3)] <- rev(dj2$judge[c(1, 3)])
+  fj1 <- btl(dj1, "a", "b", "win", judge = "judge")
+  fj2 <- btl(dj2, "a", "b", "win", judge = "judge")
+  clustered <- compare_fits(original = fj1, reassigned = fj2)
+  expect_false(clustered$same_data[2])
 })

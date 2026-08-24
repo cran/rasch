@@ -4,7 +4,7 @@
 \alias{plot_pimap}
 \title{Plot the person-item threshold distribution}
 \usage{
-plot_pimap(fit, bins = 35, xlim = NULL)
+plot_pimap(fit, bins = 35, xlim = NULL, information = FALSE)
 }
 \arguments{
 \item{fit}{A fitted object from \code{\link{rasch}}.}
@@ -12,15 +12,20 @@ plot_pimap(fit, bins = 35, xlim = NULL)
 \item{bins}{Number of histogram bins.}
 
 \item{xlim}{Optional logit range for the shared scale; persons and
-thresholds outside it are omitted.}
+thresholds outside it are omitted. By default the range is extended to
+labelled tick marks beyond the most extreme plotted estimate.}
+
+\item{information}{Whether to overlay the test information function on a
+separate right-hand axis. Fits with more than one administrable design
+receive one curve per design.}
 }
 \value{
 Called for its plotting side effect; invisibly \code{NULL}.
 }
 \description{
 The targeting display: the person location distribution above the axis and
-the item threshold distribution mirrored below it, on a shared logit
-scale.
+the calibration threshold distribution mirrored below it, on a shared
+logit scale. MFRM and EFRM thresholds belong to response cells.
 }
 \examples{
 set.seed(1)

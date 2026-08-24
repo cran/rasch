@@ -7,9 +7,8 @@
 compare_fits(..., reference = 1)
 }
 \arguments{
-\item{...}{Two or more fitted objects, ideally named
-(\code{compare_fits(PCM = f1, RSM = f2)}). Either all Rasch-family
-fits or all \code{btl} fits; for \code{btl}, fits of the same
+\item{...}{Two or more fitted objects, preferably named. Supply either all
+Rasch-family fits or all \code{btl} fits. For \code{btl}, fits of the same
 comparison data (same objects, comparisons, and judges) support the
 likelihood columns -- e.g. free versus principal-component thresholds,
 with and without a position effect or within-judge dependence.}
@@ -55,17 +54,25 @@ printed note) for MFRM and EFRM fits, which do not carry their Godambe
 matrices.
 
 Across different data preparations (subtests, splits, facet or frame
-structures) the likelihoods are not comparable and the calibration-free
-columns carry the comparison: total item-trait chi-square per degree of
-freedom, item and person fit residual SDs (ideal 1), PSI, and alpha
-(OSI for paired comparisons).
+structures) the likelihoods are not comparable. The table retains
+descriptive context: total trait chi-square per degree of freedom,
+calibration and person fit-residual SDs (ideal 1), PSI, and alpha where
+applicable (OSI for paired comparisons). Alpha is \code{NA} when an MFRM
+or EFRM item is represented by several response cells. These columns do
+not provide a formal selection test across different response data.
 }
 \examples{
 set.seed(1)
-simP <- function(th, tau) { x <- 0:length(tau); p <- exp(x * th - c(0, cumsum(tau))); p / sum(p) }
+simP <- function(th, tau) {
+  x <- 0:length(tau)
+  p <- exp(x * th - c(0, cumsum(tau)))
+  p / sum(p)
+}
 th <- rnorm(400)
 X <- sapply(seq(-1, 1, length.out = 6), function(b)
-  sapply(th, function(t) sample(0:3, 1, prob = simP(t, b + c(-0.8, 0, 0.8)))))
+  sapply(th, function(t)
+    sample(0:3, 1, prob = simP(t, b + c(-0.8, 0, 0.8)))))
 colnames(X) <- paste0("R", 1:6)
-compare_fits(PCM = rasch(X, model = "PCM"), RSM = rasch(X, model = "RSM"))
+compare_fits(PCM = rasch(X, model = "PCM"),
+             RSM = rasch(X, model = "RSM"))
 }

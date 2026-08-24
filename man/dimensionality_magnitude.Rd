@@ -11,7 +11,7 @@ dimensionality_magnitude(fit, subtests)
 
 \item{subtests}{A list of character vectors assigning \emph{every} item
 of the fit to one subscale (at least two subscales of two or more
-items). Unequal subscale sizes use their mean as \eqn{K}.}
+items). The published magnitude formula requires equal subscale sizes.}
 }
 \value{
 A list of class \code{"rasch_dim_magnitude"}: the comparison
@@ -32,7 +32,8 @@ Andrich 2008), with \eqn{S} subscales of \eqn{K} items,
 the latent correlation between subscales is \eqn{\rho = 1/(1 + c^2)},
 and \eqn{A = S/(S + c^2)} is the proportion of common (non-unique,
 non-error) variance. Both the person separation index and coefficient
-alpha versions are reported (Andrich and Marais 2019, ch. 24).
+alpha versions are reported (Andrich and Marais 2019, ch. 24). Both the
+original and subtest calibrations must converge.
 }
 \examples{
 set.seed(1); N <- 500
@@ -47,6 +48,6 @@ dimensionality_magnitude(fit,
 }
 \references{
 Andrich, D. (2016). Components of variance of scales with a
-  bifactor structure from two calculations of coefficient alpha.
+  bifactor subscale structure from two calculations of alpha.
   Educational Measurement: Issues and Practice, 35(4), 25-30.
 }

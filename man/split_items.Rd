@@ -16,7 +16,10 @@ vector with one entry per person.}
 }
 \value{
 A new \code{\link{rasch}} fit in which each split item appears as
-  \code{"item (level)"}, with the splits recorded in its notes.
+  \code{"item (level)"}, with the splits recorded in its notes. Person and
+  item estimates are recalculated with the fitted grouping, keyed scoring,
+  anchors on unchanged items, PCM constraints and optimisation controls.
+  An anchored item cannot be split.
 }
 \description{
 Replaces each nominated item with one item per level of a person factor,
@@ -35,4 +38,9 @@ colnames(X) <- paste0("I", 1:8)
 fit <- rasch(data.frame(X, grp = g), factors = "grp")
 fit2 <- split_items(fit, "I3", by = "grp")
 fit2$items$item
+}
+\seealso{
+\code{\link{resolve_dif}}, which applies this iteratively;
+  \code{\link{drop_items}}, which removes an item rather than resolving
+  it; and \code{\link{dif_anova}}, which identifies the items to split.
 }

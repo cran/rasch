@@ -35,10 +35,25 @@ item_moments <- function(theta, tau_i, disc = 1) {
 #' are finite at the extreme (zero and maximum) scores, unlike the maximum
 #' likelihood estimate.
 #'
+#' @details
+#' For raw score \eqn{R}, let \eqn{E(\theta)}, \eqn{V(\theta)}, and
+#' \eqn{\mu_3(\theta)} be the sums of the item expected scores, variances, and
+#' third central moments. The estimate solves Warm's weighted score equation
+#' \deqn{R-E(\theta)+\frac{\mu_3(\theta)}{2V(\theta)}=0.}
+#' With common discrimination \eqn{d}, its explicit multiplier cancels from
+#' this equation, although the moments are evaluated under \eqn{d}. The
+#' reported standard error is
+#' \deqn{\operatorname{SE}(\hat{\theta})=
+#' \{d^2V(\hat{\theta})\}^{-1/2}.}
+#'
 #' @param tau_list List of per-item threshold vectors.
 #' @param disc Common discrimination (frame unit) of the items; with a
 #'   constant discrimination the raw score remains sufficient.
 #' @return A list with \code{theta} and \code{se}, each named by raw score.
+#' @references
+#' Warm, T. A. (1989). Weighted likelihood estimation of ability in item
+#' response theory. Psychometrika, 54(3), 427--450.
+#' @seealso \code{\link{score_table}} and \code{\link{person_extrapolated}}.
 #' @examples
 #' person_wle(list(c(-1, 0), c(-0.5, 0.5), c(0, 1)))
 #' @export
@@ -138,13 +153,20 @@ person_wle <- function(tau_list, disc = 1) {
 #'
 #' @param fit A fitted object from \code{\link{rasch}}.
 #' @param method \code{"wle"} (Warm, default) or \code{"mle"}.
-#' @param extremes \code{"model"} keeps the estimator's own extreme-score
-#'   values (\code{NA} for MLE); \code{"extrapolated"} applies the geometric
-#'   extrapolation.
+#' @param extremes Treatment of the extreme scores. \code{"model"} keeps the
+#'   estimator's own values; these are \code{NA} for MLE.
+#'   \code{"extrapolated"} applies the geometric extrapolation.
 #' @return A data frame with \code{score}, \code{theta}, \code{se},
 #'   \code{freq}, \code{cum_pct} (omitted when no complete responders
-#'   exist), and \code{extrapolated}; \code{NULL} for
-#'   fits without a common raw-score metric (EFRM).
+#'   exist), and \code{extrapolated}; \code{NULL} when the fitted items do not
+#'   share one discrimination or an item is represented by several MFRM or
+#'   EFRM response cells.
+#' @references
+#' Andrich, D. and Marais, I. (2019). A Course in Rasch Measurement Theory:
+#' Measuring in the Educational, Social and Health Sciences. Springer.
+#'
+#' Warm, T. A. (1989). Weighted likelihood estimation of ability in item
+#' response theory. Psychometrika, 54(3), 427--450.
 #' @examples
 #' set.seed(1)
 #' d <- seq(-1.5, 1.5, length.out = 6)

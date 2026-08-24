@@ -54,17 +54,25 @@ test_that("equate_tests flags drifted common items only", {
     colnames(X) <- sprintf("I%02d", 1:L); rasch(X)
   }
   f1 <- mk()
-  eq0 <- equate_tests(f1, mk())
+  eq_dep <- equate_tests(f1, mk())
+  expect_false(eq_dep$inferential)
+  expect_true(all(is.na(eq_dep$table$p)))
+  expect_match(eq_dep$note, "independence")
+  eq0 <- equate_tests(f1, mk(), independent = TRUE)
   expect_equal(sum(eq0$table$drift), 0)
   expect_gt(eq0$correlation, 0.99)
 
-  eq1 <- equate_tests(f1, mk(drift = 0.8))
+  eq1 <- equate_tests(f1, mk(drift = 0.8), independent = TRUE)
+  expect_equal(eq1$table$p_adj,
+               p.adjust(eq1$table$p, method = "holm"))
   expect_identical(eq1$table$item[eq1$table$drift], "I04")
 
   # reference table path (item bank style)
   bank <- data.frame(item = sprintf("I%02d", 1:L), location = d - mean(d), se = 0.05)
   eqb <- equate_tests(f1, bank)
   expect_equal(eqb$n, L)
+  expect_false(eqb$inferential)
+  expect_match(eqb$note, "joint item-location covariance")
   expect_error(equate_tests(f1, data.frame(item = "ZZ", location = 0)),
                "at least two common items")
 })
@@ -92,11 +100,15 @@ test_that("interactive facet mode recovers a planted item-by-rater effect", {
   top <- ie[which.max(abs(ie$gamma)), ]
   expect_identical(top$item, "B"); expect_identical(top$level, "R2")
   expect_equal(top$gamma, 0.9 * (1 - 1/4 - 1/4 + 1/16), tolerance = 0.2)
+  expect_equal(fit$interaction_test$df, (4 - 1) * (4 - 1))
+  expect_true(is.finite(fit$interaction_test$p))
+  expect_true(all(c("p_adj", "significant") %in%
+                    names(fit$interaction_effects)))
   expect_error(rasch_mfrm(d, "person", "item", "score", facets = "rater",
                           interaction = "nope"), "must name one of the facets")
 })
 
-test_that("factorial DIF: full table, Tukey rules, main-effects mode", {
+test_that("factorial DIF: full table, logit follow-ups, main-effects mode", {
   set.seed(1); n <- 1500
   d <- seq(-1.5, 1.5, length.out = 8)
   g1 <- rep(c("a", "b"), each = n / 2)                      # 2 levels, DIF on I3
@@ -119,14 +131,13 @@ test_that("factorial DIF: full table, Tukey rules, main-effects mode", {
   t3 <- df$terms[df$terms$item == "I3", ]
   expect_true(t3$significant[t3$term == "g1"])
   expect_false(t3$superseded[t3$term == "g1"])
-  # two-level main effect: significant, but no Tukey (the F test suffices)
-  expect_equal(nrow(df$tukey[df$tukey$item == "I3" & df$tukey$term == "g1", ]), 0)
-  # three-level main effect: Tukey gives the choose(3, 2) level contrasts
+  expect_false("tukey" %in% names(df))
+  # A three-level main effect is followed by covariance-aware logit contrasts.
   t6 <- df$terms[df$terms$item == "I6", ]
   expect_true(t6$significant[t6$term == "g2"])
-  tk6 <- df$tukey[df$tukey$item == "I6" & df$tukey$term == "g2", ]
-  expect_equal(nrow(tk6), 3)
-  expect_lt(min(tk6$p_tukey), 0.01)
+  ph6 <- dif_posthoc(fit, "I6", term = "g2")$table
+  expect_equal(nrow(ph6), 3)
+  expect_lt(min(ph6$p_adj), 0.01)
 
   # main-effects mode drops the factor-by-factor terms
   dm <- dif_anova(fit, effects = "main")
@@ -158,9 +169,10 @@ test_that("a significant interaction supersedes its main effects", {
   for (tt in c("g1", "g2"))
     if (t2$significant[t2$term == tt]) expect_true(t2$superseded[t2$term == tt])
   expect_false(t2$superseded[t2$term == "g1:g2"])
-  # Tukey on the interaction compares the four cells
-  tki <- df$tukey[df$tukey$item == "I2" & df$tukey$term == "g1:g2", ]
-  expect_equal(nrow(tki), 6)   # choose(4, 2) cell contrasts
+  # The interaction follow-up is the logit difference-in-differences.
+  phi <- dif_posthoc(fit, "I2", term = c("g1", "g2"))$table
+  expect_equal(nrow(phi), 1)
+  expect_true(phi$practical)
 })
 
 test_that("multiple-choice scoring and miskey detection work", {
@@ -221,7 +233,7 @@ test_that("dimensionality: 10-component PCA, scree, manual subsets, exact CI", {
   expect_equal(nrow(et), 10)
 
   # default split detects the planted second dimension; exact CI fields present
-  dt <- dimensionality_test(fit)
+  dt <- dimensionality_test(fit, min_score_points = 2)
   expect_true(dt$multidimensional)
   expect_identical(dt$split, "residual component 1")
   expect_true(dt$ci[1] >= 0 && dt$ci[2] <= 1 && dt$ci[1] < dt$ci[2])
@@ -229,7 +241,8 @@ test_that("dimensionality: 10-component PCA, scree, manual subsets, exact CI", {
 
   # manual subsets matching the true structure also detect it
   dtm <- dimensionality_test(fit, items_positive = sprintf("D%02d", 1:8),
-                             items_negative = sprintf("D%02d", 9:16))
+                             items_negative = sprintf("D%02d", 9:16),
+                             min_score_points = 2)
   expect_true(dtm$multidimensional)
   expect_identical(dtm$split, "manual")
   expect_gt(dtm$prop_significant, 0.05)
@@ -286,4 +299,16 @@ test_that("maxit and tol are honoured by the estimators", {
   f_tight <- rasch(X, maxit = 200, tol = 1e-10)
   f_def <- rasch(X)
   expect_equal(f_tight$items$location, f_def$items$location, tolerance = 1e-6)
+})
+
+test_that("MFRM virtual cells accept colon-bearing labels without collision", {
+  set.seed(48)
+  d <- expand.grid(person = sprintf("P%03d", 1:120),
+                   item = c("A:B", "A", "D"),
+                   rater = c("C", "B:C"), stringsAsFactors = FALSE)
+  d$score <- rbinom(nrow(d), 2, .5)
+  f <- rasch_mfrm(d, person = "person", item = "item", score = "score",
+                  facets = "rater")
+  expect_false(anyDuplicated(f$virtual_map$vkey) > 0L)
+  expect_equal(nrow(f$virtual_map), 6L)
 })

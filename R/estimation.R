@@ -1,7 +1,8 @@
 # rasch :: estimation
 # ===========================================================================
-# Pairwise conditional maximum likelihood after Andrich & Luo (2003) and
-# Zwinderman (1995). For items i, j with maximum scores m_i,
+# Pairwise conditional maximum likelihood after Zwinderman (1995); the
+# principal-components parameterisation in pcml_pc follows Andrich & Luo
+# (2003). For items i, j with maximum scores m_i,
 # m_j, the distribution of X_i given the pair total X_i + X_j = r is free of
 # the person parameter:
 #
@@ -9,8 +10,8 @@
 #
 # where L_i(k) = sum_{h<=k} tau_ih is the cumulative threshold sum. The
 # pairwise conditional log-likelihood, summed over all item pairs and pair
-# totals, is maximised by Newton-Raphson. Standard errors come from the
-# observed information of the pseudo-likelihood. The rating scale model is
+# totals, is maximised by Newton-Raphson. Standard errors use the Godambe
+# sandwich covariance of the pairwise composite likelihood. The rating scale model is
 # the same likelihood under the constraint tau_ik = delta_i + kappa_k,
 # imposed through the design matrix. Dichotomous data is the special case
 # m_i = 1. Australian English; no em dashes by house style.
@@ -83,6 +84,16 @@ threshold_index <- function(m) {
 }
 
 .pcml_check_connected <- function(pairs, L, item_names, anchored = integer(0)) {
+  # a co-observed pair whose every observed total is 0 or the maximum has a
+  # single feasible conditional allocation and carries NO information: it
+  # must not count as a link, or one respondent scoring (0, 0) across two
+  # blocks would "connect" them while the likelihood stays flat between
+  # them (every intermediate total has at least two allocations, so any
+  # response off the two extreme-total corners is a real link)
+  informative <- vapply(pairs, function(p) {
+    sum(p$n) - p$n[1L, 1L] - p$n[nrow(p$n), ncol(p$n)] > 0
+  }, TRUE)
+  pairs <- pairs[informative]
   edges <- if (length(pairs))
     do.call(rbind, lapply(pairs, function(p) c(p$i, p$j)))
   else matrix(integer(0), 0L, 2L)
@@ -116,18 +127,35 @@ threshold_index <- function(m) {
 # NA standard error and a note naming the cause -- an honest answer, not a
 # manufactured one. Categories with zero responses are the caller's problem
 # (rasch() rescores them away); the danger zone handled here is 1-2.
-.pcml_weak_thresholds <- function(X, m, thr, item_names, min_count = 3L) {
+.pcml_weak_thresholds <- function(X, m, thr, item_names, min_count = 3L,
+                                  min_item_count = 8L) {
   flag <- logical(nrow(thr)); notes <- character(0)
   for (i in seq_len(ncol(X))) {
     cnt <- tabulate(X[, i] + 1L, nbins = m[i] + 1L)
     weak_k <- which(pmin(cnt[-length(cnt)], cnt[-1]) < min_count)
-    if (!length(weak_k)) next
-    flag[thr$item == i & thr$k %in% weak_k] <- TRUE
-    kc <- which(cnt < min_count) - 1L
-    notes <- c(notes, sprintf(
-      "item %s: only %s response(s) in category %s; threshold(s) %s and the item location are weakly determined (SE reported as NA) -- consider pc_components or collapsing categories",
-      item_names[i], paste(cnt[kc + 1L], collapse = "/"),
-      paste(kc, collapse = "/"), paste(weak_k, collapse = "/")))
+    if (length(weak_k)) {
+      flag[thr$item == i & thr$k %in% weak_k] <- TRUE
+      kc <- which(cnt < min_count) - 1L
+      notes <- c(notes, sprintf(
+        "item %s: only %s response(s) in category %s; threshold(s) %s and the item location are weakly determined (SE reported as NA) -- consider pc_components or collapsing categories",
+        item_names[i], paste(cnt[kc + 1L], collapse = "/"),
+        paste(kc, collapse = "/"), paste(weak_k, collapse = "/")))
+    }
+    # an item's thresholds are estimated JOINTLY, so a critically sparse
+    # category destabilises its siblings too, not only the adjacent
+    # threshold: in simulation, a ~4-response category left a sibling
+    # threshold's reported SE understated four-fold while its own local
+    # counts looked healthy (~7 responses gave ~1.7x). Flag the whole item
+    # once any category falls below min_item_count.
+    kc_it <- which(cnt < min_item_count) - 1L
+    if (length(kc_it) && any(!flag[thr$item == i])) {
+      already <- all(flag[thr$item == i])
+      flag[thr$item == i] <- TRUE
+      if (!already) notes <- c(notes, sprintf(
+        "item %s: category %s has only %s response(s); all of the item's jointly estimated thresholds are unreliable at this sparsity (SEs reported as NA) -- consider pc_components or collapsing categories",
+        item_names[i], paste(kc_it, collapse = "/"),
+        paste(cnt[kc_it + 1L], collapse = "/")))
+    }
   }
   list(flag = flag, notes = notes)
 }
@@ -265,8 +293,33 @@ threshold_index <- function(m) {
     if (done) break
   }
   Hb <- crossprod(B, glh$H %*% B)
+  # the projected information must have full rank at the solution: a
+  # singular Hb means some parameter direction is unidentified (e.g.
+  # blocks linked only through non-informative extreme-total pairs slip
+  # past graph checks), and the ridged inverse would report plausible or
+  # even zero standard errors for a direction the data never determined
+  rc <- tryCatch(rcond(Hb), error = function(e) 0)
+  if (!(is.finite(rc) && rc > 1e-12))
+    stop("the projected information matrix is singular (reciprocal ",
+         "condition number ", format(rc, digits = 3), "): some parameter ",
+         "direction is not identified by the data -- typically blocks of ",
+         "items linked only through responses with no conditional ",
+         "information (all at the minimum or maximum)", call. = FALSE)
   Hinv <- tryCatch(solve(Hb), error = function(e)
     solve(Hb - diag(1e-8, nrow(Hb))))
+  gb_final <- drop(crossprod(B, glh$g))
+  # The projected score is an extensive quantity and therefore grows with
+  # sample size. At large N it can remain just above a fixed absolute cutoff
+  # after the parameter estimates and log likelihood have stopped changing.
+  # Accept either a small score or a small full Newton move on the parameter
+  # scale; the latter remains comparable across sample sizes. The information
+  # rank check above prevents a small move in an unidentified direction from
+  # being mistaken for convergence. Cap that allowance so an extremely loose
+  # user tolerance cannot certify a visibly unfinished fit.
+  newton_move <- drop(Hinv %*% gb_final)
+  move_tol <- min(20 * tol, 1e-6)
+  converged <- max(abs(gb_final)) < 1e-4 ||
+    max(abs(newton_move)) < move_tol
   J  <- .pcml_sandwich(X, thr, m, drop(offset + B %*% beta), pairs)
   Jb <- crossprod(B, J %*% B)
   covb <- Hinv %*% Jb %*% Hinv
@@ -274,16 +327,20 @@ threshold_index <- function(m) {
   list(tau = drop(offset + B %*% beta), beta = beta, cov_beta = covb,
        cov_tau = covt, se_tau = sqrt(pmax(diag(covt), 0)), H_beta = Hb,
        loglik = glh$ll, iterations = it,
-       converged = max(abs(drop(crossprod(B, glh$g)))) < 1e-4)
+       converged = converged)
 }
 
 #' Estimate Rasch thresholds by pairwise conditional maximum likelihood
 #'
-#' Maximises the pairwise conditional likelihood, in which the person
-#' parameter cancels within every item pair, by Newton-Raphson (Andrich and
-#' Luo 2003; Zwinderman 1995). The partial credit model
-#' estimates every threshold freely; the rating scale model constrains
-#' \code{tau_ik = delta_i + kappa_k} through the design matrix.
+#' Estimates PCM or RSM thresholds by Newton--Raphson maximisation of the
+#' pairwise conditional likelihood (Zwinderman 1995).
+#'
+#' @details
+#' For the PCM, the adjacent-category log odds are
+#' \deqn{\log\{P(X_{ni}=k)/P(X_{ni}=k-1)\}=\theta_n-\delta_{ik}.}
+#' Conditioning on the score for an item pair removes \eqn{\theta_n}. The PCM
+#' estimates each \eqn{\delta_{ik}}; the RSM imposes
+#' \eqn{\delta_{ik}=\beta_i+\tau_k} through a design matrix.
 #'
 #' @param X Persons-by-items integer score matrix (categories from 0). Missing
 #'   values are handled by pairwise deletion, so linked booklet designs and
@@ -301,15 +358,16 @@ threshold_index <- function(m) {
 #'   remaining parameters are estimated on the anchored scale and no
 #'   recentring is applied. PCM only.
 #' @param maxit,tol Newton-Raphson iteration cap and convergence tolerance.
-#' @return A list with the threshold table \code{thr} (columns \code{id},
-#'   \code{item}, \code{k}, \code{tau}, \code{se}, \code{anchored}, and
-#'   \code{weak} -- \code{TRUE} for a threshold adjacent to a category with
-#'   fewer than 3 responses, whose estimate can run toward a boundary while
-#'   the ridged covariance understates the error; its \code{se} is reported
-#'   as \code{NA} and a note names the item and category), the
-#'   threshold covariance matrix \code{cov_tau}, the pairwise conditional
-#'   log-likelihood, the iteration count, a convergence flag, \code{notes},
-#'   and the max-score vector \code{m}.
+#' @return A list containing the threshold table \code{thr}, covariance matrix
+#'   \code{cov_tau}, pairwise conditional log-likelihood, iteration count,
+#'   convergence flag, notes, and maximum scores \code{m}. In \code{thr},
+#'   \code{weak} marks all thresholds of an item with fewer than eight
+#'   responses in any category, or a threshold adjacent to a category with
+#'   fewer than three responses. Standard errors for weak thresholds are
+#'   reported as \code{NA}.
+#' @references
+#' Zwinderman, A. H. (1995). Pairwise parameter estimation in Rasch models.
+#' Applied Psychological Measurement, 19(4), 369--375.
 #' @examples
 #' set.seed(1)
 #' d <- seq(-1.5, 1.5, length.out = 6)
@@ -317,7 +375,9 @@ threshold_index <- function(m) {
 #' colnames(X) <- paste0("I", 1:6)
 #' pcml(X)$thr
 #' # anchor two items at fixed values (equating)
-#' pcml(X, anchors = data.frame(item = c("I1", "I6"), k = 1, tau = c(-1.5, 1.5)))$thr
+#' anchors <- data.frame(item = c("I1", "I6"), k = 1,
+#'                       tau = c(-1.5, 1.5))
+#' pcml(X, anchors = anchors)$thr
 #' @export
 pcml <- function(X, model = c("PCM", "RSM"), anchors = NULL,
                  maxit = 60, tol = 1e-8) {
@@ -390,7 +450,12 @@ pcml <- function(X, model = c("PCM", "RSM"), anchors = NULL,
                        maxit = maxit, tol = tol, pairs = pairs)
     thr$tau <- sol$tau; thr$se <- sol$se_tau; thr$se[a_id] <- 0
     thr$anchored <- seq_len(M) %in% a_id | thr$item %in% mean_items
-    thr$weak <- weak$flag & !thr$anchored
+    # average anchoring (k = NA) fixes only an item's MEAN location; its
+    # individual thresholds stay free and estimated. Only genuinely fixed
+    # thresholds (a_id) may suppress the weak-category flag -- a
+    # mean-anchored item's free threshold sitting on a near-empty category
+    # is still a boundary artefact and must keep weak = TRUE / se = NA
+    thr$weak <- weak$flag & !(seq_len(M) %in% a_id)
     thr$se[thr$weak] <- NA_real_
     return(list(model = model, thr = thr, cov_tau = sol$cov_tau,
                 loglik = sol$loglik, iterations = sol$iterations,
@@ -512,26 +577,15 @@ pcml <- function(X, model = c("PCM", "RSM"), anchors = NULL,
   keep
 }
 
-#' Estimate Rasch thresholds via the Andrich principal-components reparameterisation
+#' Estimate Rasch thresholds using a principal-component parameterisation
 #'
-#' An optional alternative to \code{\link{pcml}}'s free-threshold estimation,
-#' useful when some response categories are sparsely populated. Each item's
-#' thresholds are re-expressed as up to four orthogonal polynomial
-#' components in the category score: location, spread, skewness, and
-#' kurtosis (Andrich 1978, 1985; Pedler 1987). Location is always estimated;
-#' spread, skewness, and kurtosis are added in turn as an item's number of
-#' thresholds and \code{n_components} allow. Estimation uses the same
-#' pairwise conditional likelihood as \code{pcml} (Andrich and Luo 2003), so
-#' it inherits the same missing-data handling and sandwich standard errors.
-#' The component family stops at the quartic (kurtosis) term, so the
-#' reparameterisation is exact, matching \code{pcml}'s free partial credit
-#' thresholds and log-likelihood, only while every item has at most 3
-#' thresholds (4 categories); from 4 thresholds on \code{pcml_pc} is
-#' necessarily a reduced-rank smoothing of the thresholds to a polynomial
-#' trend across categories, however large \code{n_components} is set,
-#' trading flexibility for the stability that comes from pooling information
-#' across all of an item's categories -- useful when a category has low or
-#' zero frequency.
+#' Re-expresses each item's thresholds as orthogonal polynomial components:
+#' location, spread, skewness, and kurtosis (Andrich 1978, 1985; Pedler 1987).
+#' Estimation uses the same pairwise conditional likelihood as
+#' \code{\link{pcml}}. With at most three thresholds per item the full
+#' parameterisation is exact. Items with four or more thresholds are fitted by
+#' a reduced-rank polynomial trend, which can stabilise sparse categories at
+#' the cost of restricting the threshold pattern.
 #'
 #' @param X Persons-by-items integer score matrix (categories from 0).
 #'   Missing values are handled by pairwise deletion.
@@ -550,6 +604,23 @@ pcml <- function(X, model = c("PCM", "RSM"), anchors = NULL,
 #'   component), the threshold covariance matrix \code{cov_tau}, the
 #'   pairwise conditional log-likelihood, the iteration count, a convergence
 #'   flag, and the max-score vector \code{m}.
+#' @references
+#' Andrich, D. and Luo, G. (2003). Conditional pairwise estimation in the
+#' Rasch model for ordered response categories using principal components.
+#' Journal of Applied Measurement, 4(3), 205--221.
+#'
+#' Zwinderman, A. H. (1995). Pairwise parameter estimation in Rasch models.
+#' Applied Psychological Measurement, 19(4), 369--375.
+#'
+#' Andrich, D. (1978). A rating formulation for ordered response categories.
+#' Psychometrika, 43(4), 561--573.
+#'
+#' Andrich, D. (1985). An elaboration of Guttman scaling with Rasch models
+#' for measurement. In N. B. Tuma (Ed.), Sociological Methodology 1985
+#' (pp. 33--80). Jossey-Bass.
+#'
+#' Pedler, P. J. (1987). Accounting for psychometric dependence with a class
+#' of latent trait models. PhD thesis, University of Western Australia.
 #' @examples
 #' set.seed(1)
 #' d <- seq(-1.5, 1.5, length.out = 6)

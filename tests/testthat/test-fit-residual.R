@@ -97,6 +97,8 @@ test_that("item-trait chi-square df are per item and total df is their sum", {
   expect_true(all(fit$item_trait$df <= fit$n_groups - 1))
   expect_equal(fit$total_df, sum(fit$item_trait$df))
   expect_true(all(c("p_bonf") %in% names(fit$item_trait)))
+  expect_equal(fit$item_trait$p_adj,
+               p.adjust(fit$item_trait$p, method = "holm"))
 })
 
 test_that("ANOVA item fit is calibrated under the model", {
@@ -105,6 +107,8 @@ test_that("ANOVA item fit is calibrated under the model", {
   expect_gt(mean(fit$items$F_anova, na.rm = TRUE), 0.5)
   expect_lt(mean(fit$items$F_anova, na.rm = TRUE), 1.6)
   expect_true(all(c("df1", "df2", "p_adj", "p_bonf") %in% names(fit$item_anova)))
+  expect_equal(fit$item_anova$p_adj,
+               p.adjust(fit$item_anova$p, method = "holm"))
   expect_equal(fit$item_anova$df1, rep(fit$n_groups - 1L, ncol(s$X)))
 })
 
@@ -143,4 +147,10 @@ test_that("class intervals never split persons sharing a location", {
   expect_equal(max(ci, na.rm = TRUE), fit$n_groups)
   # sizes are as equal as tie-preservation allows (no interval empty)
   expect_true(all(tabulate(ci[ok]) > 0))
+})
+
+test_that("class intervals handle an empty usable sample", {
+  ci <- .class_intervals(c(NA_real_, 0), c(FALSE, TRUE), 3)
+  expect_true(all(is.na(ci)))
+  expect_identical(attr(ci, "n_groups"), 0L)
 })

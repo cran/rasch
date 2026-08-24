@@ -4,10 +4,18 @@
 \alias{ctt_table}
 \title{Traditional (classical test theory) statistics}
 \usage{
-ctt_table(fit)
+ctt_table(fit, missing = c("complete", "available"))
 }
 \arguments{
-\item{fit}{A fitted object from \code{\link{rasch}}.}
+\item{fit}{A fitted object from \code{\link{rasch}} whose columns form one
+administered item set. Expanded EFRM and MFRM response-cell matrices are
+not accepted; one-cell-per-item reductions are.}
+
+\item{missing}{\code{"complete"} (default) computes the classical table on
+respondents who answered every item, matching the textbook total-score
+definitions. \code{"available"} retains itemwise and pairwise available
+cases as an explicitly exploratory summary; respondents answering
+different item sets need not be comparable.}
 }
 \value{
 A list of class \code{"rasch_ctt"}: the per-item \code{table}
@@ -22,8 +30,11 @@ The classical companion table conventionally reported alongside a Rasch
 analysis (Andrich and Marais 2019, chs. 3-5), on complete cases only: per item the facility (mean score over
 maximum), the item-total and corrected item-rest correlations, the
 discrimination index DI = PRU - PRL (mean proportion-of-maximum in the
-upper third of total scores minus the lower third), and alpha if the
-item is deleted; plus coefficient alpha, the raw-score mean, SD, and the
+upper third of total scores minus the lower third). Equal total scores
+remain in the same third, so the group sizes can differ and DI is withheld
+when three distinct score groups cannot be formed. The table also gives
+alpha if the item is deleted; the summary gives coefficient alpha, the
+raw-score mean, SD, and the
 classical standard error of measurement \eqn{s\sqrt{1 - \alpha}}, which
 unlike the Rasch SE is one value for all persons.
 }
@@ -33,4 +44,8 @@ d <- seq(-2, 2, length.out = 8)
 X <- matrix(rbinom(400 * 8, 1, plogis(outer(rnorm(400), d, "-"))), 400, 8)
 colnames(X) <- paste0("I", 1:8)
 ctt_table(rasch(X))
+}
+\references{
+Cronbach, L. J. (1951). Coefficient alpha and the internal structure of
+tests. Psychometrika, 16, 297--334.
 }

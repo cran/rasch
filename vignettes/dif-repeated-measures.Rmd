@@ -1,0 +1,152 @@
+---
+title: "DIF with several person factors and repeated measures"
+author: "Josh McGrane"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{DIF with several person factors and repeated measures}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+options(digits = 4)
+```
+
+```{r library}
+library(rasch)
+```
+
+## Design the analysis around the person
+
+Differential item functioning is a violation of the Rasch model's requirement
+of invariant comparison: item locations should not depend on which persons
+respond (Rasch 1961). When several person factors are relevant, they should
+enter one model. Repeated observations require a further distinction: group is
+a between-person factor, whereas occasion varies within person.
+
+For a factor $G$, class interval $C$, and standardised residual $z$, the
+single-factor model is
+
+$$
+z=\mu+G+C+G\mathbin{:}C+\varepsilon.
+$$
+
+The $G$ term tests uniform DIF. The $G\mathbin{:}C$ term tests non-uniform DIF.
+With several factors, `dif_anova` fits their terms jointly and uses Type II
+sums of squares.
+
+The following dataset has two observations per person. Item I03 has a group
+shift, item I06 has an occasion shift, and item I05 shifts for group B at the
+second occasion only, a group-by-occasion interaction.
+
+```{r data}
+set.seed(21)
+N <- 320
+difficulty <- seq(-1.5, 1.5, length.out = 8)
+theta <- rnorm(N)
+group <- rep(c("A", "B"), each = N / 2)
+
+make_wave <- function(occasion_shift, interaction_shift) {
+  shift <- matrix(0, N, 8)
+  shift[group == "B", 3] <- 1.2
+  shift[, 6] <- occasion_shift
+  shift[group == "B", 5] <- interaction_shift
+  matrix(rbinom(N * 8, 1,
+                plogis(outer(theta, difficulty, "-") - shift)), N, 8)
+}
+
+X <- rbind(make_wave(0, 0), make_wave(1.0, 2.0))
+colnames(X) <- sprintf("I%02d", 1:8)
+dat <- data.frame(
+  pid = rep(sprintf("P%03d", seq_len(N)), 2),
+  X,
+  group = rep(group, 2),
+  occasion = rep(c("T1", "T2"), each = N)
+)
+```
+
+## Fit once and test both factors
+
+The repeated person identifier is carried into the fit. `dif_anova` detects
+occasion as within-person; it can also be declared explicitly. Persons, not
+stacked rows, are the units of analysis. Uniform between-person terms use
+Type II tests with HC3 covariance. Class-interval interactions retain the
+residual-ANOVA reference. Within-person tests use person-level contrasts, with
+a Greenhouse--Geisser correction when a factor has more than two levels.
+This mixed-design analysis extends the single-factor residual analysis of
+variance described by Andrich and Marais (2019). Its F references are
+large-sample approximations.
+
+```{r analysis}
+fit <- rasch(dat, id = "pid", factors = c("group", "occasion"),
+             items = sprintf("I%02d", 1:8))
+da <- dif_anova(fit, within = "occasion", effects = "factorial", sizes = TRUE)
+da$summary
+```
+
+The multiplicity adjustment covers the complete family of item-by-DIF-term
+tests. Uniform DIF is a factor effect that is stable over the trait; a
+factor-by-class-interval effect is non-uniform DIF. `effects = "factorial"`
+adds the person-factor interactions. A significant higher-order term
+supersedes its component group terms within the same item: item I05's group
+effect is significant on its own, but the `superseded` flag records that the
+interaction absorbs it, and the follow-ups report the interaction rather than
+its components. Read adjusted probabilities with effect sizes before changing
+an item.
+
+## Quantify the departure
+
+ANOVA identifies evidence against invariance; it does not state the size of
+the departure in logits. `dif_size` resolves an item by a between-person
+factor. `dif_contrasts` provides planned contrasts and uses person-level
+differencing for within-person questions.
+
+```{r magnitude}
+dif_size(fit, "I03", by = "group")
+dc <- dif_contrasts(fit, items = c("I03", "I06"), within = "occasion")
+dc$table
+da$posthoc
+```
+
+`dif_posthoc()` is the general follow-up for a significant term. A main
+effect with more than two levels is reported as pairwise marginal differences
+over the other fitted factors. An interaction is reported as a
+difference-in-differences, or its higher-order counterpart. These comparisons
+use the joint covariance of the resolved item locations and Holm adjustment
+over the stated family. The result is on the logit scale and respects the
+factor structure used in the DIF analysis. Here item I03 is reported as a
+pairwise group difference, item I06 as a person-level occasion contrast, and
+item I05 as the difference-in-differences of its interaction; the superseded
+I05 group term receives no follow-up of its own.
+
+For repeated-person contrasts, significance comes from person-level residual
+contrast scores with the same design-cell weights as the resolved estimate.
+Other fitted factors are averaged equally over their complete cells, including
+when their sample sizes differ, and the independent between-person cells use a
+Welch--Satterthwaite reference. The resolved logit difference remains the
+magnitude, but its row-independent calibration covariance is not a
+repeated-measures standard error; the package therefore withholds the logit SE
+and interval in this case. The fitted person identifier is used unless `id` is
+supplied explicitly.
+
+For a many-facet fit, follow-ups may name the underlying item; its virtual
+facet cells are pooled with common weights so facet severity cancels from the
+group contrast. Extended-frame fits support the residual ANOVA for factors
+outside the frame definition, but not an ordinary resolved-item magnitude:
+that refit would discard the fitted frame units.
+
+A statistical flag should be considered with the logit magnitude, targeting,
+item content, and the intended use of the scale. Resolving an item changes the
+measurement model and should follow a substantive account of why the item is
+not invariant.
+
+## References
+
+Andrich, D., and Marais, I. (2019). *A Course in Rasch Measurement Theory:
+Measuring in the Educational, Social and Health Sciences*. Springer.
+
+Rasch, G. (1961). On general laws and the meaning of measurement in
+psychology. In *Proceedings of the Fourth Berkeley Symposium on Mathematical
+Statistics and Probability* (Vol. 4, pp. 321--333). Berkeley: University of
+California Press.

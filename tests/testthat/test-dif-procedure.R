@@ -23,6 +23,7 @@ test_that("dif_anova reports the full two-way table with effect sizes", {
   fit <- rasch(data.frame(s$X, grp = s$g), factors = "grp")
   da <- dif_anova(fit)
   su <- da$summary
+  expect_identical(da$between_covariance, "HC3 for uniform factor terms")
   expect_true(all(c("eta2_uniform", "eta2_nonuniform", "uniform_DIF",
                     "nonuniform_DIF") %in% names(su)))
   # one row per item (single factor); the planted item has the largest effect
@@ -32,10 +33,67 @@ test_that("dif_anova reports the full two-way table with effect sizes", {
   expect_true(all(su$eta2_uniform > 0 & su$eta2_uniform < 1, na.rm = TRUE))
   # the class-interval main effect lives in the full terms table
   expect_true(all(is.finite(da$terms$F_value[da$terms$term == "ci"])))
+  tested <- !da$terms$term %in% c("Residuals", "ci") &
+    is.finite(da$terms$p)
+  expect_equal(da$terms$p_adj[tested],
+               p.adjust(da$terms$p[tested], method = "holm"))
   # familywise option flows through
   db <- dif_anova(fit, p_adjust = "bonferroni")
   expect_true(all(db$summary$p_uniform_adj >= su$p_uniform_adj - 1e-12,
                   na.rm = TRUE))
+})
+
+test_that("ordinary DIF confines HC3 to uniform factor terms", {
+  set.seed(18)
+  d <- data.frame(
+    z = c(rnorm(80, sd = 2), rnorm(240)),
+    group = factor(rep(c("A", "B"), c(80, 240))),
+    ci = factor(rep(1:4, length.out = 320)))
+  terms <- c("group", "ci", "group:ci")
+  classical <- .dif_type2(d, terms, variance = "classical")
+  all_hc3 <- .dif_type2(d, terms, variance = "hc3")
+  hybrid <- .dif_type2(d, terms, variance = "hc3", robust_terms = "group")
+  expect_equal(hybrid$F_value[hybrid$term == "group"],
+               all_hc3$F_value[all_hc3$term == "group"])
+  expect_equal(hybrid$p[hybrid$term == "group:ci"],
+               classical$p[classical$term == "group:ci"])
+})
+
+test_that("HC3 Type II covariance matches an independent matrix calculation", {
+  set.seed(181)
+  n <- c(45L, 90L, 180L)
+  group <- factor(rep(c("A", "B", "C"), n))
+  ci <- factor(rep(1:4, length.out = sum(n)))
+  sd_group <- c(A = 0.6, B = 1.4, C = 2.2)
+  z <- 0.3 * as.numeric(ci) + rnorm(sum(n), sd = sd_group[group])
+  d <- data.frame(z, group, ci)
+
+  got <- .dif_type2(d, c("group", "ci", "group:ci"),
+                    variance = "hc3", robust_terms = "group")
+  m <- lm(z ~ ci + group, data = d)
+  X <- model.matrix(m)
+  jj <- which(attr(X, "assign") == match("group",
+    attr(terms(m), "term.labels")))
+  bread <- solve(crossprod(X))
+  adjusted_residual <- residuals(m) / (1 - hatvalues(m))
+  meat <- crossprod(X * adjusted_residual)
+  covariance <- bread %*% meat %*% bread
+  beta <- coef(m)[jj]
+  expected_f <- drop(t(beta) %*% solve(covariance[jj, jj], beta)) /
+    length(jj)
+  # .dif_type2() uses the full factorial model's residual denominator for
+  # every Type II term, including the HC3 Wald tests.
+  full <- lm(z ~ ci * group, data = d)
+  expected_p <- pf(expected_f, length(jj), df.residual(full),
+                   lower.tail = FALSE)
+  row <- got[got$term == "group", ]
+
+  expect_equal(row$F_value, expected_f, tolerance = 1e-12)
+  expect_equal(row$p, expected_p, tolerance = 1e-12)
+  classical <- .dif_type2(d, c("group", "ci", "group:ci"),
+                          variance = "classical")
+  expect_gt(abs(row$F_value - classical$F_value[classical$term == "group"]),
+            0.01)
 })
 
 test_that("dif_size recovers a planted uniform DIF in logits", {
@@ -75,6 +133,23 @@ test_that("multi-level factors get familywise pairwise comparisons in logits", {
   expect_true(ds$pairs$significant[sel] && ds$pairs$practical[sel])
 })
 
+test_that("EFRM DIF is reported by item, not by frame response cell", {
+  set.seed(140)
+  d <- simulate_efrm(n_per_group = 180, items_per_set = 5, n_sets = 1,
+                     n_groups = 2, seed = 141)
+  tr <- attr(d, "truth")
+  d$site <- factor(rep(c("north", "south"), length.out = nrow(d)))
+  f <- rasch_efrm(d, item_sets = tr$item_sets, groups = "group", id = "id",
+                  factors = "site", boot_reps = 0)
+  z <- dif_anova(f)
+
+  expect_setequal(unique(z$summary$item), unlist(tr$item_sets,
+                                                 use.names = FALSE))
+  expect_false(any(unique(z$summary$item) %in% f$virtual_map$vkey))
+  expect_false(any(z$summary$term == "group"))
+  expect_match(paste(z$notes, collapse = " "), "underlying items")
+})
+
 test_that("factorial procedure: interaction post-hocs and sizes for significant terms", {
   set.seed(7); n <- 1600
   d <- seq(-1.5, 1.5, length.out = 6)
@@ -97,11 +172,13 @@ test_that("factorial procedure: interaction post-hocs and sizes for significant 
   sup <- t3$term[t3$superseded]
   expect_true(all(sup %in% c("g1", "g2")))
 
-  # Tukey post-hocs exist for the interaction cells of the planted item
-  tk3 <- fa$tukey[fa$tukey$item == "I3" & fa$tukey$term == "g1:g2", ]
-  expect_equal(nrow(tk3), 6)               # 4 cells -> 6 pairs
-  worst <- tk3$comparison[which.min(tk3$p_tukey)]
-  expect_true(grepl("b:y", worst))
+  # The public follow-up is the resolved-logit interaction contrast, not a
+  # residual-mean Tukey table.
+  expect_false("tukey" %in% names(fa))
+  ph3 <- fa$posthoc[fa$posthoc$item == "I3" &
+                      fa$posthoc$term == "g1:g2", ]
+  expect_gt(nrow(ph3), 0)
+  expect_true(any(ph3$practical))
 
   # sizes: logit magnitudes for the significant term, the b:y cell apart
   sz <- fa$sizes[fa$sizes$item == "I3" & fa$sizes$term == "g1:g2", ]
@@ -169,11 +246,13 @@ test_that("MFRM facet fit reports margin and pooled statistics with df", {
   tau <- list(A = c(-1, 1), B = c(-0.5, 1.2), C = c(-1.2, 0.4))
   dd <- expand.grid(person = persons, item = names(tau), rater = raters,
                     stringsAsFactors = FALSE)
+  dd$cohort <- rep(c("early", "late"), length.out = length(persons))[
+    match(dd$person, persons)]
   dd$score <- mapply(function(p, i, r)
     sample(0:2, 1, prob = simP(th[p], tau[[i]] + rho[r])),
     dd$person, dd$item, dd$rater)
   mf <- rasch_mfrm(dd, person = "person", item = "item", score = "score",
-                   facets = "rater")
+                   facets = "rater", factors = "cohort")
   fe <- mf$facet_effects$rater
   expect_true(all(c("fit_resid", "fit_resid_pooled", "df_fit") %in% names(fe)))
   expect_true(all(is.finite(fe$fit_resid)))
@@ -186,6 +265,9 @@ test_that("MFRM facet fit reports margin and pooled statistics with df", {
   expect_equal(fe$df_fit, mf$summary_stats$df_factor * fe$n, tolerance = 1e-8)
   expect_true(all(is.finite(mf$item_effects$df_fit)))
   expect_true(all(is.finite(mf$item_effects$fit_resid_pooled)))
+  p <- tempfile(fileext = ".pdf")
+  grDevices::pdf(p); on.exit({ grDevices::dev.off(); unlink(p) }, add = TRUE)
+  expect_no_error(plot_icc(mf, "A", group = "cohort"))
 })
 
 test_that("the factorial summary pivots to uniform/non-uniform per group term", {
@@ -255,9 +337,14 @@ test_that("dif_anova tests a within-subject factor against person clustering", {
   # the repeated occasion factor is auto-detected as within-subject
   expect_identical(da$within, "occasion")
   su <- da$summary
-  # the planted within-subject DIF on I3 is recovered, clean items are null
+  # the planted within-subject DIF on I3 is recovered as the dominant
+  # effect; the person-level test has the power to surface the largest
+  # compensating artificial-DIF artifact the plant creates (the
+  # Andrich-Hagquist phenomenon the docs warn about), so tolerate at most
+  # one extra flag with a clearly smaller F
   expect_true(su$uniform_DIF[su$item == "I3"])
-  expect_equal(sum(su$uniform_DIF), 1L)
+  expect_lte(sum(su$uniform_DIF), 2L)
+  expect_equal(su$item[which.max(su$F_uniform)], "I3")
   # the within uniform test equals the person-level paired test (its gold
   # standard) up to the class-interval filtering
   z <- fit$residuals[, 3]; g <- factor(fit$factors$occasion); pid <- factor(id)
@@ -304,9 +391,11 @@ test_that("factorial DIF uses a mixed ANOVA when a factor is within-subject", {
   expect_false(s$uniform_DIF[s$item == "I6" & s$term == "sex"])
   expect_equal(sum(s$uniform_DIF), 2L)
 
-  # forcing the between-subjects treatment reproduces the ordinary factorial
-  fb <- dif_anova(fit, within = character(0))
-  expect_length(fb$within, 0L)
+  # forcing the between-subjects treatment on stacked data is refused:
+  # a factor varying within persons has no person-level value, and the
+  # old row-level treatment pseudo-replicated
+  expect_error(dif_anova(fit, within = character(0)),
+               "vary within persons")
   fc <- dif_anova(rasch(data.frame(X[1:N, ], sex = sex),
                                   factors = "sex"))
   expect_length(fc$within, 0L)
@@ -338,6 +427,62 @@ test_that("resolve_dif splits DIF items by effect size and protects anchors", {
   rp <- resolve_dif(fp, min_anchors = 3)
   # never fewer than min_anchors original items left unsplit
   expect_gte(10L - length(unique(rp$splits$item)), 3L)
+})
+
+test_that("resolve_dif leaves non-uniform DIF visible", {
+  d <- simulate_rasch(n_persons = 1600, n_items = 12,
+                      difficulty = c(-1.8, 1.8), n_groups = 2,
+                      dif = list(items = "I06", uniform = 0,
+                                 nonuniform = 1.2), seed = 8472)
+  fit <- rasch(d, id = "id", factors = "group")
+  before <- dif_anova(fit, p_adjust = "BH")$summary
+  expect_true(before$nonuniform_DIF[before$item == "I06"])
+  rr <- resolve_dif(fit, max_splits = 1)
+  expect_false("I06" %in% rr$splits$item)
+  expect_true(any(rr$dif$item == "I06" & rr$dif$nonuniform))
+  expect_gt(rr$n_nonuniform, 0L)
+  expect_match(rr$stopped, "non-uniform DIF requires item review")
+})
+
+test_that("resolve_dif does not split a uniform flag that thin cells cannot confirm", {
+  set.seed(2); n_a <- 400; n_b <- 12; n <- n_a + n_b
+  grp <- factor(c(rep("A", n_a), rep("B", n_b)))
+  th <- rnorm(n); d <- seq(-1.5, 1.5, length.out = 8)
+  X <- matrix(rbinom(n * 8, 1, plogis(outer(th, d, "-"))), n, 8)
+  X[grp == "B", 3] <- rbinom(n_b, 1, 0.95)
+  colnames(X) <- paste0("I", 1:8)
+  fit <- rasch(data.frame(X, grp = grp), factors = "grp")
+  expect_error(dif_size(fit, "I3", by = "grp"),
+               "fewer than two usable levels")
+  rr <- resolve_dif(fit, max_splits = 1, min_anchors = 3)
+  expect_equal(rr$n_splits, 0L)
+  # HC3 may prevent the thin-cell residual flag before resolution. If the
+  # item reaches the resolver, it must still be refused rather than split.
+  if (length(rr$notes)) expect_match(rr$notes, "not split")
+})
+
+test_that("DIF follow-ups keep punctuated factor names structural", {
+  set.seed(31); n <- 900
+  ab <- factor(rep(c("low", "high"), each = n / 2))
+  sex <- factor(rep(c("F", "M"), length.out = n))
+  th <- rnorm(n); d <- seq(-1.5, 1.5, length.out = 7)
+  sh <- matrix(0, n, 7); sh[ab == "high", 2] <- 1.3
+  X <- matrix(rbinom(n * 7, 1, plogis(outer(th, d, "-") - sh)), n, 7)
+  colnames(X) <- paste0("P", 1:7)
+  dat <- data.frame(X, check.names = FALSE)
+  dat[["age:band"]] <- ab; dat$sex <- sex
+  fit <- rasch(dat, factors = c("age:band", "sex"))
+  da <- dif_anova(fit, effects = "factorial")
+  main <- which(vapply(da$summary_factors, identical, TRUE, "age:band"))
+  expect_true(length(main) > 0L)
+  expect_true(all(da$summary$term[main] == "`age:band`"))
+  inter <- which(vapply(da$summary_factors, identical, TRUE,
+                        c("age:band", "sex")))
+  expect_true(length(inter) > 0L)
+  ph <- dif_posthoc(fit, "P2", term = "age:band",
+                    factors = c("age:band", "sex"))
+  expect_identical(ph$term, "`age:band`")
+  expect_s3_class(resolve_dif(fit, max_splits = 0), "rasch_resolve_dif")
 })
 
 test_that("mixed-design DIF survives missing data (strata dedup)", {

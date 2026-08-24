@@ -43,6 +43,12 @@
     key <- setNames(as.character(key$key), as.character(key$item))
   }
   if (is.null(names(key))) stop("the key must be named by item")
+  # a missing key value cannot score its item: without this it would
+  # zero-score every response and the item would be dropped as constant
+  # under a misleading message
+  if (anyNA(key))
+    stop("missing (NA) key value for item(s): ",
+         paste(names(key)[is.na(key)], collapse = ", "))
   lapply(setNames(trimws(toupper(as.character(key))), names(key)),
          function(k) {
            opts <- trimws(strsplit(k, "/", fixed = TRUE)[[1]])
@@ -65,6 +71,12 @@
 .score_mc <- function(X, map) {
   keyed <- intersect(names(map), colnames(X))
   if (!length(keyed)) stop("no key item matches an item column")
+  # a key entry naming no item column is almost always a typo: surface it
+  # rather than drop it silently
+  unmatched <- setdiff(names(map), colnames(X))
+  if (length(unmatched))
+    warning("key item(s) with no matching data column (ignored): ",
+            paste(unmatched, collapse = ", "), call. = FALSE)
   raw <- matrix(trimws(toupper(as.character(X[, keyed]))), nrow(X),
                 length(keyed), dimnames = list(NULL, keyed))
   raw[raw %in% c("", "NA", "-1")] <- NA
@@ -178,12 +190,16 @@ plot_distractors <- function(fit, item, n_groups = fit$n_groups) {
   if (!item %in% colnames(fit$mc$raw)) stop("no such keyed item: ", item)
   r <- fit$mc$raw[, item]
   idx <- match(item, colnames(fit$X))
-  th <- .person_estimates(fit$X[, -idx, drop = FALSE],
-                          fit$tau_list[-idx])$theta     # rest measure
-  ok <- !is.na(r) & !is.na(th)
-  ng <- min(n_groups, max(2, floor(sum(ok) / 25)))
-  ci <- cut(rank(th[ok], ties.method = "first"), ng, labels = FALSE)
-  mid <- tapply(th[ok], ci, mean)
+  rp <- .person_estimates(fit$X[, -idx, drop = FALSE],
+                          fit$tau_list[-idx])          # rest measure
+  th <- rp$theta
+  candidate <- !is.na(r) & !is.na(th) & !rp$extreme
+  if (sum(candidate) < 4L)
+    stop("fewer than 4 non-extreme rest measures are available for this item")
+  ng <- min(n_groups, max(2, floor(sum(candidate) / 25)))
+  ci <- .class_intervals(ifelse(is.na(r), NA_real_, th), rp$extreme, ng)
+  ok <- !is.na(ci)
+  mid <- tapply(th[ok], ci[ok], mean)
   opts <- sort(unique(r[ok]))
   m <- fit$mc$map[[item]]
   sc <- unname(m[opts]); sc[is.na(sc)] <- 0L
@@ -193,7 +209,7 @@ plot_distractors <- function(fit, item, n_groups = fit$n_groups) {
                    paste0(item, "  (key: ", fit$mc$key[item], ")"))
   on.exit(par(op))
   for (j in seq_along(opts)) {
-    pr <- tapply(r[ok] == opts[j], ci, mean)
+    pr <- tapply(r[ok] == opts[j], ci[ok], mean)
     colr <- .rr$pal[(j - 1L) %% length(.rr$pal) + 1L]
     lines(mid, pr, lwd = if (keyed_v[j]) 3.2 else if (sc[j] > 0) 2.4 else 1.8,
           lty = if (keyed_v[j]) 1 else if (sc[j] > 0) 2 else 5, col = colr)
@@ -278,8 +294,11 @@ distractor_rescore <- function(fit, items = NULL, min_n = 20, z = 1.96) {
       base <- th[ok & r %in% d$option[others]]
       xj <- th[ok & r == d$option[j]]
       if (length(base) < 2 || length(xj) < 2) next
-      sep <- (mean(xj) - mean(base)) /
-        sqrt(var(xj) / length(xj) + var(base) / length(base))
+      den <- sqrt(var(xj) / length(xj) + var(base) / length(base))
+      # zero spread in both groups (every chooser at the same location)
+      # gives a 0/0 separation z: leave it NA rather than NaN
+      if (!is.finite(den) || den <= 0) next
+      sep <- (mean(xj) - mean(base)) / den
       d$z_sep[j] <- sep
       if (sep > z && mean(xj) < d$mean_location[key_row]) credited <- c(credited, j)
     }
@@ -293,6 +312,7 @@ distractor_rescore <- function(fit, items = NULL, min_n = 20, z = 1.96) {
   out <- list(option_scores = do.call(rbind, os),
               evidence = do.call(rbind, ev))
   rownames(out$option_scores) <- rownames(out$evidence) <- NULL
+  out <- .tag_tables(out)
   class(out) <- "rasch_rescore"
   out
 }

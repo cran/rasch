@@ -22,6 +22,11 @@
   notes <- character(0)
   X <- as.matrix(X)
   if (is.null(colnames(X))) colnames(X) <- sprintf("I%02d", seq_len(ncol(X)))
+  if (anyNA(colnames(X)) || any(!nzchar(colnames(X))))
+    stop("item column names must be non-missing and non-empty")
+  if (anyDuplicated(colnames(X)))
+    stop("item column names must be unique: ",
+         paste(unique(colnames(X)[duplicated(colnames(X))]), collapse = ", "))
   Xn <- suppressWarnings(apply(X, 2, function(col) as.numeric(as.character(col))))
   Xi <- suppressWarnings(apply(X, 2, function(col) as.integer(as.character(col))))
   dim(Xn) <- dim(X); dim(Xi) <- dim(X); dimnames(Xi) <- dimnames(X)
@@ -66,56 +71,59 @@
   list(X = X, notes = notes)
 }
 
-#' Fit and diagnose a Rasch model by pairwise conditional estimation
+#' Fit a Rasch model
 #'
-#' Runs a complete Rasch analysis: Andrich and Luo pairwise conditional
-#' maximum likelihood item estimation (see \code{\link{pcml}}), Warm weighted
-#' likelihood person estimates per missing-data pattern, item and person fit
-#' residuals (the log-of-mean-square statistic of Andrich and Marais 2019,
-#' ch. 23, with its
-#' untransformed natural form and degrees of freedom), infit and outfit,
-#' the item-trait interaction chi-square and the class-interval ANOVA
-#' item-fit F, the person separation index with and without extremes,
-#' Cronbach's alpha, targeting, threshold diagnostics, and the
+#' Fits the partial credit model (PCM) or rating scale model (RSM) by pairwise
+#' conditional maximum likelihood. Person locations are Warm weighted
+#' likelihood estimates. The fitted object contains item and person fit,
+#' targeting, reliability, threshold diagnostics, residuals, and a
 #' score-to-measure table.
 #'
-#' The fit residual follows Andrich and Marais (2019, ch. 23) exactly:
-#' standardised residuals are
-#' squared and summed over each item's (person's) observed cells among
-#' non-extreme persons, compared with the summed cell degrees of freedom
-#' (the model-testing degrees of freedom, cells minus estimated parameters,
-#' apportioned equally over cells), and symmetrised by the
-#' log-of-mean-square transform \eqn{f (\ln Y^2 - \ln f)/\sqrt{V[Y^2]}} with
-#' model-based variance \eqn{V[Y^2] = \sum (C_4/V^2 - 1)}. Values are
-#' approximately N(0,1) under fit; the conventional flagging value is 2.5
-#' (Andrich and Marais 2019, ch. 15).
-#' Negative values indicate over-discrimination (Guttman-like responses),
-#' positive values under-discrimination.
+#' @details
+#' For scores \eqn{x=0,\ldots,m_i}, the PCM is
+#' \deqn{P(X_{ni}=x)=\frac{\exp\{x\theta_n-\sum_{k=1}^{x}\delta_{ik}\}}
+#' {\sum_{y=0}^{m_i}\exp\{y\theta_n-\sum_{k=1}^{y}\delta_{ik}\}}.}
+#' The RSM constrains \eqn{\delta_{ik}=\beta_i+\tau_k}, where \eqn{\beta_i}
+#' is the item location and \eqn{\tau_k} is common across items. Dichotomous
+#' items are the one-threshold case of the PCM.
 #'
-#' A calibration note that applies to the whole test-of-fit suite: the
-#' item-trait chi-square evaluates unconditional residuals at estimated
-#' person measures and refers the sum of correlated item statistics to a
-#' chi-square with summed degrees of freedom, following the convention of
-#' Andrich and Marais (2019); the class-interval ANOVA F and the
-#' Wilson-Hilferty-style transformations are approximations of the same
-#' kind. Null simulation with this package shows rejection rates near but
-#' not exactly at the nominal level (conservative in the settings
-#' examined), and the direction can vary with design. These statistics are
-#' therefore approximate, convention-faithful diagnostics for ordering and
-#' flagging misfit -- not exactly calibrated hypothesis tests; where exact
-#' calibration matters, use the simulation tools
-#' (\code{\link{sim_replicate}}) to build parametric-bootstrap reference
-#' distributions for the observed design.
+#' Pairwise conditioning removes \eqn{\theta_n} from the item likelihood.
+#' Missing responses are omitted from pairwise contributions, and person
+#' measures are estimated within each observed item pattern. The observed
+#' item-pair graph must identify a common scale. This covers planned linked
+#' designs and ignorable missingness; informative missingness can still bias
+#' the estimates.
+#'
+#' The fit residual is the log-of-mean-square statistic described by Andrich
+#' and Marais (2019, ch. 23). It is approximately standard normal under fit;
+#' positive values indicate under-discrimination and negative values indicate
+#' over-discrimination. The item-trait chi-square and class-interval F tests
+#' are large-sample diagnostic approximations and should be considered with
+#' the residual statistics, effect sizes, and item content.
+#'
+#' Multiple-choice responses may be scored from a named item-to-key vector,
+#' an item/key table, or an item/option/score table. A slash separates
+#' alternative correct options. The third form assigns integer category
+#' scores to nominated options and fits the resulting item as polytomous;
+#' unlisted options score zero. Raw responses are retained in \code{fit$mc}
+#' for distractor analysis.
+#'
+#' If \code{adjust_N} is supplied, each item-trait chi-square is multiplied by
+#' the reference sample size divided by the number of classified persons.
+#' The scaling is global: an item answered by a subset retains its
+#' proportionally smaller share of the reference sample.
 #'
 #' @param data Persons-by-items integer score matrix (categories from 0), or a
 #'   data frame also containing ID and person-factor columns. Missing values
-#'   are allowed.
+#'   are allowed subject to the identification and ignorability conditions
+#'   described above.
 #' @param model Either \code{"PCM"} (partial credit) or \code{"RSM"} (rating
 #'   scale).
 #' @param id Optional name of an ID column in \code{data}, or a vector of IDs;
 #'   carried through to the person estimates.
 #' @param factors Optional character vector of person-factor column names in
-#'   \code{data} (for DIF analysis), or a data frame of factors.
+#'   \code{data} (for DIF analysis), a data frame of factors, or one grouping
+#'   vector with one entry per data row.
 #' @param items Optional character vector naming the item columns; by default
 #'   every column not named in \code{id} or \code{factors}.
 #' @param n_groups Number of class intervals for the item-trait chi-square
@@ -124,55 +132,70 @@
 #'   many intervals of at least 50 non-extreme persons as the sample allows,
 #'   at most 10, at least 2. The resolved value is stored in
 #'   \code{fit$n_groups}.
-#' @param adjust_N Optional reference sample size; if supplied, item-trait
-#'   chi-squares are rescaled to this size (a sample-size adjustment for the
-#'   sensitivity of the chi-square to large samples). The scaling is
-#'   proportional and global -- every item's chi-square is multiplied by
-#'   \code{adjust_N} over the number of classified persons -- so an item
-#'   answered by a subset of persons keeps its proportionally smaller share
-#'   of the notional sample rather than being inflated to the full
-#'   \code{adjust_N}.
+#' @param adjust_N Optional reference sample size used to rescale the
+#'   item-trait chi-squares. See Details.
 #' @param anchors Optional anchor table for equating: a data frame with
-#'   columns \code{item}, \code{k}, and \code{tau} fixing nominated
-#'   thresholds at known values; see \code{\link{pcml}}. With anchors in
-#'   place the scale origin comes from the anchors, so person measures are
-#'   directly comparable across separately analysed datasets.
+#'   columns \code{item}, \code{k}, and \code{tau}; see \code{\link{pcml}}.
+#'   Anchors determine the scale origin.
 #' @param na_codes Values to read as missing. Defaults to \code{-1}, the
 #'   conventional missing-response code; any negative score is also treated as
 #'   missing, since valid category scores start at zero.
 #' @param maxit,tol Newton-Raphson iteration cap and convergence
 #'   tolerance of the pairwise conditional estimation.
-#' @param key Optional multiple-choice scoring key, in any of three forms. (1) A named vector or data frame with columns \code{item}
-#'   and \code{key} naming each item's correct option: scored 0/1
-#'   (case-insensitive after trimming; blanks become missing). (2) Double
-#'   keying: several correct options separated by \code{"/"} (for example
-#'   \code{"A/C"}), all scoring 1. (3) Polytomous option scoring (Andrich
-#'   and Styles 2011): a data frame with columns \code{item},
-#'   \code{option}, and \code{score} assigning an integer score to every
-#'   credited option (unlisted options score 0), so informative
-#'   distractors receive partial credit and the item is fitted as
-#'   polytomous; see \code{\link{distractor_rescore}} for an
-#'   evidence-based proposal. Raw responses are retained in \code{fit$mc}
-#'   for \code{\link{distractor_analysis}} and
-#'   \code{\link{plot_distractors}}.
-#' @param pc_components \code{NULL} (default) estimates every PCM threshold
-#'   freely. An integer 1 to 4 instead estimates each item's thresholds
-#'   through the Andrich principal-components reparameterisation (see
-#'   \code{\link{pcml_pc}}): 1 = location only, 2 = + spread (the dispersion
-#'   model of Andrich 1982), 3 = + skewness, 4 = + kurtosis (the full
-#'   principal-components model; Pedler 1987). Useful when some categories are sparsely
-#'   populated; the component estimates are returned in
-#'   \code{fit$est$components}. PCM only, and not combinable with anchors.
-#' @return An object of class \code{"rasch"}: a list with the item summary
-#'   (\code{items}), \code{thresholds} (with standard errors), the person
-#'   table (\code{person}, including ID and factors), the score table,
-#'   residuals, reliability (\code{psi}, \code{psi_noext}, the item
-#'   separation index \code{isi}, \code{alpha}), targeting, item-trait
-#'   statistics (\code{item_trait}, \code{item_anova}), the
-#'   summary distribution block (\code{summary_stats}: location and fit
-#'   residual mean/SD/skewness/kurtosis, fit-location correlations, and the
-#'   cell degrees-of-freedom factor), threshold diagnostics, and estimation
-#'   details (\code{est}).
+#' @param key Optional multiple-choice key: a named item-to-option vector, an
+#'   item/key table, or an item/option/score table. See Details.
+#' @param pc_components \code{NULL} (the default) estimates all PCM thresholds
+#'   freely. Values from 1 to 4 use the principal-components form in
+#'   \code{\link{pcml_pc}}: location, then spread, skewness, and kurtosis.
+#'   This can stabilise sparse categories. Component estimates are stored in
+#'   the estimation details. Available for PCM fits without anchors.
+#' @section Estimated item discrimination:
+#' The item summary includes a post-estimation slope \code{disc}. For item
+#' \eqn{i}, it maximises that item's response likelihood over \eqn{a_i} while
+#' holding the fitted person locations and thresholds fixed:
+#' \deqn{\hat a_i=\arg\max_{a_i}
+#'   \sum_n\log P(X_{ni}=x_{ni}\mid\hat\theta_n,\hat\delta_i,a_i).}
+#' The same slope multiplies every threshold of a polytomous item. It is a
+#' descriptive index, not a freely estimated parameter of the Rasch model,
+#' and no sampling standard error or hypothesis test is attached to it.
+#' @section Item-fit probabilities:
+#' The item-trait chi-square supplies the principal inferential test of
+#' invariance over class intervals. The class-interval ANOVA is a conventional
+#' residual diagnostic whose F reference is approximate. Its probability can
+#' be anti-conservative in short tests because each response contributes
+#' appreciably to the person grouping used to test that item. The same issue
+#' can affect the item-trait probability when fewer than about ten responses
+#' locate each person. In short administrations, read the statistics with the
+#' characteristic curve and residual fit rather than as stand-alone decisions.
+#' @return An object of class \code{"rasch"}. Its principal components are
+#'   the item summary, threshold table, person table, score table, residuals,
+#'   reliability, targeting, item-trait statistics, threshold diagnostics,
+#'   and estimation details. The component \code{summary_stats} contains the
+#'   distribution summaries, fit-location correlations, and the cell
+#'   degrees-of-freedom factor. The item summary carries a \code{disc}
+#'   column described below.
+#' @references
+#' Rasch, G. (1960). Probabilistic Models for Some Intelligence and
+#' Attainment Tests. Copenhagen: Danish Institute for Educational Research.
+#' (Expanded edition, 1980, Chicago: University of Chicago Press.)
+#'
+#' Rasch, G. (1961). On general laws and the meaning of measurement in
+#' psychology. In Proceedings of the Fourth Berkeley Symposium on
+#' Mathematical Statistics and Probability (Vol. 4, pp. 321--333).
+#' Berkeley: University of California Press.
+#'
+#' Andrich, D. and Luo, G. (2003). Conditional pairwise estimation in the
+#' Rasch model for ordered response categories using principal components.
+#' Journal of Applied Measurement, 4(3), 205--221.
+#'
+#' Andrich, D. and Marais, I. (2019). A Course in Rasch Measurement Theory:
+#' Measuring in the Educational, Social and Health Sciences. Springer.
+#'
+#' Warm, T. A. (1989). Weighted likelihood estimation of ability in item
+#' response theory. Psychometrika, 54(3), 427--450.
+#' @seealso \code{\link{rasch_mfrm}}, \code{\link{rasch_efrm}},
+#'   \code{\link{btl}}, \code{\link{dif_anova}},
+#'   \code{\link{test_information}}, and \code{\link{run_app}}.
 #' @examples
 #' set.seed(1)
 #' d <- seq(-2, 2, length.out = 8)
@@ -186,7 +209,16 @@ rasch <- function(data, model = c("PCM", "RSM"), id = NULL, factors = NULL,
                   items = NULL, n_groups = NULL, adjust_N = NA, anchors = NULL,
                   na_codes = -1, key = NULL, pc_components = NULL,
                   maxit = 60, tol = 1e-8) {
+  .check_column_names(data)
+  n_groups_requested <- n_groups
+  # name for a factors= vector passed by value (not by column name)
+  .factors_sym <- substitute(factors)
+  .factors_label <- if (is.name(.factors_sym)) as.character(.factors_sym) else "factor"
   model <- match.arg(model)
+  # adjust_N rescales the item-trait chi-square by (reference N / classified
+  # N); a non-positive reference would zero or negate every statistic
+  if (!is.na(adjust_N) && (!is.numeric(adjust_N) || adjust_N <= 0))
+    stop("`adjust_N` must be a positive reference sample size")
   if (!is.null(pc_components)) {
     if (model != "PCM")
       stop("pc_components applies to the PCM only")
@@ -196,24 +228,101 @@ rasch <- function(data, model = c("PCM", "RSM"), id = NULL, factors = NULL,
 
   # --- split data frame into ID, factors, and item columns ---------------
   id_vec <- NULL; fac_df <- NULL
+  # a simulated dataset carries its own person identifier: use it, so the
+  # documented bare call rasch(simulate_rasch(...)) keeps person ids
+  if (inherits(data, "rasch_sim") && is.null(id) && "id" %in% names(data))
+    id <- "id"
   if (is.data.frame(data)) {
     nm <- names(data)
+    id_is_col <- is.character(id) && length(id) == 1L
     # a misspelled column name must be an error, never a silent fallback:
     # dropping it quietly produces a valid-looking analysis of the wrong data
-    if (is.character(id) && length(id) == 1L) {
+    if (id_is_col) {
       if (!id %in% nm)
         stop("id column '", id, "' not found in the data")
       id_vec <- data[[id]]
-    } else if (!is.null(id) && length(id) == nrow(data)) id_vec <- id
-    if (is.character(factors)) {
+    } else if (!is.null(id)) {
+      # a supplied id vector must line up with the data; a length mismatch
+      # (e.g. a stale upstream vector) must error, not be silently dropped
+      if (length(id) != nrow(data))
+        stop("`id` has ", length(id), " entries but the data has ",
+             nrow(data), " rows")
+      id_vec <- id
+    }
+    # Character input is ambiguous: all existing column names means the
+    # documented column-name form; a row-length character vector is a
+    # grouping vector passed by value. A short non-matching character input
+    # remains a misspelled-column error rather than silently changing modes.
+    factors_are_cols <- is.character(factors) &&
+      (length(factors) == 0L || all(factors %in% nm) ||
+         length(factors) != nrow(data))
+    factors_by_value <- !is.null(factors) && is.atomic(factors) &&
+      !factors_are_cols
+    if (factors_are_cols) {
       miss <- setdiff(factors, nm)
       if (length(miss))
         stop("factor column(s) not found in the data: ",
              paste(miss, collapse = ", "))
       fac_df <- data[, factors, drop = FALSE]
-    } else if (is.data.frame(factors) && nrow(factors) == nrow(data)) fac_df <- factors
-    drop_cols <- c(if (is.character(id)) id else NULL,
-                   if (is.character(factors)) factors else NULL)
+    } else if (is.data.frame(factors)) {
+      if (nrow(factors) != nrow(data))
+        stop("`factors` data frame has ", nrow(factors), " rows but the data ",
+             "has ", nrow(data), " rows")
+      fac_df <- factors
+    } else if (factors_by_value) {
+      # a factors= grouping vector passed by VALUE (not by column name):
+      # accept it when it lines up, rather than silently ignoring it and
+      # leaving any same-named data column to be treated as an item
+      if (!is.atomic(factors) || length(factors) != nrow(data))
+        stop("`factors` must be column name(s) in the data, a data frame ",
+             "with one row per data row, or a vector with one entry per row")
+      fac_df <- stats::setNames(data.frame(factors, stringsAsFactors = FALSE),
+                                .factors_label)
+    } else if (!is.null(factors)) {
+      stop("`factors` must be column name(s) in the data, a data frame ",
+           "with one row per data row, or a vector with one entry per row")
+    }
+    # a data column whose values are identical to a by-value factors vector
+    # is almost certainly that same variable: exclude it so it is not also
+    # scored as a numeric item
+    val_factor_cols <- if (factors_by_value)
+      nm[vapply(data, function(col)
+        length(col) == length(factors) && isTRUE(all.equal(
+          as.character(col), as.character(factors))), logical(1))] else NULL
+    val_id_cols <- if (!is.null(id) && !id_is_col)
+      nm[vapply(data, function(col)
+        length(col) == length(id) && isTRUE(all.equal(
+          as.character(col), as.character(id))), logical(1))] else NULL
+    drop_cols <- c(if (id_is_col) id else val_id_cols,
+                   if (factors_are_cols) factors else NULL,
+                   # an externally supplied factor data frame whose column
+                   # names also appear in `data` almost certainly refers to
+                   # those columns: without this they would silently become
+                   # numeric ITEMS
+                   if (is.data.frame(factors))
+                     intersect(names(factors), nm) else NULL,
+                   val_factor_cols)
+    # identifier-named columns must never be silently SCORED as items: the
+    # stacked/racked reshapes emit id/row_id/time columns, and calling
+    # rasch(stacked) without id = "id" would otherwise rescore a numeric
+    # person identifier as a many-category item with a valid-looking
+    # report. Only numeric-convertible columns can be scored, so only they
+    # are refused; character identifiers keep the old dropped-with-a-note
+    # path (they can never silently enter the item matrix).
+    ident_like <- intersect(c("id", "row_id", "time", "person"), nm)
+    ident_like <- setdiff(ident_like, c(drop_cols,
+                                        if (is.character(items)) items))
+    ident_like <- ident_like[vapply(ident_like, function(cn) {
+      v <- data[[cn]]
+      vn <- suppressWarnings(as.numeric(as.character(v)))
+      any(!is.na(vn))
+    }, logical(1))]
+    if (is.null(items) && length(ident_like))
+      stop("the data contain identifier-like column(s) not assigned a role: ",
+           paste(ident_like, collapse = ", "),
+           " -- pass them via id=/factors= and name the item columns with ",
+           "items= (for stack_data output: rasch(stacked, id = \"id\", ",
+           "factors = \"time\", items = <the item columns>)), or drop them")
     item_cols <- if (is.null(items)) setdiff(nm, drop_cols)
     else if (is.character(items)) {
       miss <- setdiff(items, nm)
@@ -222,11 +331,41 @@ rasch <- function(data, model = c("PCM", "RSM"), id = NULL, factors = NULL,
              paste(miss, collapse = ", "))
       items
     } else nm[items]
+    # an explicit items= must not silently pull in an id/factor column (a
+    # positional items = 1:k over an id-first layout would score the id as
+    # an item and drop a real one), nor name the same column twice
+    if (!is.null(items)) {
+      clash <- intersect(item_cols, drop_cols)
+      if (length(clash))
+        stop("items= includes id/factor column(s): ",
+             paste(clash, collapse = ", "),
+             " -- name only item columns, or drop them from id=/factors=")
+    }
+    dup <- item_cols[duplicated(item_cols)]
+    if (length(dup))
+      stop("item column(s) named more than once: ",
+           paste(unique(dup), collapse = ", "))
     X <- as.matrix(data[, item_cols, drop = FALSE])
   } else {
     X <- as.matrix(data)
-    if (!is.null(id) && length(id) == nrow(X)) id_vec <- id
-    if (is.data.frame(factors) && nrow(factors) == nrow(X)) fac_df <- factors
+    if (!is.null(id)) {
+      if (length(id) != nrow(X))
+        stop("`id` has ", length(id), " entries but the data has ",
+             nrow(X), " rows")
+      id_vec <- id
+    }
+    if (is.data.frame(factors)) {
+      if (nrow(factors) != nrow(X))
+        stop("`factors` data frame has ", nrow(factors), " rows but the data ",
+             "has ", nrow(X), " rows")
+      fac_df <- factors
+    } else if (!is.null(factors)) {
+      if (!is.atomic(factors) || length(factors) != nrow(X))
+        stop("`factors` must be a data frame with one row per data row, or ",
+             "a vector with one entry per row")
+      fac_df <- stats::setNames(data.frame(factors, stringsAsFactors = FALSE),
+                                .factors_label)
+    }
   }
   if (is.null(id_vec)) id_vec <- seq_len(nrow(X))
 
@@ -280,6 +419,26 @@ rasch <- function(data, model = c("PCM", "RSM"), id = NULL, factors = NULL,
   fit <- .assemble_fit(model, X, est, id_vec, fac_df, n_groups, adjust_N,
                        c(prep$notes, est$notes))
   fit$mc <- mc
+  # Keep the arguments that define the fitted model. Post-fit operations such
+  # as drop_items() must not silently change the identification, threshold
+  # parameterisation, fit grouping, or optimiser controls when they refit.
+  # Anchors are stored by item name so their meaning survives column removal.
+  anchors_named <- anchors
+  if (!is.null(anchors_named) &&
+      !(is.character(anchors_named$item) || is.factor(anchors_named$item)))
+    anchors_named$item <- colnames(X)[as.integer(anchors_named$item)]
+  key_spec <- NULL
+  if (!is.null(mc)) {
+    key_spec <- do.call(rbind, lapply(names(mc$map), function(it) {
+      data.frame(item = it, option = names(mc$map[[it]]),
+                 score = unname(mc$map[[it]]), stringsAsFactors = FALSE)
+    }))
+    rownames(key_spec) <- NULL
+  }
+  fit$refit_spec <- list(
+    model = model, n_groups = n_groups_requested, adjust_N = adjust_N,
+    anchors = anchors_named, na_codes = na_codes, key = key_spec,
+    pc_components = pc_components, maxit = maxit, tol = tol)
   fit
 }
 
@@ -306,8 +465,19 @@ rasch <- function(data, model = c("PCM", "RSM"), id = NULL, factors = NULL,
   colnames(Z) <- colnames(X)
 
   # --- fit statistics ------------------------------------------------------
-  ifit <- .item_fit(X, Z, mo, disc = if (is.null(disc)) NULL else disc_v)
-  pfit <- .person_fit(X, Z, mo, disc = if (is.null(disc)) NULL else disc_v)
+  # an item scored at its floor or ceiling by every non-extreme person has
+  # no finite location; exclude it from person fit as extreme persons are
+  # excluded from item fit
+  m_i <- if (!is.null(est$m)) est$m else apply(X, 2, max, na.rm = TRUE)
+  item_extreme <- vapply(seq_len(ncol(X)), function(j) {
+    col <- X[!person$extreme, j]
+    tot <- sum(col, na.rm = TRUE); nn <- sum(!is.na(col))
+    nn == 0 || tot == 0 || tot == nn * m_i[j]
+  }, logical(1))
+  ifit <- .item_fit(X, Z, mo, disc = if (is.null(disc)) NULL else disc_v,
+                    extreme = person$extreme)
+  pfit <- .person_fit(X, Z, mo, disc = if (is.null(disc)) NULL else disc_v,
+                      item_extreme = item_extreme)
   n_par <- if (is.null(est$n_parameters)) nrow(est$thr) - 1L else est$n_parameters
   rf <- .fitres(Z, mo, person$extreme, n_par)
   ng_req <- n_groups                       # NULL = the automatic rule
@@ -351,6 +521,8 @@ rasch <- function(data, model = c("PCM", "RSM"), id = NULL, factors = NULL,
   }, 0)
   items_df <- data.frame(item = colnames(X), max = m, location = loc,
                          se = se_loc,
+                         disc = .item_discrim(person$theta, X, tau_list,
+                                              person$extreme),
                          fit_resid = rf$items$fit_resid, df_fit = rf$items$df,
                          natural_resid = rf$items$natural,
                          infit_ms = ifit$infit_ms, outfit_ms = ifit$outfit_ms,
@@ -415,6 +587,7 @@ rasch <- function(data, model = c("PCM", "RSM"), id = NULL, factors = NULL,
                 df_factor = rf$f_cell),
               thresholds_diag = td, est = est, notes = notes,
               factors = fac_df, disc = disc)
+  out <- .tag_tables(out)
   class(out) <- "rasch"
   out
 }
@@ -423,7 +596,9 @@ rasch <- function(data, model = c("PCM", "RSM"), id = NULL, factors = NULL,
 print.rasch <- function(x, ...) {
   cat(sprintf("rasch %s analysis: %d items, %d persons\n",
               x$model, ncol(x$X), nrow(x$X)))
-  cat(sprintf("Pairwise conditional ML (Andrich & Luo): %s in %d iterations\n",
+  cat(sprintf("Pairwise conditional ML (%s): %s in %d iterations\n",
+              if (is.null(x$est$components)) "Zwinderman"
+              else "Andrich & Luo principal components",
               if (x$est$converged) "converged" else "NOT converged",
               x$est$iterations))
   cat(sprintf("PSI %.3f (no extremes %.3f), item SI %.3f, alpha %.3f%s, power of fit: %s\n",
@@ -440,20 +615,27 @@ print.rasch <- function(x, ...) {
 #' @export
 summary.rasch <- function(object, ...) {
   x <- object
+  structural <- inherits(x, c("rasch_mfrm", "rasch_efrm"))
+  unit <- if (structural) "Response-cell" else "Item"
+  units <- if (structural) "response cells" else "items"
   print(x)
-  cat(sprintf("\nTargeting: person mean %.3f (SD %.3f); thresholds span %.3f to %.3f\n",
+  cat(sprintf("\nTargeting: person mean %.3f (SD %.3f); %sthresholds span %.3f to %.3f\n",
               x$targeting$person_mean, x$targeting$person_sd,
+              if (structural) "calibration " else "",
               x$targeting$threshold_range[1], x$targeting$threshold_range[2]))
-  cat(sprintf("Item fit residual mean %.3f SD %.3f (skew %.2f, kurt %.2f); person fit residual mean %.3f SD %.3f (skew %.2f, kurt %.2f)\n",
+  cat(sprintf("%s fit residual mean %.3f SD %.3f (skew %.2f, kurt %.2f); person fit residual mean %.3f SD %.3f (skew %.2f, kurt %.2f)\n",
+              unit,
               x$item_fit_summary$mean, x$item_fit_summary$sd,
               x$item_fit_summary$skewness, x$item_fit_summary$kurtosis,
               x$person_fit_summary$mean, x$person_fit_summary$sd,
               x$person_fit_summary$skewness, x$person_fit_summary$kurtosis))
-  cat(sprintf("Fit residual-location correlation: items %.3f, persons %.3f; cell df factor %.3f\n",
+  cat(sprintf("Fit residual-location correlation: %s %.3f, persons %.3f; cell df factor %.3f\n",
+              units,
               x$summary_stats$cor_item_fit_location,
               x$summary_stats$cor_person_fit_location,
               x$summary_stats$df_factor))
-  cat(sprintf("Items with adjusted chi-square p < 0.05: %d of %d\n\n",
+  cat(sprintf("%s with Holm-adjusted chi-square p < 0.05: %d of %d\n\n",
+              if (structural) "Response cells" else "Items",
               sum(x$items$p_adj < 0.05, na.rm = TRUE), nrow(x$items)))
   core <- c("item", "max", "location", "se", "fit_resid", "infit_ms",
             "outfit_ms", "chisq", "df", "p_adj")
@@ -462,6 +644,8 @@ summary.rasch <- function(object, ...) {
       " ANOVA fit, Bonferroni probabilities)\n", sep = "")
   dis <- vapply(x$thresholds_diag, function(d) !d$ordered, TRUE) &
     vapply(x$thresholds_diag, function(d) length(d$thresholds) > 1L, TRUE)
-  if (any(dis)) cat(sprintf("\nDisordered thresholds: %s\n", paste(names(dis)[dis], collapse = ", ")))
+  if (any(dis)) cat(sprintf("\nDisordered %sthresholds: %s\n",
+                            if (structural) "response-cell " else "",
+                            paste(names(dis)[dis], collapse = ", ")))
   invisible(x)
 }

@@ -6,7 +6,11 @@ test_that("simulate_rasch plants misfit the Rasch diagnostics detect", {
   d <- simulate_rasch(600, 11, discrimination = c(rep(1, 5), 3, rep(1, 5)),
                       seed = 1)
   f <- rasch(d)
-  expect_lt(f$items$outfit_ms[6], 0.7)
+  # the over-discriminating item overfits: its outfit is the lowest and
+  # clearly below expectation (extreme persons are excluded from item fit,
+  # so the mean-square is not deflated by their boundary residuals)
+  expect_lt(f$items$outfit_ms[6], 0.75)
+  expect_equal(which.min(f$items$outfit_ms), 6L)
   expect_s3_class(d, "rasch_sim")
 
   # DIF flags the planted item and (essentially) nothing else
@@ -20,7 +24,7 @@ test_that("simulate_rasch plants misfit the Rasch diagnostics detect", {
   d <- simulate_rasch(1000, 10,
                       dependence = list(pairs = list(c("I03", "I04")),
                                         strength = 2.5), seed = 4)
-  h <- residual_correlations(rasch(d))$flagged
+  h <- residual_correlations(rasch(d), flag = 0.2)$flagged
   expect_true(any((h$item_a == "I03" & h$item_b == "I04") |
                   (h$item_a == "I04" & h$item_b == "I03")))
 
@@ -84,6 +88,23 @@ test_that("simulate_efrm plants a frame-unit ratio rasch_efrm recovers", {
   expect_output(print(d), "set-unit ratio")
 })
 
+test_that("simulate_efrm generates partial credit items on request", {
+  d <- simulate_efrm(250, 6, n_sets = 2, n_groups = 1, set_unit_ratio = 1.3,
+                     n_categories = 4, seed = 5)
+  tr <- attr(d, "truth")
+  X <- as.matrix(d[, unlist(tr$item_sets)])
+  expect_setequal(sort(unique(as.vector(X))), 0:3)
+  expect_length(tr$thresholds, ncol(X))
+  expect_true(all(vapply(tr$thresholds, length, 1L) == 3L))
+  # thresholds centre on the item locations
+  expect_equal(unname(vapply(tr$thresholds, mean, 0)),
+               unname(tr$difficulty), tolerance = 1e-10)
+  # the dichotomous draw stream is untouched by the generalisation
+  d2 <- simulate_efrm(50, 4, n_sets = 2, n_groups = 2,
+                      set_unit_ratio = 1.3, seed = 1)
+  expect_identical(sum(as.matrix(d2[, 2:9])), 402L)
+})
+
 test_that("the extra misfit types plant detectable signals", {
   # extreme response style: style persons over-use the end categories
   d <- simulate_rasch(600, 12, model = "PCM", n_categories = 4,
@@ -122,7 +143,9 @@ test_that("sim_replicate and sim_recovery support Monte Carlo and recovery", {
   expect_gt(s$correlation[s$parameter == "item difficulty"], 0.95)
   # person ability is noisier (WLE precision from only 12 items limits it)
   expect_gt(s$correlation[s$parameter == "person ability"], 0.75)
-  expect_lt(abs(s$bias[s$parameter == "item difficulty"]), 0.1)
+  # bias is not identifiable for an origin-centred location parameter, so it
+  # is reported NA rather than a structurally-zero value
+  expect_true(is.na(s$bias[s$parameter == "item difficulty"]))
   pdf(NULL); on.exit(dev.off()); expect_no_error(plot_recovery(rec))
 
   # recovery across the other layouts
@@ -166,10 +189,13 @@ test_that("audit fixes hold: PCM structure, truth honesty, recovery centring", {
   expect_false(anyNA(attr(d, "truth")$halo))
 
   # person ability is centred in recovery: an asymmetric difficulty range
-  # must not masquerade as person-ability bias
+  # must not masquerade as person-ability bias. Bias is not identifiable
+  # up to the origin, so it is reported NA; the alignment shows instead as
+  # a high correlation with no residual scale error
   d <- simulate_rasch(400, 10, difficulty = c(0, 3), seed = 2)
   r <- sim_recovery(rasch(d), d)
-  expect_lt(abs(r$summary$bias[r$summary$parameter == "person ability"]), 0.1)
+  expect_true(is.na(r$summary$bias[r$summary$parameter == "person ability"]))
+  expect_gt(r$summary$correlation[r$summary$parameter == "person ability"], 0.75)
   # MFRM recovery reports item difficulties from the item margins
   d <- simulate_mfrm(60, 5, 5, seed = 1)
   mf <- rasch_mfrm(d, person = "person", item = "item", score = "score",
@@ -216,4 +242,18 @@ test_that("btl_dimensionality reference honours fitted dependence effects", {
     isTRUE(btl_dimensionality(bt, reps = 50)$leading_structured)
   }, TRUE)
   expect_lte(sum(flags), 1L)   # was ~36% false-positive before the fix
+})
+
+test_that("a seeded simulator call leaves the caller's RNG stream alone", {
+  set.seed(99); before <- runif(3)
+  set.seed(99); invisible(simulate_rasch(60, 5, seed = 7)); after <- runif(3)
+  expect_equal(before, after)                     # stream not commandeered
+  expect_identical(simulate_rasch(60, 5, seed = 7)$I01,
+                   simulate_rasch(60, 5, seed = 7)$I01)   # still reproducible
+  # and an absent stream is left absent rather than seeded behind the caller
+  if (exists(".Random.seed", envir = globalenv(), inherits = FALSE))
+    rm(".Random.seed", envir = globalenv())
+  invisible(simulate_btl(n_objects = 4, n_judges = 3, reps_per_pair = 2,
+                         seed = 3))
+  expect_false(exists(".Random.seed", envir = globalenv(), inherits = FALSE))
 })

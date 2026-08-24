@@ -4,10 +4,17 @@
 \alias{tailored_analysis}
 \title{Tailored analysis for guessing}
 \usage{
-tailored_analysis(fit, chance = 0.25, anchor_items = NULL)
+tailored_analysis(
+  fit,
+  chance = 0.25,
+  anchor_items = NULL,
+  se_method = c("none", "bootstrap"),
+  boot_reps = 999L
+)
 }
 \arguments{
-\item{fit}{A dichotomous fit from \code{\link{rasch}}.}
+\item{fit}{An unanchored, unconstrained dichotomous fit from
+\code{\link{rasch}}. The procedure estimates its own common origin.}
 
 \item{chance}{The guessing floor: the probability of success by chance
 (1/number of options; default 0.25).}
@@ -17,13 +24,29 @@ step 3. The default takes the third of the test (at least two items)
 least affected by tailoring -- fewest responses removed, ties broken
 towards the easier tailored location -- which are the easy items the
 procedure trusts.}
+
+\item{se_method}{\code{"none"} (default) reports the item shifts
+descriptively. \code{"bootstrap"} resamples persons and repeats the
+complete four-step procedure, including automatic anchor selection, to
+obtain standard errors, percentile intervals, and Holm-adjusted tests.
+When a person identifier occurs on several rows, all of that person's
+rows are resampled together.}
+
+\item{boot_reps}{Person-bootstrap replicates when
+\code{se_method = "bootstrap"}; at least 50, default 999. The
+sign-count bootstrap p-value has resolution floor \code{2/(boot_reps
++ 1)}, so after the Holm adjustment across m items the smallest
+achievable adjusted p is \code{2m/(boot_reps + 1)}; a warning fires
+when that floor exceeds 0.05 (detection would be impossible).}
 }
 \value{
 A list of class \code{"rasch_tailored"}: \code{tailored},
   \code{origin_equated}, and \code{anchored} fits, the comparison
   \code{table} (initial, tailored, origin-equated locations, the
-  tailored-minus-equated \code{shift}, and its \code{z}), the number of
-  responses removed, and the anchor items used.
+  tailored-minus-equated \code{shift}; bootstrap uncertainty columns when
+  requested), the number of
+  responses removed, the anchor items used, \code{se_method}, and the
+  number of usable bootstrap replicates \code{boot_reps_used}.
 }
 \description{
 Runs the four-step tailored procedure of Andrich, Marais and Humphry
