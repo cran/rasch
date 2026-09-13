@@ -10,11 +10,18 @@ dimensionality_test(
   items_positive = NULL,
   items_negative = NULL,
   component = 1,
-  min_score_points = 15L
+  min_score_points = 15L,
+  B = 0,
+  workers = 4L,
+  seed = NULL
 )
 }
 \arguments{
-\item{fit}{A fitted object from \code{\link{rasch}}.}
+\item{fit}{A fitted object from \code{\link{rasch}} with one response row
+per person. Repeated identifiers are refused because the person-level
+comparisons and their binomial count would not be independent.
+Fully anchored scoring fits require \code{B = 0}; bootstrap refitting is
+not supported for these fits.}
 
 \item{alpha}{Nominal significance level for the per-person t-tests.}
 
@@ -29,27 +36,51 @@ component.}
 \item{min_score_points}{Score-point threshold below which the verdict
 carries a caution. Andrich and Marais (2019) recommend subtests of
 roughly 15 score points for stable subtest estimates; shorter subsets
-(the norm for ordinary dichotomous tests) still receive a verdict, with
-a \code{caution} field noting the reduced stability. A quiet verdict
+(the norm for ordinary dichotomous tests) retain the analysis, with a
+\code{caution} field noting the reduced stability. A quiet verdict
 under caution is inconclusive, not clean: with a four-item subtest the
-test lacks power where nonparametric alternatives still flag. The
-procedure is deliberately conservative -- in cross-package comparison
-it held an exact null (no false flags) while flagging a balanced
-planted second dimension in about two-thirds of replicates where the
-DETECT index flagged all; quasi-exact matrix-sampling tests showed
-elevated null rates on the same data.}
+test lacks power where nonparametric alternatives still flag.}
+
+\item{B}{Number of parametric-bootstrap replicates that calibrate the
+proportion of significant tests under the fitted model (see Details).
+The default \code{0} reports the binomial interval and descriptive
+reading alone; neither split then has an inferential verdict. Each
+replicate refits the calibration, so \code{B = 200} costs about two hundred
+fits; the bootstrap is available for single-facet fits with a common
+unit whose thresholds were estimated directly.}
+
+\item{workers}{Number of parallel workers for the bootstrap refits.}
+
+\item{seed}{Optional integer seed for the bootstrap; the replicates are
+reproducible for a given seed whatever the worker count. The bootstrap
+does not support Box--Muller, including when \code{seed = NULL};
+see \code{\link{rasch_rng}}.}
 }
 \value{
-A list with the proportion of significant tests, its exact
-  confidence interval, the sample sizes (\code{n} used,
+A list with the proportion of significant tests, its
+  Clopper--Pearson confidence interval, the sample sizes (\code{n} used,
   \code{n_excluded_extreme}), the item split and its source, a
-  \code{multidimensional} verdict, a \code{caution} note when the
-  subtests fall short of \code{min_score_points}, and \code{paired_t},
-  the paired t-test of the two subset means (the group-level comparison,
-  which requires pairing because both estimates come from the same
-  persons). When the comparison itself is unavailable (undefined split,
-  degenerate subsets, too few persons) the list carries a \code{note}
-  explaining why and \code{multidimensional = NA}.
+  \code{multidimensional} verdict, the corresponding uncalibrated
+  \code{binomial_multidimensional} reading, a \code{caution} note when the
+  subtests fall short of \code{min_score_points}, and
+  \code{subset_mean_difference}, the mean and standard deviation of the
+  person-level differences between the two subset estimates, reported
+  descriptively with the \code{note} that no test accompanies them (see
+  Details). With \code{B > 0} the list also carries \code{p_boot}, the
+  bootstrap probability of a proportion at least as large as the observed
+  one under the fitted unidimensional model; \code{prop_null}, the mean
+  replicate proportion (the rate the split produces when nothing is
+  there); \code{bootstrap_resolution}, the smallest attainable bootstrap
+  probability; and \code{bootstrap}, the replicate proportions with the
+  counts requested, used, non-converged and failed. When the comparison
+  itself is unavailable (undefined split, degenerate subsets, too few
+  persons) the list carries a \code{note} explaining why and
+  \code{multidimensional = NA}. Every result carries \code{algorithm},
+  the stamp of the calculation that produced it; a saved result without
+  the current stamp used a superseded mean or binomial reference. An
+  analysis file carrying one opens with that result dropped and a warning,
+  and the rest of the analysis intact. \code{verdict_note} explains why a
+  descriptive comparison has no inferential verdict.
 }
 \description{
 Estimates each person separately on two item subsets and compares the two
@@ -63,20 +94,66 @@ independent given the person location, so
 standard normal and about \code{alpha} of the tests should reach
 significance. Persons with an extreme score on either subset are excluded
 (their weighted-likelihood estimates are most biased there). The
-proportion of significant tests is reported with an exact
-(Clopper-Pearson) binomial confidence interval; a lower bound above
-\code{alpha} signals multidimensionality. The test requires a converged
-calibration.
+proportion of significant tests is reported with a Clopper--Pearson
+binomial confidence interval. The interval describes the observed
+proportion; it is not a calibrated test of dimensionality. The
+test requires a converged calibration and one response row per person.
+}
+\details{
+The binomial reference assumes a per-person null rejection rate of
+\code{alpha}. Unequal targeting and short-subset estimation bias can
+violate that assumption even for a split fixed in advance. A split chosen
+from the residuals is chosen to make the two subsets disagree, so its
+proportion runs above \code{alpha} under unidimensionality. Package
+simulations confirmed that applying the fixed-split binomial rule after
+choosing the split from the same residuals is anti-conservative. Without
+bootstrap calibration neither split therefore has a binary verdict:
+\code{multidimensional} is \code{NA}, while the interval and uncalibrated
+binomial reading remain available descriptively.
+\code{B > 0} supplies a model-based reference for either split:
+each replicate draws responses from the fitted model conditional on every
+person's raw score and missingness pattern, refits the calibration,
+retains a fixed split or repeats a residual-component split on its own
+residuals and recomputes
+the proportion, so the bootstrap probability \code{p_boot} carries the
+same selection the observed proportion carries. With \code{B > 0} the
+verdict is \code{p_boot <= alpha}; the binomial interval is still reported,
+as a description of the observed proportion rather than a test of it.
+A one-sided bootstrap probability cannot be smaller than
+\code{1/(B_used + 1)}. If that floor exceeds \code{alpha}, the bootstrap
+has no rejection region and the verdict is withheld for either split.
+
+The mean difference between the two subset estimates is reported but not
+tested. Each subset estimate is a weighted-likelihood estimate on a short
+test, and the two subsets differ in difficulty, so their estimation bias
+differs systematically: under a perfectly unidimensional Rasch model the
+expected difference is non-zero whenever the subsets are not matched in
+targeting, and it grows relative to its standard error with the number of
+persons. A t-test of that difference therefore tests the targeting of the
+split rather than its dimensionality -- it rejects for every sample large
+enough on unidimensional data -- so the difference is reported as a
+description of the split and the inference is withheld. The person-level
+comparisons also carry this bias; their proportion needs the bootstrap
+reference before it can support a dimensionality verdict.
 }
 \examples{
 set.seed(1)
 d <- seq(-2, 2, length.out = 8)
-X <- matrix(rbinom(500 * 8, 1, plogis(outer(rnorm(500), d, "-"))), 500, 8)
+X <- matrix(rbinom(300 * 8, 1, plogis(outer(rnorm(300), d, "-"))), 300, 8)
 colnames(X) <- paste0("I", 1:8)
-dimensionality_test(rasch(X))$multidimensional
+dimensionality_test(
+  rasch(X), items_positive = paste0("I", 1:4),
+  items_negative = paste0("I", 5:8))$multidimensional
+\dontrun{
+# A longer run calibrates the data-driven split under the fitted model.
+dimensionality_test(rasch(X), B = 99, workers = 1, seed = 1)$p_boot
+}
 }
 \references{
 Smith, E. V. Jr. (2002). Detecting and evaluating the impact of
 multidimensionality using item fit statistics and principal component
 analysis of residuals. Journal of Applied Measurement, 3(2), 205--231.
+
+Tennant, A., & Pallant, J. F. (2006). Unidimensionality matters! (A tale
+of two Smiths?). Rasch Measurement Transactions, 20(1), 1048--1051.
 }

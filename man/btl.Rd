@@ -27,24 +27,29 @@ btl(
 \item{data}{A data frame with one comparison per row.}
 
 \item{object_a, object_b}{Names of the columns holding the two objects
-compared.}
+compared. Columns used for the comparison roles must be distinct.}
 
 \item{winner}{Name of the column holding the winner of each row: its
 value must equal one of the two objects. \code{"tie"} and \code{"draw"}
-mark ties. Ignored when \code{response} is supplied.}
+mark ties. Do not supply both \code{winner} and \code{response}.}
 
 \item{response}{Optional ordered response favouring \code{object_a} over
 \code{object_b}: an ordered factor from least to greatest preference for
 \code{object_a}, or integer scores \code{0..m}.}
 
 \item{margin}{Optional ordered margin-of-victory column, combined with
-\code{winner} to construct an orientation-invariant response.}
+\code{winner} to construct an orientation-invariant response. Use an
+ordered factor (levels from the smallest to largest margin) or a positive
+numeric magnitude. Margins on ties and rows excluded from the analysis
+are ignored.}
 
 \item{judge}{Optional name of a judge column; enables the judge fit
 table and clusters the sandwich standard errors by judge.}
 
 \item{count}{Optional name of a column of replication counts (a row
-standing for several identical comparisons).}
+standing for several identical comparisons). Counts greater than one
+cannot be combined with \code{order}, because a compressed row does not
+retain the sequence of the comparisons it represents.}
 
 \item{order}{Optional column giving each judge's comparison sequence;
 requires \code{judge}. See Details. Incompatible with
@@ -54,12 +59,16 @@ requires \code{judge}. See Details. Incompatible with
 treating \code{object_a} as the first object in each comparison.}
 
 \item{anchors}{Optional named numeric vector of fixed object locations.
-Anchored objects have standard error zero and must not be boundary objects.}
+Anchored objects have standard error zero and must not be boundary objects.
+The values are treated as fixed: uncertainty from an earlier calibration
+is not included in the returned covariance or standard errors. Several
+anchors impose their stated relative spacing as well as the scale origin.}
 
 \item{ties}{How to treat ties in the dichotomous analysis:
 \code{"drop"} (default, removed with a note), \code{"half"} (half a
-win each way, a common pragmatic device -- flagged in the notes
-because the halves are not independent Bernoulli trials), or
+win each way, a common pragmatic device; the two halves remain one
+sampling unit in the sandwich because they are not independent
+Bernoulli trials), or
 \code{"error"}. With polytomous responses, code ties as a middle
 category instead.}
 
@@ -77,7 +86,20 @@ A \code{"rasch_btl"} object. Principal components are
   \code{osi}, \code{loglik}, composite-likelihood information \code{cl},
   convergence details, and \code{notes}. Ordered-response fits also contain
   \code{thresholds}, \code{m}, and \code{categories}. Fits using
-  \code{order} contain \code{dependence} and \code{dependence_data}.
+  \code{order} contain \code{dependence} and \code{dependence_data}; the
+  former reports raw \code{p} and Holm-adjusted \code{p_adj}.
+  A non-converged fit retains estimates and residual patterns for diagnosis
+  but withholds standard errors, separation indices and probabilities.
+  \code{comparisons} contains the rows used by the fitted likelihood;
+  \code{observed_comparisons} retains all otherwise usable rows before
+  free boundary objects are set aside, for observed-data descriptions such
+  as transitivity.
+  An undefeated or winless object is set aside from estimation, as an
+  extreme person is in a Rasch calibration, and reported in
+  \code{objects} with \code{extreme = TRUE} at an extrapolated location:
+  the profile solution with its score moved half a point inside the
+  boundary against the calibrated scale. Its standard error and fit are
+  withheld and the row takes no part in inference or equating.
 }
 \description{
 Fits the Bradley--Terry--Luce model to dichotomous comparisons or its
@@ -100,12 +122,18 @@ graph must be strongly connected for all free locations to be finite
 (Ford 1957). Boundary objects are removed when this leaves an identified
 model; otherwise fitting stops.
 
-Standard errors use the Godambe sandwich covariance. When \code{judge} is
-supplied, the covariance is clustered by judge. Clustered inference is
-withheld when there are fewer than ten judges, fewer than eight effective
-judges, or no residual cluster degrees of freedom. A caution is attached
+Standard errors use the Godambe sandwich covariance. Inference is withheld
+if the empirical sampling-unit score covariance does not identify every
+fitted direction. When \code{judge} is supplied, the covariance is
+clustered by judge and inference is also withheld when there are fewer
+than ten judges, fewer than eight effective judges, or no residual cluster
+degrees of freedom. A caution is attached
 when the effective count is below 9.5 or one judge supplies more than 20
 per cent of the comparisons.
+The pairwise chi-square remains descriptive when judges are identified
+because its row-based chi-square reference does not model within-judge
+dependence. \code{\link{fit_bootstrap}} supplies a parametric calibration
+under the fitted response model.
 
 Dichotomous data may be supplied as a winner, with ties dropped or divided
 equally between the two outcomes. Ordered data may instead be supplied
@@ -117,10 +145,14 @@ retains the symmetric spread component, which can stabilise thin categories.
 If comparison order is supplied, exposure and carry-over effects are
 estimated from each judge's preceding comparisons. The \code{position}
 term estimates a first-presentation effect. These coefficients enter the
-model jointly with the object locations and are reported in logits. The
-carry-over estimate and clustered SE remain descriptive below 30 judges;
+model jointly with the object locations and are reported in logits. They
+are refused when the comparison design confounds them exactly with the
+object-location contrasts. The carry-over estimate and clustered SE
+remain descriptive below 30 judges;
 its probability is withheld because null calibration is mildly
-anti-conservative at smaller judge counts.
+anti-conservative at smaller judge counts. Raw probabilities are retained,
+but simultaneous decisions across the fitted dependence effects use Holm's
+familywise adjustment in \code{dependence$p_adj}.
 Anchors fix nominated object locations and replace the sum-zero origin.
 }
 \examples{

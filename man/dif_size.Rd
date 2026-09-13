@@ -25,25 +25,37 @@ split refit would discard their frame units.}
 names give interaction cells), or a grouping vector/data frame with
 one entry per person.}
 
-\item{p_adjust}{Familywise adjustment over the pairwise comparisons;
-default \code{"holm"}.}
+\item{p_adjust}{Adjustment over the pairwise comparisons. The default
+\code{"holm"} controls familywise error; use \code{"BH"} only for
+false-discovery-rate screening. \code{"none"} leaves probabilities
+unadjusted.}
 
 \item{alpha}{Significance level for the adjusted probabilities.}
 
 \item{flag_logits}{Absolute difference flagged as practically
 significant.}
 
-\item{min_n}{Levels with fewer responders to the item are dropped (their
-resolved locations would be too unstable to compare), with a note.}
+\item{min_n}{Levels with fewer distinct responders to the item are dropped
+(their resolved locations would be too unstable to compare), with a note.
+When identifiers repeat, response rows from one person count once within
+each level.}
 }
 \value{
 A list of class \code{"rasch_dif_size"}. \code{levels} contains
   the resolved location, standard error and sample size for each level.
-  \code{pairs} contains logit differences, Wald statistics, confidence
-  intervals, raw and adjusted probabilities, and practical flags. For
-  dichotomous items it also contains \code{ets}; for polytomous items it
-  contains the descriptive \code{signed_area}. Sampling-uncertainty fields
-  are \code{NA} when person identifiers repeat.
+  \code{pairs} contains logit differences, Wald \code{t} statistics,
+  confidence intervals, raw and adjusted probabilities, and practical
+  flags. For
+  dichotomous items it also contains \code{ets}, together with the raw and
+  adjusted probabilities for exceeding the ETS A boundary; for polytomous
+  items it contains the descriptive \code{signed_area}.
+  \code{df} gives the reference degrees of freedom: infinite for independent
+  response rows and the independent person-cluster count minus one for a
+  supported repeated-person calibration.
+  Sampling-uncertainty fields are \code{NA} when the resolved-location
+  covariance cannot support Wald inference.
+  The ETS category is also \code{NA} if a probability needed to classify
+  the contrast is unavailable or its standard error is zero.
 }
 \description{
 Resolves an item by one or more person factors and compares the resulting
@@ -61,24 +73,29 @@ standard error are
 \sqrt{\mathbf{c}_{ab}^{\mathsf T}\mathbf{V}_i
 \mathbf{c}_{ab}},}
 where \eqn{\mathbf{V}_i} is the full covariance of the resolved
-locations. Wald probabilities are adjusted over the pairwise family.
+locations. Wald probabilities are adjusted over the pairwise family. A
+comparison with withheld inference remains in that declared family.
 
-With repeated person identifiers, the row-level calibration covariance does
-not represent within-person sampling dependence. Logit differences and
-practical flags are retained, but their standard errors and Wald tests are
-withheld. Use \code{\link{dif_contrasts}} for person-level inference in a
-repeated-measures design.
+When person identifiers repeat, the resolved-location covariance uses the
+person-clustered calibration sandwich and a t reference with the number of
+independent person clusters minus one degree of freedom. The same reference
+is used for confidence intervals and the ETS interval-null probability.
+This permits inference for the logit difference while allowing response
+rows from the same person to be dependent. For a planned within-person
+question, \code{\link{dif_contrasts}}
+remains preferable because it tests the nominated contrast directly from
+person-level residual contrasts. Inference is withheld if the resolved-
+location covariance is unavailable or not positive semidefinite.
 }
 \section{Magnitude conventions}{
 
 For dichotomous items, \code{ets} applies the ETS A, B and C rules to the
 itemwise comparison. On the logit scale the magnitude cut-points are
 \eqn{1/2.35=0.426} and \eqn{1.5/2.35=0.638}. Category A also includes an
-itemwise test that is not significant. Category C requires a magnitude of
+adjusted test that is not significant. Category C requires a magnitude of
 at least 0.638 and rejection of the interval null
-\eqn{|\Delta|\leq 0.426}; B is the remainder. The category uses the raw
-itemwise probability, while \code{significant} uses \code{p_adjust} over
-the requested pairwise family.
+\eqn{|\Delta|\leq 0.426}; B is the remainder. Both probabilities are
+adjusted by \code{p_adjust} over the requested pairwise family.
 
 For a partial credit item with \eqn{m_i} thresholds, the signed area
 between the two expected-score curves has the closed form

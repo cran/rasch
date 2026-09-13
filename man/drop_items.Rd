@@ -19,7 +19,8 @@ the fitted specification; a number overrides it.}
 }
 \value{
 A refitted object of the same class as \code{fit}, carrying a note
-  recording which items were dropped.
+  recording which items were dropped. Split-item provenance is retained for
+  the items that remain.
 }
 \description{
 Removes named items and refits the analysis with the same model
@@ -30,8 +31,13 @@ The refit retains person identifiers and factors, class-interval settings,
 optimisation controls, anchors, multiple-choice scoring and PCM component
 constraints. An EFRM refit also retains the item-set and crossed-frame
 design, linking controls and uncertainty method. The operation is refused
-if it would remove every anchor, empty an item set or leave the model
-unidentified.
+if it would remove an externally anchored item, empty an item set or leave
+the model unidentified. To change the anchor set, refit explicitly; this
+prevents an item-removal comparison from silently changing its scale.
+Older anchored or component-constrained fits without their original refit
+settings must first be refitted from the source data.
+A refit is also refused if it drops or rescores a retained item because a
+response category no longer contributes conditional information.
 
 Item removal changes both the item calibration and the person estimates.
 For an EFRM it can also change the estimated frame units. Compare the

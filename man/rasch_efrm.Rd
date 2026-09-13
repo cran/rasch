@@ -12,7 +12,6 @@ rasch_efrm(
   factors = NULL,
   items = NULL,
   n_groups = NULL,
-  adjust_N = NA,
   na_codes = -1,
   maxit = 50,
   tol = 1e-07,
@@ -30,7 +29,8 @@ rasch_efrm(
 \code{\link{rasch}}), plus a person-group column.}
 
 \item{item_sets}{A named list mapping set names to item-column names, or
-a named character vector mapping item names to set names. Items not
+a named character vector mapping every analysed item exactly once to a
+set. The vector cannot name items outside the analysis. Items not
 mentioned form their own set \code{"(rest)"} when a list is given.}
 
 \item{groups}{Name of the person-group column in \code{data}, or a vector
@@ -38,14 +38,19 @@ with one entry per person.
 Several columns define crossed group cells. Their units are returned in
 \code{phi_table}; \code{phi_factorial} and
 \code{phi_factorial_tests} contain the GLS factorial decomposition and
-omnibus Wald tests. Structurally unidentified units are refused. Very
+omnibus Wald tests, each referred to \eqn{F(q, B-q)} when the cell-unit
+covariance came from the full bootstrap and to \eqn{\chi^2(q)} when it
+is analytic. Raw probabilities are retained in \code{p}; decisions
+use \code{p_adj}, Holm-adjusted across the factorial terms. Structurally
+unidentified units are refused. Very
 imprecise but identified units are retained with a warning.}
 
 \item{id}{Person identifier, either a column name or one value per row.
 EFRM data require one response row per person, so identifiers must be
-unique.}
+unique when supplied. Missing or blank identifiers are treated as
+different unknown persons.}
 
-\item{factors, items, n_groups, adjust_N, na_codes}{As in \code{\link{rasch}}.}
+\item{factors, items, n_groups, na_codes}{As in \code{\link{rasch}}.}
 
 \item{maxit, tol}{Outer iteration cap and convergence tolerance of the
 bilinear pairwise stage.}
@@ -58,8 +63,17 @@ propagation; default) or \code{"bootstrap"} (full person
 bootstrap of all stages).}
 
 \item{boot_reps}{Bootstrap replicates; defaults to 300 for the linking
-bootstrap and 200 for the full bootstrap. Use zero to omit unit
-uncertainty; otherwise at least 30 are required.}
+bootstrap and 200 for the full bootstrap. Use zero to omit set-link
+uncertainty; in a multi-set fit, common-unit item and threshold standard
+errors are then unavailable. Otherwise at least 30 replicates are
+required. A bootstrap covariance is reported only when more than half of
+the requested replicates are usable.
+Inference is returned only when at least 30 replicates succeed, a
+majority of those requested, and the requested count exceeds the number
+of independent directions in the largest covariance block used by the
+fit. The fit stops if the linking covariance cannot meet that rule; an
+unsuccessful full bootstrap falls back to hybrid standard errors with a
+warning and retains its replicate accounting.}
 
 \item{progress}{Optional function called as \code{progress(stage, current,
 total)} during long uncertainty calculations. It is intended for
@@ -76,16 +90,41 @@ a fixed seed gives the same result for any worker count. Every worker
 holds its own copy of the bootstrap state.}
 
 \item{seed}{Optional bootstrap seed. The caller's random-number state is
-restored when estimation finishes.}
+restored when estimation finishes; see \code{\link{rasch_rng}} for
+generator support.}
 }
 \value{
 An object of classes \code{"rasch_efrm"} and \code{"rasch"}.
   Model-specific components include \code{frames}, \code{phi_table},
   \code{alpha_table}, \code{set_table}, common-unit item and threshold
-  tables, group-specific \code{score_curves}, \code{efrm_vs_rasch}, and
-  \code{linking}, and the person support used for unit inference in
-  \code{unit_support}. See the extended frame of reference vignette for
-  their interpretation.
+  tables, group-specific \code{score_curves} (expected weighted sufficient
+  score and conditional standard error by person location and exact
+  observed-item pattern, one row block per design and labelled as in
+  \code{\link{test_information}}), \code{efrm_vs_rasch}, and
+  \code{linking}, the person support used for unit inference in
+  \code{unit_support}, and the active covariance blocks in
+  \code{unit_cov}. For a full-bootstrap fit, all blocks in
+  \code{unit_cov} are calculated from the same usable person resamples;
+  otherwise they are the analytic within-frame and, when requested, hybrid
+  linking covariances used by the reported tests. With several item sets
+  and \code{boot_reps = 0}, \code{cov_delta} and the corresponding
+  common-unit standard errors are unavailable because set-link uncertainty
+  has not been estimated. The requested, usable and failed
+  uncertainty
+  replicates used by the returned uncertainty method are reported as
+  \code{boot_reps_requested}, \code{boot_reps_used} and
+  \code{boot_reps_failed}; the hybrid set-link counts are repeated inside
+  \code{linking}. When a full bootstrap was requested, its requested,
+  attempted, usable and failed counts are retained separately in the
+  corresponding \code{full_boot_reps_*} components, including when the fit
+  falls back to hybrid standard errors. See the extended frame of reference
+  vignette for their interpretation. If the within-frame calibration does
+  not converge, its covariance blocks, standard errors and all later
+  inferential probabilities are withheld. Failure of only a set link does
+  not invalidate the already
+  converged within-frame calibration or group-unit estimates, but
+  common-unit item, frame and person uncertainty is withheld because it
+  depends on that link, including the standard errors in \code{score_curves}.
 }
 \description{
 Fits Humphry's extended frame of reference model, in which the unit can
@@ -99,11 +138,25 @@ differ across item-set by person-group frames. For item \eqn{i} in set
 }
 \details{
 The partial credit model holds within each frame in its natural unit.
-Person-group units \eqn{\phi_g} are identified from common item thresholds
-across groups. Item sets partition the items, so set units \eqn{\alpha_s}
-are identified instead from persons observed in more than one set. The
+\eqn{\phi_g} and \eqn{\alpha_s} are unit \emph{ratios} in the sense of
+Humphry and Andrich (2008, eq. 15): each is the common reference unit over
+the frame's own unit. The identification constraints set the geometric mean
+of the group units and of the set units to one; no observed group or set is
+the reference level. A value above one therefore denotes a finer natural
+unit than the corresponding geometric-mean unit and steeper curves on the
+common scale. Ratios between two observed levels are obtained directly, for
+example as \eqn{\alpha_s/\alpha_t}.
+Person-group ratios \eqn{\phi_g} are identified from common item
+thresholds across groups. Item sets partition the items, so set ratios
+\eqn{\alpha_s} are identified instead from persons observed in more than
+one set. The
 set-linking graph and the group-by-set frame graph must each connect to a
-common scale.
+common scale. Direct overlap between every pair of item sets is not
+required: sets can be linked through intermediate sets. Pairs without
+enough informative common persons contribute no edge; the remaining
+graph must still connect all sets. A bootstrap replicate is unusable if
+any supported link fails numerically or does not converge, even when
+other links still connect the sets.
 
 Set units use a semiparametric likelihood for persons observed in each
 linked pair of sets. For sets \eqn{a} and \eqn{b}, it maximises
@@ -111,6 +164,15 @@ linked pair of sets. For sets \eqn{a} and \eqn{b}, it maximises
 where the masses of each observed group's \eqn{F_g}, the scale ratio
 \eqn{r} and the offset \eqn{c} are estimated jointly on a fixed grid. This
 avoids prescribing a normal or common person distribution across groups.
+A link whose scale or offset reaches the numerical search boundary is
+refused rather than reported as a finite estimate. So is a link whose
+grid truncates the person distribution: persons with a finite location
+in at least one set may place no more than two per cent of their
+posterior mass on the ends of the grid. Persons at the same extreme tail
+in both sets remain in the likelihood but do not count towards this check
+or the link's inferential support; their likelihood rises towards one end
+of any finite grid and carries no information about the link. Opposing
+extremes retain a finite compromise location and do contribute.
 The conditional thresholds and group units are held fixed in this step;
 only \eqn{r}, \eqn{c}, and the nuisance masses are estimated. The linked
 parameters are then
@@ -119,24 +181,67 @@ parameters are then
 Score moments supply starting values and screen weak links. Response
 patterns must span a score range of at least four within a set. Overlapping
 item sets are not permitted. The public
-convergence flag covers both estimation stages; \code{stage1_converged}
-records the conditional stage separately.
+convergence flag covers the conditional calibration, the set-link
+transformation and its nonparametric nuisance masses;
+\code{stage1_converged} records the conditional stage separately.
+The conditional stage requires a small score and negative curvature of the
+exact likelihood Hessian in all free directions. A stationary point with
+flat or positive curvature is refused, including in bootstrap refits.
+This checks an identified local maximum, not a global maximum.
+
+The empirical Godambe covariance from the conditional stage requires at
+least ten informative persons, at least eight effective persons, more
+effective persons than fitted stage-one directions, and full rank in the
+projected score covariance. If these conditions fail, point estimates can
+be returned with \code{boot_reps = 0}, but unit uncertainty is withheld.
+A hybrid or full-bootstrap fit is refused because its linking and unit
+covariance would otherwise inherit an unsupported stage-one covariance.
 
 The hybrid covariance combines the pairwise Godambe covariance with a
 person bootstrap for set linking. Each replicate jointly redraws the
 within-frame thresholds and group units, then rebuilds the link. The joint
 draws retain covariance among common-scale thresholds, set units and group
 units. With \code{se_method = "bootstrap"}, the complete model is refitted
-to each person resample.
+to each person resample. Refits that do not converge or have unidentified
+group units are discarded and counted as failed replicates.
 
 The \code{efrm_vs_rasch} component records the within-frame composite
 log-likelihood comparison between group-dependent and equal group units.
 This difference is descriptive and contains no information about set units,
 which are identified at the linking stage. The accompanying Wald omnibus
-tests provide inference for the group- and set-unit families. Unit estimates
+tests provide inference for the group- and set-unit families. Their
+probabilities are Holm-adjusted as one omnibus family; the individual
+unit contrasts form a second Holm-adjusted follow-up family. Each family
+counts the distinct hypotheses it declares, available or not: the units
+are centred, so with two groups (or two sets) the two reported rows are
+one hypothesis stated twice and count once, as the omnibus rank already
+does. The second row of such a pair keeps its estimate and unadjusted
+probability, but its adjusted probability and flag are withheld, so one
+difference is not reported as two deviating units. Beyond two groups (or
+two sets) no two reported rows are the same hypothesis, so each stays a
+member: that family is then one larger than its free dimension, which
+leaves the adjustment conservative rather than liberal. A bootstrap standard
+error is a standard deviation over the retained replicates, so its
+contrast is referred to \eqn{t(B-1)}; an analytic standard error keeps
+the normal reference. The reference is reported as \code{df}. An omnibus
+Wald test on an estimated (bootstrap) covariance is referred to
+\eqn{F(q, B-q)} on the same grounds, reported as \code{df}, \code{df2}
+and \code{f}, so that a one-dimensional omnibus and its unit contrast
+report the same probability; an analytic covariance keeps the chi-square
+reference. This holds for every omnibus Wald test the fit reports,
+including the crossed group-unit decomposition in
+\code{phi_factorial_tests}, so one printed fit never refers two tests on
+the same draws to two different references. Unit estimates
 are retained for sparse designs, but probabilities require at least 50
-persons or effective persons in every group and at least 50 common persons
-on every set-link edge.
+persons or effective persons in every group. Set-unit inference requires
+at least 50 informative common persons on the strongest bottleneck path
+from every set to the first set, which is used only as the support graph's
+bookkeeping root. Thus a weak upstream link limits a terminal set, while a
+weak redundant edge does not suppress a stronger route.
+Group-unit and dependent set-unit probabilities are withheld when any
+group unit has a reported standard error above 5 log units. The estimates
+and covariance remain descriptive. This check uses the returned uncertainty
+method, including the full bootstrap when available.
 
 The model assumes that an item retains its location and discrimination
 across the frames in which it appears, apart from the frame unit.

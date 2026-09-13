@@ -23,13 +23,17 @@ simulate_mfrm(
 
 \item{n_categories}{Rating categories.}
 
-\item{theta_sd, item_sd}{Spread of person ability and item difficulty.}
+\item{theta_sd}{Realised sample standard deviation of person ability.}
 
-\item{rater_severity_sd}{Spread of rater severities (the core facet;
-recovered in \code{facet_effects}).}
+\item{item_sd}{Realised sample standard deviation of the deterministic item
+difficulties; zero gives equal item difficulties.}
+
+\item{rater_severity_sd}{Realised sample standard deviation of rater
+severities (the core facet; recovered in \code{facet_effects}).}
 
 \item{erratic_raters}{Proportion of raters who rate at random (feeds the
-rater fit residual).}
+rater fit residual). Erratic and halo raters are disjoint, and together
+must leave at least one ordinary rater.}
 
 \item{interaction}{\code{NULL}, or \code{list(rater=, item=, bias=)}: one
 rater is unusually harsh (positive) or lenient (negative) on one item.
@@ -37,9 +41,12 @@ Feeds the item-by-rater interaction (fit with \code{interaction = }).}
 
 \item{halo}{Proportion of raters showing a halo effect: they rate by the
 person's overall level and barely differentiate items (feeds the rater
-fit residual and the item-by-rater interaction).}
+fit residual and the item-by-rater interaction). Its requested count
+must fit among the non-erratic raters and leave an ordinary rater.
+A positive halo proportion requires \code{item_sd > 0}.}
 
-\item{seed}{Optional RNG seed.}
+\item{seed}{Optional non-negative whole-number RNG seed. See
+\code{\link{rasch_rng}} for generator support.}
 }
 \value{
 A long data frame of class \code{"rasch_sim"} (\code{person},
@@ -48,7 +55,9 @@ A long data frame of class \code{"rasch_sim"} (\code{person},
 }
 \description{
 Generates fully crossed ratings from a many-facet Rasch model (Linacre
-1989), with optional erratic raters, item-by-rater interaction, or halo.
+1989), with optional erratic raters, item-by-rater interaction, or halo. A
+positive rater proportion selects at least one rater when the requested
+departures can coexist.
 }
 \examples{
 d <- simulate_mfrm(60, 5, 6, rater_severity_sd = 0.8, seed = 1)

@@ -8,23 +8,59 @@ sim_recovery(fit, sim)
 }
 \arguments{
 \item{fit}{A fit of the simulated data (\code{\link{rasch}},
-\code{\link{btl}}, \code{\link{rasch_mfrm}}, or \code{\link{rasch_efrm}}).}
+\code{\link{btl}}, \code{\link{rasch_mfrm}}, \code{\link{rasch_efrm}},
+or \code{\link{btl_efrm}}).}
 
 \item{sim}{The simulated data (from a \code{simulate_*} function).}
 }
 \value{
 A list of class \code{"rasch_recovery"}: \code{summary} (per
   parameter type: n, correlation, RMSE, bias) and \code{pieces} (the true
-  and estimated values behind each).
+  and estimated values behind each). \code{note} identifies unrepresented
+  generating departures, an unverifiable original response scale,
+  generated items the fit does not estimate, and comparisons withheld
+  because the fit carries no person identifiers.
 }
 \description{
 Compares fitted parameters with the generating values from a
 \code{simulate_*} function (carried on the data as
 \code{attr(sim, "truth")}): item difficulties and person abilities for a
 Rasch fit, object locations for a paired-comparison fit, rater severities
-(with item and person measures) for a many-facet fit, and the set units for
-a frames fit. Locations are mean-centred before comparison, since the model
-identifies them only up to an origin.
+(with item and person measures) for a many-facet fit, set and group units
+for a Rasch frames fit, and common object locations, panel and set units,
+and set origins for a paired-comparison frames fit. Locations are
+mean-centred where the model identifies them only up to an origin. An
+externally anchored Rasch or paired-comparison fit retains its identified
+origin, so recovery and bias are reported on the anchored scale.
+The fit must be from these simulated responses and model family, and must
+have converged. Row and item order do not matter; response values and the
+person, judge, facet and frame allocations do. A fit given no \code{id}
+column labels its persons by row number, which are not identifiers: the
+responses are still verified, but person recovery and the EFRM group units
+are withheld with a note rather than compared against an unverified
+person allocation; the EFRM set units are still reported, with the note
+recording that the fitted group allocation is unchecked.
+Pass \code{id =} when fitting to recover them.
+Legacy truth without identifiers can be matched by unique response rows,
+provided its person truth remains in the simulation data's original order.
+Duplicate response patterns leave legacy person recovery unavailable.
+An item the estimator dropped, such as one everyone answered identically,
+is named in the note and left out of the comparison.
+Recovery is unavailable when fitting removes or merges generating response
+categories, because the fitted locations then describe a different scale.
+For a many-facet simulation, the planted rater facet must be identifiable
+uniquely by its name or level labels.
+EFRM set parameters are matched by their item or object membership, not by
+the spelling of the set labels; a different fitted partition is refused.
+Paired-comparison frames align generating origins to the fitted reference
+set. That set must have a generating unit of one: fixing another unit to
+one imposes a different cross-set restriction, so recovery is refused.
+A common generating discrimination changes only the logit unit, so ordinary
+Rasch recovery uses the equivalently rescaled item thresholds and person
+locations. When the generator includes a departure that the fitted model
+does not represent, the comparisons are labelled as descriptive rather
+than as recovery of a single correctly specified target. This includes,
+for example, heterogeneous item discriminations in an ordinary Rasch fit.
 }
 \examples{
 d <- simulate_rasch(500, 12, seed = 1)

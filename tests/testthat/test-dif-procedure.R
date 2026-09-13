@@ -112,6 +112,48 @@ test_that("dif_size recovers a planted uniform DIF in logits", {
   expect_false(ds0$pairs$practical)
 })
 
+test_that("dif_size withholds inference from an invalid resolved covariance", {
+  set.seed(104)
+  n <- 500
+  X <- matrix(rbinom(n * 6, 1, .5), n, 6,
+              dimnames = list(NULL, paste0("I", 1:6)))
+  grp <- factor(rep(c("a", "b"), each = n / 2))
+  fit <- rasch(data.frame(X, grp = grp), factors = "grp")
+  valid_refit <- split_items(fit, "I2", by = fit$factors$grp)
+  bad_refit <- valid_refit
+  split_rows <- grep("^I2 \\(", bad_refit$items$item)
+  split_ids <- bad_refit$thresholds$id[
+    bad_refit$thresholds$item %in% split_rows]
+  bad_refit$est$cov_tau[split_ids[1], split_ids[1]] <- -1e6
+
+  guarded <- testthat::with_mocked_bindings(
+    dif_size(fit, "I2", by = "grp"),
+    .rasch_refit = function(...) bad_refit,
+    .package = "rasch")
+  expect_true(all(is.na(guarded$levels$se)))
+  expect_true(all(is.na(guarded$pairs$se)))
+  expect_true(all(is.na(guarded$pairs$p)))
+  expect_true(all(is.na(guarded$pairs$significant)))
+  expect_true(all(is.finite(guarded$pairs$difference)))
+  expect_true(any(grepl("not positive semidefinite", guarded$notes)))
+
+  unsupported_refit <- valid_refit
+  unsupported_refit$est$cluster_support <- list(
+    repeated = FALSE, n = 16L, effective = 16)
+  unsupported_refit$est$cluster_inference <- FALSE
+  unsupported <- testthat::with_mocked_bindings(
+    dif_size(fit, "I2", by = "grp"),
+    .rasch_refit = function(...) unsupported_refit,
+    .package = "rasch")
+  expect_true(all(is.na(unsupported$levels$se)))
+  expect_true(all(is.na(unsupported$pairs$se)))
+  expect_true(all(is.na(unsupported$pairs$df)))
+  expect_true(all(is.na(unsupported$pairs$p)))
+  expect_true(all(is.finite(unsupported$pairs$difference)))
+  expect_match(paste(unsupported$notes, collapse = " "),
+               "independent-person support")
+})
+
 test_that("multi-level factors get familywise pairwise comparisons in logits", {
   s <- sim_dif(n = 1200, seed = 5,
                shifts = list(a = rep(0, 8),
@@ -161,7 +203,8 @@ test_that("factorial procedure: interaction post-hocs and sizes for significant 
     plogis(outer(th, d, "-") - outer(sh, c(0, 0, 1, 0, 0, 0)))), n, 6)
   colnames(X) <- paste0("I", 1:6)
   fit <- rasch(data.frame(X, g1 = g1, g2 = g2), factors = c("g1", "g2"))
-  fa <- dif_anova(fit, sizes = TRUE, effects = "factorial")
+  fa <- dif_anova(fit, sizes = TRUE, effects = "factorial",
+                  p_adjust = "bonferroni", alpha = 0.10)
 
   # the g1:g2 interaction is significant for the planted item and
   # supersedes the main effects it involves
@@ -179,17 +222,50 @@ test_that("factorial procedure: interaction post-hocs and sizes for significant 
                       fa$posthoc$term == "g1:g2", ]
   expect_gt(nrow(ph3), 0)
   expect_true(any(ph3$practical))
+  direct <- dif_posthoc(fit, "I3", term = c("g1", "g2"),
+                        factors = c("g1", "g2"),
+                        p_adjust = "bonferroni", alpha = 0.10)
+  ii <- match(ph3$contrast, direct$table$contrast)
+  expect_false(anyNA(ii))
+  expect_equal(ph3$p_adj, direct$table$p_adj[ii])
+  expect_identical(ph3$significant, direct$table$significant[ii])
 
-  # sizes: logit magnitudes for the significant term, the b:y cell apart
+  # sizes is the complete-design interaction contrast (and remains an alias
+  # of posthoc for compatibility), not unadjusted pairwise cell distances
   sz <- fa$sizes[fa$sizes$item == "I3" & fa$sizes$term == "g1:g2", ]
   expect_gt(nrow(sz), 0)
-  by_pairs <- sz[sz$level_a == "b:y" | sz$level_b == "b:y", ]
-  other_pairs <- sz[!(sz$level_a == "b:y" | sz$level_b == "b:y"), ]
-  expect_gt(min(abs(by_pairs$difference)), max(abs(other_pairs$difference)))
-  expect_lt(abs(max(abs(by_pairs$difference)) - 1.1), 0.4)
-  expect_true(any(by_pairs$practical))
+  expect_equal(sz, ph3)
+  expect_true(any(abs(sz$estimate) > 0.5))
+  expect_true(any(sz$practical))
   # clean items produce no size rows
   expect_false(any(fa$sizes$item == "I5"))
+})
+
+test_that("automatic DIF follow-ups use one pooled adjusted family", {
+  set.seed(912)
+  n <- 900L
+  group <- factor(rep(c("A", "B", "C"), each = n / 3L))
+  theta <- rnorm(n)
+  difficulty <- seq(-1, 1, length.out = 5L)
+  shift <- matrix(0, n, length(difficulty))
+  shift[group == "B", 1L] <- 1.8
+  shift[group == "C", 2L] <- -1.8
+  X <- vapply(seq_along(difficulty), function(j)
+    rbinom(n, 1L, plogis(theta - difficulty[j] - shift[, j])), integer(n))
+  colnames(X) <- paste0("I", seq_len(ncol(X)))
+  fit <- rasch(data.frame(X, group), items = colnames(X), factors = "group")
+  out <- dif_anova(fit, sizes = TRUE)
+
+  opened <- out$terms$significant & !out$terms$superseded &
+    !vapply(out$term_ids, function(term) "ci" %in% .term_vars(term),
+            logical(1))
+  expect_gt(sum(opened), 1L)
+  expect_identical(out$posthoc_family_n, 3L * sum(opened))
+  expect_equal(out$posthoc$p_adj,
+               p.adjust(out$posthoc$p, "holm", n = out$posthoc_family_n))
+  expect_equal(out$posthoc$significant,
+               is.finite(out$posthoc$p_adj) & out$posthoc$p_adj < out$alpha)
+  expect_equal(out$sizes, out$posthoc)
 })
 
 test_that("dif_size guards: thin levels dropped, unknown factor errors", {
@@ -234,6 +310,23 @@ test_that("person_extrapolated continues the score table geometrically", {
   ne <- !pe$extreme
   expect_equal(pe$theta_extrapolated[ne], pe$theta[ne])
   expect_equal(pe$se_extrapolated[ne], pe$se[ne])
+
+  # The information and score conversion must use the fitted common unit.
+  scaled <- fit
+  scaled$disc <- rep(0.5, ncol(scaled$X))
+  conv <- person_wle(scaled$tau_list, disc = 0.5)
+  scaled$score_table <- data.frame(
+    score = 0:(length(conv$theta) - 1L),
+    theta = unname(conv$theta), se = unname(conv$se))
+  pes <- person_extrapolated(scaled)
+  top_s <- pes$extreme & pes$raw == pes$max_raw & pes$n_items == 10
+  if (any(top_s)) {
+    th <- unname(conv$theta); M <- length(th) - 1L
+    hi <- th[M] + (th[M] - th[M - 1L])^2 /
+      (th[M - 1L] - th[M - 2L])
+    expect_equal(unique(pes$theta_extrapolated[top_s]), hi,
+                 tolerance = 1e-8)
+  }
 })
 
 test_that("MFRM facet fit reports margin and pooled statistics with df", {
@@ -427,6 +520,44 @@ test_that("resolve_dif splits DIF items by effect size and protects anchors", {
   rp <- resolve_dif(fp, min_anchors = 3)
   # never fewer than min_anchors original items left unsplit
   expect_gte(10L - length(unique(rp$splits$item)), 3L)
+
+  # A manual split already consumes one source item from the reference set.
+  # Its two copies must not be counted as two fresh anchors by a later run.
+  spp <- split_items(fp, "I10", by = "grp")
+  expect_equal(.n_unsplit_sources(.split_source_map(spp)), 9L)
+  rpp <- resolve_dif(spp, min_anchors = 8)
+  expect_lte(rpp$n_splits, 1L)
+  expect_gte(.n_unsplit_sources(.split_source_map(rpp$fit)), 8L)
+})
+
+test_that("resolve_dif does not report a failed final assessment as zero DIF", {
+  d <- simulate_rasch(200, 6, n_groups = 2, seed = 9723)
+  fit <- rasch(d, id = "id", factors = "group")
+  calls <- 0L
+  expect_error(with_mocked_bindings(
+    resolve_dif(fit),
+    dif_anova = function(...) {
+      calls <<- calls + 1L
+      if (calls == 3L) stop("forced final diagnostic failure")
+      list(summary = data.frame(item = fit$items$item,
+        uniform_DIF = FALSE, nonuniform_DIF = FALSE, superseded = FALSE),
+        summary_factors = rep(list("group"), nrow(fit$items)))
+    }, .package = "rasch"),
+    "final DIF assessment failed: forced final diagnostic failure")
+  expect_identical(calls, 3L)
+})
+
+test_that("DIF splitting refuses within-group conditional category collapse", {
+  d <- simulate_rasch(200, 4, model = "PCM", n_categories = 3,
+                      n_groups = 2, seed = 9789)
+  k <- d$group == "g1" & d$I01 == 2
+  d[k, sprintf("I%02d", 2:4)] <- 2
+  fit <- rasch(d, id = "id", factors = "group")
+  expect_true(all(fit$m == 2L))
+  expect_identical(sort(unique(fit$X[d$group == "g1", "I01"])), 0:2)
+  expect_error(split_items(fit, "I01", by = "group"),
+    "split refit cannot preserve the fitted score structure for I01 (g1)",
+    fixed = TRUE)
 })
 
 test_that("resolve_dif leaves non-uniform DIF visible", {
@@ -482,6 +613,12 @@ test_that("DIF follow-ups keep punctuated factor names structural", {
   ph <- dif_posthoc(fit, "P2", term = "age:band",
                     factors = c("age:band", "sex"))
   expect_identical(ph$term, "`age:band`")
+  expect_error(dif_posthoc(fit, factor("P2"), term = "age:band"),
+               "non-missing item name")
+  expect_error(dif_posthoc(fit, 1 + 1i, term = "age:band"),
+               "finite whole-number index")
+  expect_error(dif_posthoc(fit, 1.5, term = "age:band"),
+               "finite whole-number index")
   expect_s3_class(resolve_dif(fit, max_splits = 0), "rasch_resolve_dif")
 })
 

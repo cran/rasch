@@ -22,7 +22,7 @@ btl_dif(
 
 \item{factors}{One judge factor, or a named list containing several. Each
 factor may have one value per comparison row or be a vector named by
-judge.}
+every judge in the fit.}
 
 \item{objects}{Objects to test; all by default.}
 
@@ -31,8 +31,8 @@ judge.}
 also crosses the factors with one another.}
 
 \item{p_adjust}{Multiplicity adjustment over all object-by-term tests;
-the resolved-size probabilities are adjusted separately in one pool over
-all objects, terms, and cell pairs.}
+the resolved-contrast probabilities are adjusted separately in one pool
+over all objects, terms, and contrasts.}
 
 \item{alpha}{Significance level for adjusted probabilities.}
 
@@ -53,12 +53,15 @@ A list of class \code{"rasch_btl_dif"}: \code{summary} (one row per
   full per-object analysis-of-variance table, including its raw and
   effective judge support); \code{levels} (resolved
   location, SE, comparison count, judge count and effective judge count per
-  object, term and cell); \code{sizes} (per object, term and cell pair:
-  difference in logits, judge support for both cells, SE, t, degrees of
+  object, term and complete-design cell); \code{sizes} (per object, term
+  and marginal or interaction contrast: difference in logits, judge
+  support for both sides, SE, t, degrees of
   freedom, adjusted p, significance and practical flags); \code{effects},
   \code{factors}, \code{alpha}, \code{p_adjust}, \code{flag_logits}, and
-  \code{notes}. \code{summary_factors} retains the factor membership of
-  each displayed term.
+  \code{notes}. \code{size_family_n} records the complete planned
+  resolved-contrast family, including unavailable comparisons.
+  \code{summary_factors} retains the factor membership of each displayed
+  term.
 }
 \description{
 Tests whether object locations differ across groups of judges. Several
@@ -77,25 +80,37 @@ BTL-EFRM fits are not accepted: the ordinary residual and resolution
 models do not contain the fitted panel and set units.
 
 A significant uniform term is followed by a joint refit in which the object
-has one location per factor cell. Differences between these locations are
-reported in logits. A cell needs at least eight effective judges for
-pairwise inference; otherwise its location and differences remain
-descriptive. Pairwise tests use degrees of freedom based on the effective
-judges in the two cells. Higher-order terms supersede their component terms.
+has one location per cell of the complete judge-factor design. Main-effect
+magnitudes average these cells equally over the other factors. Interaction
+magnitudes are differences between differences, with the corresponding
+higher-order tensor contrast beyond two factors. A contributing cell needs
+at least eight effective judges for inference; otherwise its location and
+contrasts remain descriptive. Higher-order terms supersede their component
+terms. Two-cell contrasts retain the Welch reference used by the ordinary
+pairwise comparison. Contrasts spanning more than two fitted cells use the
+effective-judge count in their least-supported cell as a conservative
+denominator reference.
 Models fitted with \code{order} retain the exposure and carry-over effects
 in both the residual analysis and refit.
 Between-judge tests use HC3 covariance so unequal comparison workloads do
 not impose equal precision on judge means. Omnibus probabilities require
 at least eight judges and eight effective judges in every factor cell.
 Holm adjustment is the default; \code{"BH"} remains available for
-false-discovery-rate screening.
+false-discovery-rate screening. A reported object-by-term test remains in
+the adjustment family when its probability is unavailable.
 
 Objects are resolved one at a time against the common locations of the
 remaining objects. With DIF in several objects, this can induce compensating
 apparent DIF in invariant objects (Andrich and Hagquist 2012, 2015).
 An externally anchored object is not resolved: fixing each of its copies at
 the same anchor would define their difference as zero. Anchors on the other
-objects are retained in the joint refit.
+objects are retained in the joint refit. If a resolved-location covariance
+is unavailable or not positive semidefinite, the locations and differences
+remain descriptive but their uncertainty and tests are withheld.
+A note raised by a resolution refit is reported against that object.
+Engine notes explaining a statistic this analysis never reports -- the
+refit's pairwise chi-square probability and its dependence table's
+carry-over probability -- are not carried; the base fit retains them.
 }
 \examples{
 set.seed(1)

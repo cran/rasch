@@ -39,25 +39,31 @@ fitted model is used, so stacked designs retain their pairing.}
 structure) or a named list of numeric cell-weight vectors, each named
 by the design-cell labels (factor levels joined by \code{":"}).
 Weights are rescaled so the positive and negative parts each sum to
-one.}
+one.
+Numeric factor labels used for automatic trends must give distinct
+numeric scores; otherwise relabel them or supply explicit contrasts.}
 
-\item{p_adjust}{Familywise adjustment across items and contrasts. The
-default is \code{"holm"}.}
+\item{p_adjust}{Adjustment across items and contrasts. The default
+\code{"holm"} controls familywise error; use \code{"BH"} only for
+false-discovery-rate screening. \code{"none"} leaves probabilities
+unadjusted.}
 
 \item{alpha}{Significance level for the adjusted probabilities.}
 
 \item{flag_logits}{Absolute estimate flagged as practically significant.}
 
-\item{min_n}{Cells with fewer responders to an item are dropped from that
-item's resolution, with a note.}
+\item{min_n}{Cells with fewer distinct responders to an item are dropped
+from that item's resolution, with a note. When identifiers repeat,
+response rows from one person count once within each cell.}
 }
 \value{
 A list of class \code{"rasch_dif_contrasts"}: \code{table} (one row
-  per item and contrast: estimate in logits, SE, statistic, df where a t
-  test was used, raw and adjusted p, 95 per cent interval,
+  per item and contrast: estimate in logits, SE, statistic, reference df
+  (infinite for the normal limit), raw and adjusted p, 95 per cent interval,
   \code{significant}, \code{practical}, \code{within}), \code{family}
-  (the derived questions with their cell weights), the settings, and any
-  \code{notes}.
+  (the estimable questions with their cell weights), \code{family_n} and
+  \code{family_n_per_item} (the planned multiplicity counts), the settings,
+  and any \code{notes}.
 }
 \description{
 Tests a specified family of one-degree-of-freedom DIF contrasts. By default,
@@ -72,9 +78,20 @@ Each logit contrast is calculated from resolved item locations. Weights are
 scaled so their positive and negative parts each sum to one. With repeated
 persons, inference uses person-level residual contrast scores with the same
 cell weights as the resolved estimate. Nuisance-factor cells are averaged
-equally rather than in proportion to their sample sizes. Independent
-between-person cells are then combined with a Welch--Satterthwaite
-reference. The resolved logit estimate is retained, but its
+equally rather than in proportion to their sample sizes. In an incomplete
+factorial design, a contrast uses only nuisance strata containing all of
+its non-zero target cells; an unsupported planned contrast is not estimated
+but remains in the multiplicity count. Once these weights are defined,
+every weighted cell must meet \code{min_n} for the item; sparse cells are
+not dropped and the remaining weights are not renormalised. A level a
+contrast places no weight on is not required: the middle level of an
+odd-length linear trend carries weight zero, and so restricts neither the
+nuisance strata nor the persons the test uses. Independent between-person cells are
+then combined with a Welch--Satterthwaite reference. If a required between-
+person cell has fewer than two complete person scores, residual inference is
+withheld rather than changing the marginal contrast by dropping that cell.
+The resolved logit
+estimate is retained, but its
 calibration-based standard error is withheld because it does not include
 repeated-person dependence.
 
@@ -89,7 +106,13 @@ and tested over persons. The complete cell-weight vector is retained for
 main effects and interactions, so the residual test and resolved estimate
 address the same marginal contrast. The sign of each residual test is
 aligned with the resolved logit contrast. Contrasts require a converged
-calibration.
+calibration. For independent rows, an unavailable or non-positive-
+semidefinite resolved-location covariance leaves the logit estimate
+descriptive and causes Wald inference to be withheld.
+A contrast with withheld inference remains in the adjustment family formed
+by every requested item and contrast. When the split refit that resolves one
+item's locations cannot be calibrated, that item's contrasts are withheld
+with the reason and the other items are unaffected.
 For an MFRM fit, underlying items are pooled over their facet cells by
 default. EFRM fits are excluded because the required split refit would
 discard the frame units.

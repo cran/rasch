@@ -12,7 +12,8 @@ item_design <- data.frame(
 
 difficulty <- 0.8 * (item_design$operation == "inference") +
   0.4 * (item_design$format == "constructed")
-theta <- rnorm(500)
+group <- factor(rep(c("A", "B"), each = 250))
+theta <- rnorm(500) + ifelse(group == "B", 0.3, 0)
 X <- sapply(difficulty, function(delta)
   rbinom(length(theta), 1, plogis(theta - delta)))
 colnames(X) <- item_design$item
@@ -21,7 +22,8 @@ fit <- rasch_explanatory(
   X,
   predictors = item_design,
   formula = ~ operation + format,
-  level = "item"
+  level = "item",
+  factors = data.frame(group = group)
 )
 fit$est$coefficients
 
@@ -50,6 +52,10 @@ head(departures)
 
 ## ----relax, eval=FALSE--------------------------------------------------------
 # fit <- relax_explanatory(fit, item = "I4", component = "location")
+
+## ----dif-bootstrap, eval=FALSE------------------------------------------------
+# dif <- dif_anova(fit)
+# dif_bootstrap(fit, dif, B = 999, seed = 2026)$summary
 
 ## ----cj, eval=FALSE-----------------------------------------------------------
 # cj <- btl_explanatory(

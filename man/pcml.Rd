@@ -7,8 +7,9 @@
 pcml(X, model = c("PCM", "RSM"), anchors = NULL, maxit = 60, tol = 1e-08)
 }
 \arguments{
-\item{X}{Persons-by-items integer score matrix (categories from 0). Missing
-values are handled by pairwise deletion, so linked booklet designs and
+\item{X}{Persons-by-items integer score matrix. Each item must have at least
+two observed categories, numbered consecutively from 0. Missing values are
+handled by pairwise deletion, so linked booklet designs and
 random missingness estimate without imputation; the item-pair graph must
 be connected (some person answering items in both of any two blocks),
 otherwise relative locations between blocks are unidentified and the fit
@@ -19,11 +20,22 @@ item in every block, the disjoint-form equating case.}
 
 \item{anchors}{Optional anchor table for equating: a data frame with
 columns \code{item} (name or column index), \code{k}, and \code{tau}
-(the fixed value). A numeric \code{k} fixes that single threshold
+(the anchor value). A numeric \code{k} fixes that single threshold
 (individual anchoring); \code{k = NA} fixes the item's mean location at
-\code{tau} while its thresholds remain free (average anchoring). The
+\code{tau} while its thresholds remain free (location anchoring). The
 remaining parameters are estimated on the anchored scale and no
-recentring is applied. PCM only.}
+recentring is applied. An optional logical column \code{average},
+\code{TRUE} on every row, selects RUMM2030's average item anchoring
+instead: every parameter is estimated free, and the calibration is
+shifted so that the mean location of the anchor items equals the mean
+of their \code{tau} values (one row per item, \code{k = NA}). Only the
+origin changes, so every item, the anchors included, keeps its
+estimated position relative to the others. Numeric-threshold and
+item-location anchor values are treated as fixed constants: their
+uncertainty is not included in the returned covariance or standard
+errors. With several numeric-threshold anchors, their stated relative
+spacing is a model constraint as well as a choice of origin. Column names
+must be unique. PCM only.}
 
 \item{maxit, tol}{Newton-Raphson iteration cap and convergence tolerance.}
 }
@@ -34,7 +46,13 @@ A list containing the threshold table \code{thr}, covariance matrix
   \code{weak} marks all thresholds of an item with fewer than eight
   responses in any category, or a threshold adjacent to a category with
   fewer than three responses. Standard errors for weak thresholds are
-  reported as \code{NA}.
+  reported as \code{NA}. If estimation does not converge, the function
+  warns and all standard errors and covariance entries are \code{NA}.
+  Sandwich uncertainty is also withheld when fewer than 10 independent
+  persons, fewer than 8 effective persons, no more effective persons than
+  fitted parameters, or a rank-deficient person-score covariance cannot
+  support inference. Effective support is based on informative conditional
+  item-pair contributions; point estimates and exact anchors remain.
 }
 \description{
 Estimates PCM or RSM thresholds by Newton--Raphson maximisation of the

@@ -11,13 +11,22 @@ save_outputs(
   width = 9,
   height = 6,
   dpi = 300,
-  item_plots = TRUE
+  item_plots = TRUE,
+  dif = NULL,
+  bootstrap = NULL,
+  dif_bootstrap = NULL,
+  dimensionality = NULL,
+  invariance = NULL,
+  subtest = NULL,
+  tailored = NULL,
+  person_weights = NULL
 )
 }
 \arguments{
 \item{fit}{A fitted object from \code{\link{rasch}}.}
 
-\item{dir}{Output directory; created if absent.}
+\item{dir}{Output directory; created if absent. An existing directory must
+be empty; exports refuse to overwrite files from an earlier analysis.}
 
 \item{formats}{Plot formats, any of \code{"png"} and \code{"pdf"}.}
 
@@ -27,6 +36,36 @@ save_outputs(
 
 \item{item_plots}{Also write the per-item plot set (one ICC, category curve,
 threshold curve, and frequency chart per item).}
+
+\item{dif}{Optional \code{\link{dif_anova}} result to export as computed
+--- an application analysis carries the DIF model the analyst chose,
+which a default recomputation would silently replace. \code{NULL}
+computes the default when the fit carries person factors.}
+
+\item{bootstrap}{Optional \code{\link{fit_bootstrap}} result from this fit. Its item and
+person tables, or pair, object and judge tables for paired comparisons,
+join the export with the whole-test readings.}
+
+\item{dif_bootstrap}{Optional \code{\link{dif_bootstrap}} sensitivity
+analysis from this fit and DIF specification.}
+
+\item{dimensionality}{Optional computed \code{\link{plot_scree}} or
+\code{\link{btl_dimensionality}} result from this fit. Supplying it keeps
+the exported table and figure identical to the analysis already run.}
+
+\item{invariance}{Optional computed \code{\link{frame_invariance}} result
+from an EFRM fit.}
+
+\item{subtest}{Optional computed \code{\link{dimensionality_test}} result
+from this fit. Supplying it keeps the nominated item split and bootstrap
+calibration used in the analysis.}
+
+\item{tailored}{Optional computed \code{\link{tailored_analysis}} result
+from this ordinary dichotomous fit.}
+
+\item{person_weights}{Optional table returned by
+\code{\link{weighted_person_estimates}}. An explicit table takes
+precedence over a compatible result retained by the application.}
 }
 \value{
 Invisibly, the vector of files written.
@@ -36,12 +75,17 @@ Writes the summary, estimates, diagnostic tables, person measures, and
 model-specific results as CSV. Plots are written as PNG and, optionally,
 PDF, together with a plain-text analysis summary. For MFRM and EFRM fits,
 item estimates and response-cell diagnostics are saved separately.
+Computed tailored item shifts and externally weighted secondary person
+measures can be retained with the fitted-model output; the latter include
+their resolved weights.
+For keyed fits with repeated person IDs, the export records why distractor
+analysis is unavailable and retains the other model outputs.
 }
 \examples{
 set.seed(1)
-d <- seq(-2, 2, length.out = 6)
-X <- matrix(rbinom(300 * 6, 1, plogis(outer(rnorm(300), d, "-"))), 300, 6)
-colnames(X) <- paste0("I", 1:6)
-out <- file.path(tempdir(), "rasch-out")
-save_outputs(rasch(X), out, formats = "png", item_plots = FALSE)
+d <- seq(-1.5, 1.5, length.out = 4)
+X <- matrix(rbinom(80 * 4, 1, plogis(outer(rnorm(80), d, "-"))), 80, 4)
+colnames(X) <- paste0("I", 1:4)
+out <- tempfile("rasch-out-")
+save_outputs(rasch(X), out, formats = "png", item_plots = FALSE, dpi = 96)
 }

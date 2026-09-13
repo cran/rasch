@@ -11,7 +11,8 @@
 #' Traditional (classical test theory) statistics
 #'
 #' The classical companion table conventionally reported alongside a Rasch
-#' analysis (Andrich and Marais 2019, chs. 3-5), on complete cases only: per item the facility (mean score over
+#' analysis (Andrich and Marais 2019, chs. 3-5), on complete cases by default:
+#' per item the facility (mean score over
 #' maximum), the item-total and corrected item-rest correlations, the
 #' discrimination index DI = PRU - PRL (mean proportion-of-maximum in the
 #' upper third of total scores minus the lower third). Equal total scores
@@ -20,7 +21,13 @@
 #' alpha if the item is deleted; the summary gives coefficient alpha, the
 #' raw-score mean, SD, and the
 #' classical standard error of measurement \eqn{s\sqrt{1 - \alpha}}, which
-#' unlike the Rasch SE is one value for all persons.
+#' unlike the Rasch SE is one value for all persons. The SEM is withheld when
+#' alpha is negative, since a negative coefficient is not a usable reliability
+#' estimate. With missing responses, available-case mode also withholds SEM:
+#' its pairwise alpha and complete-case score SD describe different samples.
+#' Use complete-case mode to estimate SEM on a consistent sample.
+#' Alpha if deleted is checked separately for each retained item set; it can
+#' be available even when the full-scale covariance matrix is incomplete.
 #'
 #' @param fit A fitted object from \code{\link{rasch}} whose columns form one
 #'   administered item set. Expanded EFRM and MFRM response-cell matrices are
@@ -72,7 +79,8 @@ ctt_table <- function(fit, missing = c("complete", "available")) {
                       max = fit$m, facility = NA_real_, item_total = NA_real_,
                       item_rest = NA_real_, di = NA_real_,
                       alpha_drop = NA_real_)
-    out <- list(table = tab, alpha = NA_real_, n = nrow(X),
+    out <- list(table = tab, alpha = NA_real_,
+                n = sum(stats::complete.cases(X)),
                 n_range = range(n_i), mean = NA_real_, sd = NA_real_,
                 sem = NA_real_, missing = missing,
                 note = if (missing == "complete")
@@ -102,13 +110,11 @@ ctt_table <- function(fit, missing = c("complete", "available")) {
   C <- suppressWarnings(stats::cov(X, use = "pairwise.complete.obs"))
   csum <- sum(C, na.rm = TRUE)
   dsum <- sum(diag(C), na.rm = TRUE)
-  C_ok <- !anyNA(C) && {
-    ev <- eigen((C + t(C)) / 2, symmetric = TRUE, only.values = TRUE)$values
-    # tolerate the small numerical non-PSD-ness ordinary pairwise deletion
-    # produces; refuse MATERIAL indefiniteness (and, via anyNA, any pair
-    # with no respondents in common, whose covariance does not exist)
-    min(ev) >= -1e-2 * max(1, max(abs(ev)))
-  } && is.finite(csum) && csum > 0.05 * dsum
+  # Pairwise deletion can produce a genuinely indefinite matrix; this is not
+  # numerical rounding and cannot define coefficient alpha. Use the same
+  # scale-relative PSD tolerance as the package's other covariance checks.
+  C_ok <- !anyNA(C) && .covariance_is_psd(C) &&
+    is.finite(csum) && csum > 0.05 * dsum
   alpha <- if (L > 1L && C_ok)
     L / (L - 1L) * (1 - dsum / csum) else NA_real_
   min_i <- suppressWarnings(vapply(seq_len(L), function(i)
@@ -122,20 +128,28 @@ ctt_table <- function(fit, missing = c("complete", "available")) {
   for (i in seq_len(L)) {
     x <- X[, i]; ok <- !is.na(x)
     if (sum(ok) >= 3 && stats::sd(x[ok]) > 0) {
-      rest_p <- (rowSums(X, na.rm = TRUE) - ifelse(ok, x, 0)) /
-        pmax(rowSums(Mmat, na.rm = TRUE) - ifelse(ok, fit$m[i], 0), 1)
+      rest_max <- rowSums(Mmat, na.rm = TRUE) - ifelse(ok, fit$m[i], 0)
+      rest_p <- (rowSums(X, na.rm = TRUE) - ifelse(ok, x, 0)) / rest_max
+      # A respondent who answered only the focal item has no rest score.
+      # Treating the empty rest set as zero biases the corrected correlation
+      # in sparse or routed designs.
+      rest_p[!is.finite(rest_p) | rest_max <= 0] <- NA_real_
       tab$item_total[i] <- .safe_cor(x[ok], tot_p[ok])
       tab$item_rest[i] <- .safe_cor(x[ok], rest_p[ok])
       hi <- ok & thirds == 3; lo <- ok & thirds == 1
       if (sum(hi) >= 2 && sum(lo) >= 2)
         tab$di[i] <- mean(x[hi]) / fit$m[i] - mean(x[lo]) / fit$m[i]
     }
-    if (L > 2 && C_ok) {
+    if (L > 2) {
       Cr <- C[-i, -i, drop = FALSE]
-      sr <- sum(Cr, na.rm = TRUE)
-      if (is.finite(sr) && sr > 0.05 * sum(diag(Cr)))
+      sr <- sum(Cr)
+      # Deleting an item may remove the only unobserved covariance. Check
+      # this retained scale, not the full matrix; never replace missing
+      # covariances by zero in the reduced calculation.
+      if (all(is.finite(Cr)) && .covariance_is_psd(Cr) &&
+          is.finite(sr) && sr > 0.05 * sum(diag(Cr)))
         tab$alpha_drop[i] <- (L - 1) / (L - 2) *
-          (1 - sum(diag(Cr), na.rm = TRUE) / sr)
+          (1 - sum(diag(Cr)) / sr)
     }
   }
   rownames(tab) <- NULL
@@ -145,7 +159,12 @@ ctt_table <- function(fit, missing = c("complete", "available")) {
               n_range = range(n_i),
               mean = if (sum(cc) >= 3) mean(tot_cc) else NA_real_,
               sd = if (sum(cc) >= 3) stats::sd(tot_cc) else NA_real_,
-              sem = if (is.finite(alpha) && alpha <= 1 && sum(cc) >= 3)
+              # A negative alpha is a diagnostic of incompatible item
+              # covariance, not a usable reliability coefficient. Substituting
+              # it in s * sqrt(1 - alpha) would present an impossible error
+              # variance greater than the observed variance as an ordinary SEM.
+              sem = if (!anyNA(X) && is.finite(alpha) && alpha >= 0 &&
+                        alpha <= 1 && sum(cc) >= 3)
                 stats::sd(tot_cc) * sqrt(1 - alpha) else NA_real_,
               missing = missing,
               note = {
@@ -153,10 +172,16 @@ ctt_table <- function(fit, missing = c("complete", "available")) {
                   if (missing == "available") paste(
                     "available-case item statistics are exploratory; persons",
                     "answering different item sets are not necessarily comparable"),
+                  if (missing == "available" && anyNA(X)) paste(
+                    "SEM withheld: pairwise alpha and complete-case score SD",
+                    "use different samples; use missing = \"complete\" for SEM"),
                   if (missing == "available" && !C_ok) paste(
                     "alpha withheld: the pairwise covariance under this",
                     "missingness is not a valid (positive semidefinite,",
-                    "non-degenerate) covariance matrix"))
+                    "non-degenerate) covariance matrix"),
+                  if (is.finite(alpha) && alpha < 0) paste(
+                    "SEM withheld: coefficient alpha is negative and is not",
+                    "a usable reliability estimate"))
                 if (length(nt)) paste(nt, collapse = "; ") else NULL
               })
   out <- .tag_tables(out)
@@ -196,7 +221,8 @@ print.rasch_ctt <- function(x, ...) {
 #' occasions; \code{row_id} uniquely identifies each person-occasion row.
 #'
 #' @param data A long data frame with one measurement per row.
-#' @param person,time Names of the person and time-point columns.
+#' @param person,time Character strings naming distinct person and time-point
+#'   columns, not numeric column positions.
 #' @param items Character vector naming the item columns.
 #' @return \code{rack_data}: a wide data frame with one row per person and
 #'   \code{length(items) * n_times} item columns. \code{stack_data}: a data
@@ -216,26 +242,62 @@ print.rasch_ctt <- function(x, ...) {
 #'              items = c("Q1", "Q2"))
 #' @export
 rack_data <- function(data, person, time, items) {
-  data <- as.data.frame(data)
   .check_column_names(data)
+  data <- as.data.frame(data)
+  if (!is.character(items) || !length(items) || anyNA(items) ||
+      any(!nzchar(trimws(items))))
+    stop("`items` must name at least one item column")
+  # dereferencing an empty or multiple column name gives a base subscript
+  # error rather than a statement of what was wrong
+  .check_reshape_column(data, person, "person")
+  .check_reshape_column(data, time, "time")
+  if (identical(as.character(person), as.character(time)))
+    stop("the person and time columns must be distinct")
+  pv <- .role_text_values(data[[person]])
+  tv <- .role_text_values(data[[time]])
+  if (anyNA(pv) || any(!nzchar(pv[!is.na(pv)])))
+    stop(sum(is.na(pv) | !nzchar(pv)), " row(s) have a missing or blank ",
+         "person identifier; they cannot be aligned across occasions")
+  if (anyNA(tv) || any(!nzchar(tv[!is.na(tv)])))
+    stop(sum(is.na(tv) | !nzchar(tv)),
+         " row(s) have a missing or blank occasion value")
+  if (anyDuplicated(items))
+    stop("item column(s) named more than once: ",
+         paste(unique(items[duplicated(items)]), collapse = ", "))
+  overlap <- intersect(items, c(person, time))
+  if (length(overlap))
+    stop("the person or time column cannot also be an item: ",
+         paste(overlap, collapse = ", "))
   for (col in c(person, time)) if (!col %in% names(data))
     stop("column not found: ", col)
   bad <- setdiff(items, names(data))
   if (length(bad)) stop("item column(s) not found: ", paste(bad, collapse = ", "))
-  times <- sort(unique(data[[time]]))
-  made <- unlist(lapply(times, function(tt) paste0(items, "@", tt)),
+  # Use the same canonical values that were validated above. Otherwise
+  # visually identical labels such as "T1" and " T1 " pass the blank check
+  # but become different occasions, and padded person IDs become different
+  # respondents in the reshaped design.
+  time_column <- .canonical_role_column(data[[time]])
+  times <- sort(unique(time_column))
+  time_labels <- as.character(times)
+  made <- unlist(lapply(time_labels, function(tt) paste0(items, "@", tt)),
                  use.names = FALSE)
   if (anyDuplicated(c("id", made)))
     stop("generated racked column names are not unique; rename the items or time levels")
-  ids <- unique(data[[person]])
-  out <- data.frame(id = ids)
-  for (tt in times) {
-    d_t <- data[data[[time]] == tt, , drop = FALSE]
-    if (anyDuplicated(d_t[[person]]))
-      stop("more than one row for a person at time ", tt)
-    idx <- match(ids, d_t[[person]])
+  first_id <- !duplicated(pv)
+  ids <- pv[first_id]
+  id_out <- .canonical_role_column(data[[person]])[first_id]
+  out <- data.frame(id = id_out)
+  for (j in seq_along(times)) {
+    tt <- times[j]
+    time_label <- time_labels[j]
+    rows_t <- which(time_column == tt)
+    d_t <- data[rows_t, , drop = FALSE]
+    p_t <- pv[rows_t]
+    if (anyDuplicated(p_t))
+      stop("more than one row for a person at time ", time_label)
+    idx <- match(ids, p_t)
     blk <- d_t[idx, items, drop = FALSE]
-    names(blk) <- paste0(items, "@", tt)
+    names(blk) <- paste0(items, "@", time_label)
     out <- cbind(out, blk)
   }
   rownames(out) <- NULL
@@ -245,8 +307,32 @@ rack_data <- function(data, person, time, items) {
 #' @rdname rack_data
 #' @export
 stack_data <- function(data, person, time, items) {
-  data <- as.data.frame(data)
   .check_column_names(data)
+  data <- as.data.frame(data)
+  if (!is.character(items) || !length(items) || anyNA(items) ||
+      any(!nzchar(trimws(items))))
+    stop("`items` must name at least one item column")
+  # dereferencing an empty or multiple column name gives a base subscript
+  # error rather than a statement of what was wrong
+  .check_reshape_column(data, person, "person")
+  .check_reshape_column(data, time, "time")
+  if (identical(as.character(person), as.character(time)))
+    stop("the person and time columns must be distinct")
+  pv <- .role_text_values(data[[person]])
+  tv <- .role_text_values(data[[time]])
+  if (anyNA(pv) || any(!nzchar(pv[!is.na(pv)])))
+    stop(sum(is.na(pv) | !nzchar(pv)), " row(s) have a missing or blank ",
+         "person identifier; they cannot be aligned across occasions")
+  if (anyNA(tv) || any(!nzchar(tv[!is.na(tv)])))
+    stop(sum(is.na(tv) | !nzchar(tv)),
+         " row(s) have a missing or blank occasion value")
+  if (anyDuplicated(items))
+    stop("item column(s) named more than once: ",
+         paste(unique(items[duplicated(items)]), collapse = ", "))
+  overlap <- intersect(items, c(person, time))
+  if (length(overlap))
+    stop("the person or time column cannot also be an item: ",
+         paste(overlap, collapse = ", "))
   for (col in c(person, time)) if (!col %in% names(data))
     stop("column not found: ", col)
   bad <- setdiff(items, names(data))
@@ -255,15 +341,15 @@ stack_data <- function(data, person, time, items) {
   if (length(reserved))
     stop("item name(s) reserved by the stacked output: ",
          paste(reserved, collapse = ", "), "; rename them before stacking")
-  key <- .factor_cells(data.frame(person = data[[person]],
-                                  time = data[[time]]), sep = "\r")
+  key <- .factor_cells(data.frame(person = pv, time = tv), sep = "\r")
   if (anyDuplicated(key))
     stop("more than one row for a person at the same time point")
-  row_id <- .factor_cells(data.frame(person = data[[person]],
-                                     time = data[[time]]), sep = "@")
-  out <- data.frame(id = data[[person]],
+  row_id <- .factor_cells(data.frame(person = pv, time = tv), sep = "@")
+  time_column <- .canonical_role_column(data[[time]])
+  if (!is.factor(time_column)) time_column <- factor(time_column)
+  out <- data.frame(id = .canonical_role_column(data[[person]]),
                     row_id = row_id,
-                    time = factor(data[[time]]),
+                    time = time_column,
                     data[, items, drop = FALSE], check.names = FALSE)
   rownames(out) <- NULL
   out

@@ -13,7 +13,8 @@ sim_replicate(FUN, n, ..., seed = NULL)
 
 \item{...}{Arguments passed to \code{FUN} (the same each replicate).}
 
-\item{seed}{Seed of the first replicate (each subsequent one increments it).}
+\item{seed}{Seed of the first replicate (each subsequent one increments it).
+See \code{\link{rasch_rng}} for generator support.}
 }
 \value{
 A list of class \code{"rasch_sim_batch"}, one simulated dataset per
@@ -26,7 +27,7 @@ parameter-recovery studies.
 }
 \examples{
 # 8 datasets with a planted DIF item; how often is it flagged?
-batch <- sim_replicate(simulate_rasch, 8, n_persons = 400, n_items = 10,
+batch <- sim_replicate(simulate_rasch, 4, n_persons = 300, n_items = 8,
                        dif = list(items = "I05", uniform = 0.8), n_groups = 2,
                        seed = 1)
 # sim_apply() is resilient: a replicate the estimator refuses (e.g. a

@@ -15,13 +15,16 @@ simulate_btl_efrm(
   set_units = NULL,
   set_origins = NULL,
   object_sd = 1,
-  seed = NULL
+  seed = NULL,
+  erratic_judges = 0
 )
 }
 \arguments{
 \item{n_objects_per_set, n_sets}{Objects in each set and number of sets.}
 
-\item{n_judges_per_panel, n_panels}{Judges in each panel and number of panels.}
+\item{n_judges_per_panel, n_panels}{Judges in each panel and number of panels.
+Comparisons are balanced across panels and judges; a design with fewer
+comparisons than judges is refused.}
 
 \item{reps_within}{Replications of each within-set object pair.}
 
@@ -37,9 +40,15 @@ is all one, and \code{alpha_1} is forced to one (the reference set).}
 \item{set_origins}{Set origins \code{kappa} (length \code{n_sets}); the
 default is all zero, and \code{kappa_1} is forced to zero.}
 
-\item{object_sd}{Spread of the within-set calibration locations.}
+\item{object_sd}{Realised sample standard deviation of the within-set
+calibration locations.}
 
-\item{seed}{Optional RNG seed.}
+\item{seed}{Optional non-negative whole-number RNG seed. See
+\code{\link{rasch_rng}} for generator support.}
+
+\item{erratic_judges}{Proportion of judges who choose between the two
+objects at random. At least one judge in every panel must retain
+model-based comparisons.}
 }
 \value{
 A data frame of class \code{"rasch_sim"} with columns

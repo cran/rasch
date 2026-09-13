@@ -8,7 +8,15 @@ report_document(
   fit,
   file,
   format = c("auto", "html", "docx", "pdf"),
-  title = "Rasch measurement analysis"
+  title = "Rasch measurement analysis",
+  dif = NULL,
+  bootstrap = NULL,
+  dif_bootstrap = NULL,
+  dimensionality = NULL,
+  invariance = NULL,
+  subtest = NULL,
+  tailored = NULL,
+  person_weights = NULL
 )
 }
 \arguments{
@@ -20,6 +28,29 @@ report_document(
 \item{format}{Output format. By default it is inferred from \code{file}.}
 
 \item{title}{Report title.}
+
+\item{dif, bootstrap}{Optional computed \code{\link{dif_anova}} and
+\code{\link{fit_bootstrap}} results from this fit, rendered as run rather than
+recomputed at defaults.}
+
+\item{dif_bootstrap}{Optional \code{\link{dif_bootstrap}} sensitivity
+analysis from this fit and DIF specification.}
+
+\item{dimensionality}{Optional computed \code{\link{plot_scree}} or
+\code{\link{btl_dimensionality}} result from this fit.}
+
+\item{invariance}{Optional computed \code{\link{frame_invariance}} result
+from an EFRM fit.}
+
+\item{subtest}{Optional computed \code{\link{dimensionality_test}} result
+from this fit.}
+
+\item{tailored}{Optional computed \code{\link{tailored_analysis}} result
+from this ordinary dichotomous fit.}
+
+\item{person_weights}{Optional table returned by
+\code{\link{weighted_person_estimates}}. An explicit table takes
+precedence over a compatible result retained by the application.}
 }
 \value{
 Invisibly, the output path.
@@ -29,7 +60,11 @@ Renders the active Rasch or paired-comparison fit as a self-contained HTML
 document, an editable Word document, or a PDF. The report contains the
 principal estimates, model-specific tables, diagnostic figures, and
 software provenance. Complete machine-readable results remain available
-from \code{\link{save_outputs}}.
+from \code{\link{save_outputs}}. Reports downloaded from the application
+retain compatible tailored item shifts and externally weighted secondary
+person measures.
+For keyed fits with repeated person IDs, the report explains why distractor
+analysis is unavailable and retains the other model outputs.
 }
 \details{
 Word and HTML output require Pandoc, supplied with RStudio and

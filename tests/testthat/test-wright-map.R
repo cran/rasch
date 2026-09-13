@@ -11,6 +11,9 @@ test_that("WrightMap data are prepared for dichotomous and polytomous fits", {
   expect_equal(rownames(dd$items), colnames(X))
   expect_identical(colnames(dd$items), "")
   expect_equal(unname(drop(dd$items)), fd$thresholds$tau)
+  failed <- fd
+  failed$est$converged <- FALSE
+  expect_error(rasch:::.wright_map_data(failed), "did not converge")
 
   sim_p <- function(th, tau) {
     score <- 0:length(tau)
@@ -70,6 +73,14 @@ test_that("person and item panels preserve their labels and ordering", {
                             Second = c("I2", "I4", "I6")))
   expect_equal(as.character(dl$item_panels),
                rep(c("First", "Second"), 3))
+  dl_pad <- rasch:::.wright_map_data(
+    fit, item_panels = list(" First " = c("I1", "I3", "I5"),
+                            "Second " = c("I2", "I4", "I6")))
+  expect_equal(levels(dl_pad$item_panels), c("First", "Second"))
+  expect_error(rasch:::.wright_map_data(
+    fit, item_panels = list(A = colnames(X)[1:3],
+                            " A " = colnames(X)[4:6])),
+    "distinct after trimming")
 
   d2 <- rasch:::.wright_map_data(fit, person_panels = c("group", "occasion"))
   expect_equal(ncol(d2$persons), 4L)
@@ -81,6 +92,44 @@ test_that("person and item panels preserve their labels and ordering", {
                     Cohort2 = fit$person$theta + 0.2)
   d3 <- rasch:::.wright_map_data(fit, person_panels = supplied)
   expect_equal(d3$persons, supplied)
+
+  expect_error(rasch:::.wright_map_data(
+    fit, item_panels = c(setNames(rep("A", ncol(X)), colnames(X)),
+                         TYPO = "B")), "exactly once")
+  expect_error(rasch:::.wright_map_data(
+    fit, item_panels = c("A", "A", "B", " ", "C", "C")), "blank")
+  expect_error(rasch:::.wright_map_data(
+    fit, item_panels = list(A = colnames(X), Empty = character())),
+    "at least one item")
+  expect_error(rasch:::.wright_map_data(
+    fit, person_panels = rep(c("A", " "), n / 2)), "blank")
+  expect_error(rasch:::.wright_map_data(
+    fit, person_panels = matrix(c(Inf, rep(0, n - 1L)), ncol = 1L)),
+    "infinities")
+  expect_error(rasch:::.wright_map_data(
+    fit, person_panels = character()), "at least one panel")
+  expect_error(rasch:::.wright_map_data(
+    fit, person_panels = c("group", "group")), "distinct")
+})
+
+test_that("crossed WrightMap panels cannot merge colliding labels", {
+  fit <- rasch(simulate_rasch(100, 6, seed = 9911), id = "id")
+  fit$person$A <- rep(c("a x b", "a"), 50)
+  fit$person$B <- rep(c("c", "b x c"), 50)
+  persons <- .wright_person_panels(fit, c("A", "B"))
+  expect_identical(ncol(persons), 2L)
+  expect_false(anyDuplicated(colnames(persons)) > 0L)
+  expect_true(all(rowSums(!is.na(persons)) == 1L))
+  expect_equal(unname(colSums(!is.na(persons))), c(50, 50))
+  expect_error(.wright_person_panels(fit, matrix(1 + 2i, 2, 2)),
+               "real numeric")
+
+  class(fit) <- c("rasch_efrm", class(fit))
+  fit$virtual_map <- data.frame(vkey = fit$items$item,
+    set = rep(c("a x b", "a"), 3), group = rep(c("c", "b x c"), 3))
+  panels <- .wright_item_panels(fit, c("sets", "groups"), fit$items$item)
+  expect_identical(nlevels(panels), 2L)
+  expect_equal(unname(as.integer(table(panels))), c(3L, 3L))
 })
 
 test_that("EFRM maps recover person groups and item sets from the fitted design", {
@@ -100,6 +149,8 @@ test_that("EFRM maps recover person groups and item sets from the fitted design"
   df <- rasch:::.wright_map_data(fit, item_panels = c("sets", "groups"))
   expect_equal(nlevels(df$item_panels), nrow(fit$frames))
   expect_equal(length(df$item_panels), nrow(fit$virtual_map))
+  expect_error(rasch:::.wright_map_data(
+    fit, item_panels = c("sets", "sets")), "distinct")
 })
 
 test_that("wright_map calls the installed WrightMap interface", {

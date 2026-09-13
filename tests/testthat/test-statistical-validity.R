@@ -4,6 +4,48 @@
 # chi-square degrees of freedom, covariance-correct equating drift tests,
 # the few-judges clustering guard, and the judge-level DIF ANOVA.
 
+test_that("repeated response rows use a person-clustered calibration sandwich", {
+  set.seed(3401)
+  N <- 320L; L <- 6L
+  X <- matrix(rbinom(N * L, 1,
+    plogis(outer(rnorm(N), seq(-1.2, 1.2, length.out = L), "-"))),
+    N, L, dimnames = list(NULL, paste0("I", seq_len(L))))
+
+  once <- rasch(X, id = sprintf("P%03d", seq_len(N)))
+  twice <- rasch(rbind(X, X),
+                 id = rep(sprintf("P%03d", seq_len(N)), 2L))
+  independent <- rasch(rbind(X, X), id = sprintf("R%03d", seq_len(2L * N)))
+
+  expect_equal(twice$thresholds$tau, once$thresholds$tau,
+               tolerance = 1e-8)
+  # Extreme response vectors contain no informative conditional item pairs.
+  # The finite-cluster correction therefore uses contributing people, not the
+  # raw sample size.
+  G <- twice$est$cluster_support$n
+  cr1 <- G / (G - 1)
+  expect_equal(twice$est$cov_tau, cr1 * once$est$cov_tau,
+               tolerance = 1e-7)
+  expect_equal(independent$est$cov_tau, once$est$cov_tau / 2,
+               tolerance = 1e-7)
+  expect_equal(twice$est$cluster_support$cr1, cr1)
+  expect_equal(once$est$cluster_support$cr1, 1)
+  expect_match(paste(twice$notes, collapse = " "), "clustered")
+  expect_true(isTRUE(twice$repeated_ids))
+  expect_true(all(is.na(twice$items$p)))
+  expect_true(all(is.na(twice$items$p_adj)))
+  expect_true(all(is.na(twice$items$p_anova)))
+  expect_true(all(is.na(twice$item_trait$p)))
+  expect_true(all(is.na(twice$item_anova$p)))
+  expect_true(is.na(twice$total_chisq_p))
+  expect_true(any(is.finite(twice$items$chisq)))
+  expect_match(paste(twice$notes, collapse = " "), "probabilities withheld")
+  expect_false(isTRUE(once$repeated_ids))
+  expect_false(isTRUE(independent$repeated_ids))
+  expect_true(any(is.finite(independent$items$p_adj)))
+  expect_error(fit_bootstrap(twice, B = 5, workers = 1, seed = 1),
+               "assumes independent response rows")
+})
+
 test_that("mixed-max-score item location SEs are calibrated (cov transform)", {
   skip_on_cran()   # 60 replicate fits
   set.seed(9)
@@ -65,13 +107,14 @@ test_that("an item with fewer than two class intervals gets NA, not df = 1", {
   expect_true(is.na(f$total_chisq_p))
 })
 
-test_that("unavailable item-fit tests do not enlarge Holm families", {
+test_that("unavailable item-fit tests remain in the predeclared families", {
   set.seed(47)
   ci <- rep(1:2, each = 20)
   Z <- cbind(I1 = rnorm(40), I2 = rnorm(40), I3 = NA_real_)
   anova <- .item_anova(Z, ci, extreme = rep(FALSE, 40))
   ok_a <- is.finite(anova$p)
-  expect_equal(anova$p_adj[ok_a], p.adjust(anova$p[ok_a], "holm"))
+  expect_equal(anova$p_adj[ok_a],
+               p.adjust(anova$p[ok_a], "holm", n = nrow(anova)))
   expect_true(is.na(anova$p_adj[!ok_a]))
 
   X <- matrix(rbinom(120, 1, 0.5), 40, 3,
@@ -80,7 +123,8 @@ test_that("unavailable item-fit tests do not enlarge Holm families", {
   mo <- list(E = matrix(0.5, 40, 3), V = matrix(0.25, 40, 3))
   trait <- .item_trait(X, mo, ci)
   ok_t <- is.finite(trait$p)
-  expect_equal(trait$p_adj[ok_t], p.adjust(trait$p[ok_t], "holm"))
+  expect_equal(trait$p_adj[ok_t],
+               p.adjust(trait$p[ok_t], "holm", n = nrow(trait)))
   expect_true(is.na(trait$p_adj[!ok_t]))
 })
 
@@ -115,6 +159,16 @@ test_that("clustered SEs refuse a single judge and note few judges", {
   d$judge <- rep(sprintf("J%d", 1:6), 20)
   f <- btl(d, "object_a", "object_b", "winner", judge = "judge")
   expect_true(any(grepl("judge clusters", f$notes)))
+})
+
+test_that("judge-clustered pair fit keeps the row chi-square descriptive", {
+  d <- simulate_btl(5, 12, 5, seed = 1)
+  fit <- btl(d, "object_a", "object_b", "winner", judge = "judge")
+  expect_true(fit$cl$inference_available)
+  expect_true(is.finite(fit$total_chisq))
+  expect_true(is.na(fit$total_p))
+  expect_match(paste(fit$notes, collapse = " "),
+               "row-based reference does not model within-judge dependence")
 })
 
 test_that("btl_dif does not flag under judge heterogeneity with null groups", {
@@ -254,6 +308,127 @@ test_that("clustered covariance notes rank deficiency (judges <= parameters)", {
   expect_true(any(grepl("rank-deficient", f$notes)))
 })
 
+test_that("clustered BTL covariance needs full empirical score rank", {
+  # Twelve nominal judges all contribute exactly the same strongly-connected
+  # tournament. The judge count exceeds the three free object parameters,
+  # but their cluster score vectors span only one direction.
+  block <- data.frame(
+    object_a = c("A", "A", "A", "B", "B", "C"),
+    object_b = c("B", "C", "D", "C", "D", "D"),
+    winner = c("A", "C", "D", "B", "B", "C"))
+  d <- do.call(rbind, lapply(seq_len(12L), function(j)
+    transform(block, judge = sprintf("J%02d", j))))
+  f <- btl(d, "object_a", "object_b", "winner", judge = "judge")
+  expect_true(f$converged)
+  expect_gt(f$cl$n_units, f$cl$n_parameters)
+  expect_lt(f$cl$score_rank, f$cl$n_parameters)
+  expect_false(f$cl$inference_available)
+  expect_true(is.na(rasch:::.btl_equate_cov_df(f, "A")))
+  expect_true(all(is.na(f$objects$se)))
+  expect_true(all(is.na(f$cov_beta)))
+  expect_true(is.na(f$total_p))
+  expect_true(is.na(f$cl$eff_params))
+  expect_true(all(is.na(f$cov_parameters)))
+  expect_true(any(grepl("empirical covariance is rank-deficient", f$notes,
+                        fixed = TRUE)))
+
+  # The same empirical-rank requirement applies to an unclustered sandwich.
+  # Its likelihood information is identified, but these repeated response
+  # patterns span only two of the three fitted directions.
+  block_u <- data.frame(
+    object_a = c("O3", "O1", "O3"),
+    object_b = c("O1", "O2", "O1"),
+    response = 2:0)
+  fu <- btl(block_u[rep(seq_len(3L), 10L), ],
+            "object_a", "object_b", response = "response")
+  expect_true(fu$converged)
+  expect_gt(fu$cl$n_units, fu$cl$n_parameters)
+  expect_lt(fu$cl$score_rank, fu$cl$n_parameters)
+  expect_false(fu$cl$inference_available)
+  expect_true(is.na(rasch:::.btl_equate_cov_df(fu, "O1")))
+  expect_true(all(is.na(fu$objects$se)))
+  expect_true(all(is.na(fu$cov_beta)))
+  expect_error(btl_next_pairs(fu), "covariance")
+  expect_true(all(is.na(fu$cov_parameters)))
+  expect_match(paste(fu$notes, collapse = " "),
+               "independent-comparison score covariance")
+
+  # If the global judge guard withholds the sandwich, every coefficient table
+  # also withholds its reference degrees of freedom.
+  small <- simulate_btl(5, 6, 3, seed = 14)
+  fp <- btl(small, "object_a", "object_b", "winner", judge = "judge",
+            position = TRUE)
+  expect_false(fp$cl$inference_available)
+  expect_true(all(is.na(fp$dependence$se)))
+  expect_true(all(is.na(fp$dependence$t)))
+  expect_true(all(is.na(fp$dependence$df)))
+  expect_true(all(is.na(fp$dependence$p)))
+  expect_true(all(is.na(fp$cov_beta)))
+  predictors <- data.frame(object = paste0("O", 1:5), x = 1:5)
+  fe <- btl_explanatory(small, predictors, ~ x,
+                        "object_a", "object_b", winner = "winner",
+                        judge = "judge")
+  expect_true(all(is.na(fe$object_coefficients$se)))
+  expect_true(all(is.na(fe$object_coefficients$t)))
+  expect_true(all(is.na(fe$object_coefficients$df)))
+  expect_true(all(is.na(fe$object_coefficients$p)))
+
+  # Exact anchors remain constants even when the free sandwich is withheld:
+  # their complete covariance row and column are known zeros, not missing.
+  anchored <- btl(small, "object_a", "object_b", "winner", judge = "judge",
+                  anchors = c(O1 = 0))
+  expect_false(anchored$cl$inference_available)
+  expect_true(all(anchored$cov_beta["O1", ] == 0))
+  expect_true(all(anchored$cov_beta[, "O1"] == 0))
+  expect_true(all(is.na(anchored$cov_beta[-1L, -1L])))
+  expect_true(is.infinite(rasch:::.btl_equate_cov_df(anchored, "O1")))
+  expect_true(is.na(rasch:::.btl_equate_cov_df(anchored, "O2")))
+})
+
+test_that("an exact BTL anchor survives an unsupported companion sandwich", {
+  truth <- setNames(seq(-1, 1, length.out = 5), paste0("O", 1:5))
+  good_data <- simulate_btl(5, 12, 15, object_locations = truth, seed = 501)
+  weak_data <- simulate_btl(5, 6, 15, object_locations = truth, seed = 502)
+  good <- btl(good_data, "object_a", "object_b", "winner", judge = "judge",
+              anchors = c(O1 = unname(truth["O1"])))
+  weak <- btl(weak_data, "object_a", "object_b", "winner", judge = "judge",
+              anchors = c(O1 = unname(truth["O1"]),
+                          O2 = unname(truth["O2"])))
+  expect_true(good$cl$inference_available)
+  expect_false(weak$cl$inference_available)
+  expect_true(is.infinite(rasch:::.btl_equate_cov_df(weak, c("O1", "O2"))))
+  expect_true(is.na(rasch:::.btl_equate_cov_df(weak, c("O1", "O3"))))
+
+  eq <- btl_equate(good, weak, independent = TRUE, shift = "none")
+  row_o2 <- eq$table$object == "O2"
+  expect_true(eq$inferential)
+  expect_true(is.finite(eq$table$se_diff[row_o2]))
+  expect_true(is.finite(eq$table$df[row_o2]))
+  expect_true(is.finite(eq$table$p_adj[row_o2]))
+})
+
+test_that("row-based fit support is distinct from calibration support", {
+  expect_false(rasch:::.has_repeated_person_ids(c("", "", NA_character_)))
+  d <- simulate_rasch(120, 6, n_categories = 3, seed = 992)
+  item_names <- grep("^I", names(d), value = TRUE)
+  X <- as.matrix(d[item_names])
+  # This repeated row has one interior polytomous response. It contributes no
+  # conditional item pair, but it does carry a fitted residual and therefore
+  # cannot be treated as an independent person by row-based fit references.
+  extra <- rep(NA_integer_, ncol(X))
+  extra[1L] <- 1L
+  fit <- rasch(rbind(X, extra), id = c(d$id, d$id[1L]))
+
+  expect_false(fit$repeated_ids)
+  expect_true(fit$repeated_residual_ids)
+  expect_true(rasch:::.has_repeated_residual_units(fit))
+  expect_true(all(is.na(fit$items$p)))
+  expect_true(is.na(fit$total_chisq_p))
+  expect_error(fit_bootstrap(fit, B = 1L), "independent response rows")
+  expect_error(rasch:::.scree_reference(fit, 2L, 20L, seed = 1L),
+               "independent occasions")
+})
+
 # --- DIF ANOVA engine (round 10): order invariance, person units, GG ------
 
 test_that("multi-factor DIF tests are order-invariant (Type II)", {
@@ -290,6 +465,51 @@ test_that("duplicating every person leaves the DIF tests exactly unchanged", {
   s1 <- dif_anova(f1)$summary; s2 <- dif_anova(f2)$summary
   expect_equal(s2$F_uniform[order(s2$item)], s1$F_uniform[order(s1$item)],
                tolerance = 1e-8)
+})
+
+test_that("unavailable item DIF terms remain in the Holm family", {
+  set.seed(701)
+  n <- 320L
+  g <- factor(rep(c("A", "B"), each = n / 2L))
+  d <- seq(-1.2, 1.2, length.out = 6L)
+  X <- matrix(rbinom(n * 6L, 1L, plogis(outer(rnorm(n), d, "-"))),
+              n, 6L, dimnames = list(NULL, paste0("I", 1:6)))
+  X[g == "B", "I1"] <- NA_integer_
+  fit <- rasch(data.frame(X, g), factors = "g")
+  out <- dif_anova(fit, n_groups = 2L)
+
+  unavailable <- out$terms$item == "I1" &
+    out$terms$term %in% c("g", "g:ci")
+  expect_equal(sum(unavailable), 2L)
+  expect_true(all(is.na(out$terms$p[unavailable])))
+  family <- !out$term_ids %in% c("Residuals", "ci")
+  expect_equal(sum(family), 2L * ncol(fit$X))
+  usable <- family & is.finite(out$terms$p)
+  expect_equal(out$terms$p_adj[usable],
+               p.adjust(out$terms$p[usable], "holm", n = sum(family)))
+  expect_match(paste(out$notes, collapse = " "),
+               "remain in the adjusted-probability family")
+})
+
+test_that("mixed DIF results have one residual key and validate", {
+  set.seed(702)
+  n <- 100L
+  d <- seq(-1, 1, length.out = 5L)
+  theta <- rnorm(n)
+  make_wave <- function(offset) {
+    X <- matrix(rbinom(n * 5L, 1L,
+      plogis(outer(theta + offset, d, "-"))), n, 5L)
+    colnames(X) <- paste0("I", 1:5)
+    X
+  }
+  dat <- data.frame(
+    rbind(make_wave(0), make_wave(0.2)),
+    occasion = rep(c("pre", "post"), each = n))
+  fit <- rasch(dat, factors = "occasion", id = rep(seq_len(n), 2L))
+  out <- dif_anova(fit, n_groups = 2L)
+
+  expect_equal(sum(out$term_ids == "Residuals"), ncol(fit$X))
+  expect_no_error(rasch:::.validate_dif_result(out, fit))
 })
 
 test_that("stacked between-treatment is refused; within declarations checked", {
@@ -456,7 +676,8 @@ test_that("a between level with no complete panels yields NA terms, not a crash"
   expect_s3_class(dif_anova(f), "rasch_dif")
   df <- dif_anova(f, effects = "factorial")
   expect_true(any(is.na(df$terms$F_value[df$terms$term == "occ:grp"])))
-  expect_true(any(grepl("non-estimable", df$notes)))
+  expect_true(any(grepl("I1 [occ:grp]: unavailable because", df$notes,
+                        fixed = TRUE)))
   expect_true(any(grepl("dropped from the within-person", df$notes)))
 })
 
@@ -561,8 +782,11 @@ test_that("EFRM group linkage requires shared items, not shared set labels", {
     X[grp == unique(grp)[1], s[half]] <- NA
     X[grp == unique(grp)[2], s[-half]] <- NA
   }
+  # the groups are given by value and the data carries an identical
+  # `group` column, so the item columns are named explicitly: this test is
+  # about linkage, not about resolving that ambiguity
   expect_error(
-    rasch_efrm(X, item_sets = tr$item_sets, groups = grp),
+    rasch_efrm(X, item_sets = tr$item_sets, groups = grp, items = items),
     "not linked|unidentified")
 })
 
@@ -572,11 +796,18 @@ test_that("dif_anova integrates with EFRM and MFRM fits", {
                      n_groups = 2, group_unit_ratio = 1.25, seed = 1)
   tr <- attr(d, "truth")
   expect_error(
-    dif_anova(rasch_efrm(d, item_sets = tr$item_sets, groups = tr$groups)),
+    dif_anova(rasch_efrm(
+      d, item_sets = tr$item_sets, groups = tr$groups,
+      items = unlist(tr$item_sets, use.names = FALSE),
+      boot_reps = 30, workers = 1
+    )),
     "frame structure")
   sex <- rep(c("m", "f"), length.out = nrow(d))
-  f2 <- rasch_efrm(d, item_sets = tr$item_sets, groups = tr$groups,
-                   factors = data.frame(sex = sex))
+  f2 <- rasch_efrm(
+    d, item_sets = tr$item_sets, groups = tr$groups,
+    items = unlist(tr$item_sets, use.names = FALSE),
+    factors = data.frame(sex = sex), boot_reps = 30, workers = 1
+  )
   d2 <- dif_anova(f2)
   expect_true(any(grepl("frame structure", d2$notes)))
   expect_gt(nrow(d2$summary), 0)
@@ -610,7 +841,7 @@ test_that("dif_anova integrates with EFRM and MFRM fits", {
   expect_error(
     rasch_mfrm(dd, person = "person", item = "item", score = "score",
                facets = "rater", factors = "rater"),
-    "varies within person")
+    "cannot also define another model role")
 })
 
 # --- capability round: pooled MFRM DIF, MFRM sizes, factorial EFRM frames --
@@ -688,17 +919,23 @@ test_that("EFRM unit identification is honest at both extremes", {
     for (i in 1:16) X[[i]] <- rbinom(N, 1, plogis(phi_t * (th - deltas[i])))
     X
   }
-  # all items equally difficult: the units are weakly identified at best.
-  # The identification check is on the information (rank/conditioning),
-  # not on a spread heuristic, so this full-rank case keeps its estimate;
-  # honesty lives in the SEs, which must be large enough that no unit
-  # difference could be claimed from them
-  fz <- rasch_efrm(mk(rep(0, 16)), groups = g, item_sets = sets,
-                   se_method = "hybrid")
+  # Within one set, equal item difficulties leave the group units weakly
+  # identified but do not require a set link. Retain the estimate and show
+  # its weakness through the uncertainty.
+  weak <- mk(rep(0, 16))
+  fz <- rasch_efrm(weak[, sets$A], groups = g,
+                   item_sets = list(A = sets$A), boot_reps = 0)
   lr <- abs(diff(log(fz$phi_table$phi)))
   se_lr <- sqrt(sum(fz$phi_table$se_log_phi^2))
   expect_lt(lr / se_lr, 2)              # no spurious unit claim
   expect_gt(min(fz$phi_table$se_log_phi), 0.2)   # no spurious precision
+  # The same flat thresholds cannot support a stable scale link between
+  # item sets. The linking bootstrap must refuse it rather than return a
+  # covariance estimated from a minority of the requested resamples.
+  expect_error(
+    rasch_efrm(weak, groups = g, item_sets = sets, se_method = "hybrid",
+               boot_reps = 30, workers = 1, seed = 42),
+    "unit-linking bootstrap replicates were usable")
   # a modest half-logit spread is real signal and must not be refused
   fm <- rasch_efrm(mk(rep(seq(-0.25, 0.25, length.out = 8), 2)),
                    groups = g, item_sets = sets, se_method = "hybrid")
@@ -723,6 +960,9 @@ test_that("phi_factorial_tests recover a planted region unit effect", {
                   se_method = "hybrid")
   tt <- f$phi_factorial_tests
   expect_setequal(tt$term, c("grp", "region", "grp:region"))
+  expect_true(all(c("p_adj", "significant") %in% names(tt)))
+  expect_equal(tt$p_adj, stats::p.adjust(tt$p, method = "holm"))
+  expect_identical(tt$significant, tt$p_adj < 0.05)
   expect_lt(tt$p[tt$term == "region"], 0.01)
   expect_gt(tt$p[tt$term == "grp"], 0.05)
   expect_gt(tt$p[tt$term == "grp:region"], 0.05)
@@ -828,6 +1068,30 @@ test_that("dif_size withholds magnitude and significance on a weak category", {
   expect_true(any(grepl("weakly identified|withheld", ds$notes)))
 })
 
+test_that("withheld DIF probabilities remain in their declared families", {
+  d <- simulate_rasch(900, 6, model = "PCM", n_categories = 3,
+                      n_groups = 3, seed = 912)
+  thin <- which(d$group == "g3")
+  d$I02[thin] <- pmin(d$I02[thin], 1L)
+  d$I02[thin[1L]] <- 2L
+  fit <- rasch(d, model = "PCM", factors = "group", id = "id")
+
+  sizes <- dif_size(fit, "I02", by = "group")$pairs
+  usable <- is.finite(sizes$p)
+  expect_equal(sum(usable), 1L)
+  expect_equal(sizes$p_adj[usable],
+               p.adjust(sizes$p[usable], "holm", n = nrow(sizes)))
+  expect_true(all(is.na(sizes$p_adj[!usable])))
+
+  contrasts <- dif_contrasts(fit, factors = "group")$table
+  usable <- is.finite(contrasts$p)
+  expect_lt(sum(usable), nrow(contrasts))
+  expect_equal(contrasts$p_adj[usable],
+               p.adjust(contrasts$p[usable], "holm",
+                        n = nrow(contrasts)))
+  expect_true(all(is.na(contrasts$p_adj[!usable])))
+})
+
 test_that("resolve_dif does not split a uniform flag driven by a thin cell", {
   set.seed(102)
   N <- 600; L <- 6
@@ -861,7 +1125,12 @@ test_that("btl marks subset separation as non-convergence, not a boundary fit", 
                  data.frame(a = "B", b = "D", resp = 3))
   fit <- btl(rbind(within1, within2, cross), "a", "b", response = "resp")
   expect_false(fit$converged)
-  expect_true(any(is.na(fit$objects$se)))
+  expect_false(fit$cl$inference_available)
+  expect_true(is.na(fit$cl$eff_params))
+  expect_true(all(is.na(fit$objects$se)))
+  expect_true(all(is.na(fit$thresholds$se)))
+  expect_true(all(is.na(fit$components$se)))
+  expect_true(is.na(fit$total_p))
   expect_true(any(grepl("run to the location boundary", fit$notes)))
   # equating refuses a non-converged calibration
   fit2 <- fit
@@ -991,7 +1260,8 @@ test_that("btl_dimensionality withholds the verdict under a shared fixed order",
   # shared fixed order: the order effect is confounded, verdict withheld
   fs <- suppressWarnings(btl(gen(TRUE), "a", "b", "win", judge = "judge",
                              order = "seq"))
-  ds <- suppressWarnings(btl_dimensionality(fs, reps = 30))
+  ds <- suppressWarnings(btl_dimensionality(fs, reps = 30,
+    independent_comparisons = TRUE))
   expect_true(is.na(ds$bimensions$above_reference[1]))
   expect_true(is.na(ds$leading_structured))
   expect_true(any(grepl("withheld", capture.output(print(ds)))))
@@ -999,9 +1269,52 @@ test_that("btl_dimensionality withholds the verdict under a shared fixed order",
   # randomised order: the confound detector does NOT fire, a verdict is given
   fr <- suppressWarnings(btl(gen(FALSE), "a", "b", "win", judge = "judge",
                              order = "seq"))
-  dr <- suppressWarnings(btl_dimensionality(fr, reps = 30))
+  dr <- suppressWarnings(btl_dimensionality(fr, reps = 30,
+    independent_comparisons = TRUE))
   expect_false(is.na(dr$bimensions$above_reference[1]))
   expect_false(any(grepl("withheld", dr$notes)))
+})
+
+test_that("BTL order variation is measured between judges, not repeated rows", {
+  one <- data.frame(
+    object_a = c("A", "A", "A", "B", "A", "B"),
+    object_b = c("B", "C", "B", "C", "C", "C"),
+    order = 1:6, judge = "J1")
+  same <- rbind(one, transform(one, judge = "J2"))
+  fixed <- rasch:::.btl_order_variation(same, LETTERS[1:3])
+  expect_true(fixed$replicated)
+  expect_true(fixed$shared)
+
+  varied <- same
+  varied$order[varied$judge == "J2"] <- c(5, 1, 6, 2, 3, 4)
+  randomised <- rasch:::.btl_order_variation(varied, LETTERS[1:3])
+  expect_true(randomised$replicated)
+  expect_false(randomised$shared)
+
+  # Averaging many presentations within a judge lowers the raw variance of
+  # pair positions. The detector scales by that random-order expectation, so
+  # a genuinely random order is not mistaken for a common sequence.
+  set.seed(4606)
+  pairs <- data.frame(object_a = rep(c("A", "A", "B"), each = 8L),
+                      object_b = rep(c("B", "C", "C"), each = 8L))
+  many <- do.call(rbind, lapply(seq_len(20L), function(j) {
+    z <- pairs[sample(nrow(pairs)), , drop = FALSE]
+    z$order <- seq_len(nrow(z)); z$judge <- paste0("J", j); z
+  }))
+  expect_false(rasch:::.btl_order_variation(many, LETTERS[1:3])$shared)
+
+  unreplicated <- rasch:::.btl_order_variation(one, LETTERS[1:3])
+  expect_false(unreplicated$replicated)
+  expect_true(unreplicated$shared)
+})
+
+test_that("a static BTL position effect does not invoke the shared-order guard", {
+  d <- simulate_btl(7, 10, reps_per_pair = 12, seed = 903)
+  fit <- btl(d, "object_a", "object_b", winner = "winner",
+             position = TRUE)
+  z <- btl_dimensionality(fit, reps = 20, seed = 2)
+  expect_false(is.na(z$leading_structured))
+  expect_false(any(grepl("comparison order", z$notes, fixed = TRUE)))
 })
 
 test_that("EFRM fits export and report despite the residual-PCA refusal", {
@@ -1016,15 +1329,34 @@ test_that("EFRM fits export and report despite the residual-PCA refusal", {
   colnames(X) <- sprintf("I%02d", seq_along(d))
   fit <- rasch_efrm(data.frame(X, grp = grp),
                     item_sets = list(core = colnames(X)), groups = "grp")
-  out <- file.path(tempdir(), "efrm-export-regression")
-  expect_no_error(save_outputs(fit, out, formats = "png"))
+  out <- tempfile("efrm-export-regression-")
+  on.exit(unlink(out, recursive = TRUE), add = TRUE)
+  save_warnings <- character(0)
+  withCallingHandlers(
+    save_outputs(fit, out, formats = "png"),
+    warning = function(w) {
+      save_warnings <<- c(save_warnings, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+  expect_gt(length(save_warnings), 0L)
+  expect_true(all(grepl("residual PCA is undefined", save_warnings)))
   for (nm in c("response_cell_statistics.csv", "items_common_unit.csv",
                "thresholds_common_unit.csv", "frame_model_comparison.csv",
                "unit_omnibus_tests.csv", "unit_contrasts.csv"))
     expect_true(file.exists(file.path(out, "tables", nm)), info = nm)
   expect_false(file.exists(file.path(out, "tables", "item_statistics.csv")))
   hfile <- file.path(tempdir(), "efrm-rep.html")
-  expect_no_error(report_html(fit, hfile))
+  report_warnings <- character(0)
+  withCallingHandlers(
+    report_html(fit, hfile),
+    warning = function(w) {
+      report_warnings <<- c(report_warnings, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+  expect_gt(length(report_warnings), 0L)
+  expect_true(all(grepl("residual PCA is undefined", report_warnings)))
   html <- paste(readLines(hfile, warn = FALSE), collapse = "\n")
   expect_match(html, "Common-scale item estimates", fixed = TRUE)
   expect_match(html, "Response-cell fit", fixed = TRUE)
@@ -1035,14 +1367,14 @@ test_that("EFRM fits export and report despite the residual-PCA refusal", {
   expect_true(grepl("split unavailable", dt$note))
 })
 
-test_that("dimensionality_test gives a verdict for ordinary short tests", {
+test_that("dimensionality_test withholds an uncalibrated automatic verdict", {
   set.seed(1); N <- 500; L <- 10
   d <- seq(-2, 2, length.out = L)
   X <- matrix(rbinom(N * L, 1, plogis(outer(rnorm(N), d, "-"))), N, L)
   colnames(X) <- paste0("I", 1:L)
   dt <- dimensionality_test(rasch(as.data.frame(X)))
-  # the verdict is computed (short subtests caution, not NA-withhold)
-  expect_true(dt$multidimensional %in% c(TRUE, FALSE))
+  expect_true(is.na(dt$multidimensional))
+  expect_true(dt$binomial_multidimensional %in% c(TRUE, FALSE))
   expect_true(!is.null(dt$caution) && grepl("score points", dt$caution))
 })
 
@@ -1076,6 +1408,7 @@ test_that("test_information splits EFRM groups by administration pattern", {
 
 test_that("MFRM information combines facets administered to the same person", {
   fit <- structure(list(
+    est = list(converged = TRUE),
     tau_list = rep(list(0), 4),
     disc = rep(1, 4),
     virtual_map = data.frame(
@@ -1120,17 +1453,21 @@ test_that("MFRM interaction omnibus uses the Hotelling-style F reference", {
   expect_gte(it$p, p_chisq)
   # cells use a t reference (p >= the normal-reference p)
   ie <- fit$interaction_effects
-  expect_true(all(ie$p >= 2 * pnorm(-abs(ie$z)) - 1e-12))
+  expected_df <- floor(min(fit$interaction_support$effective_persons)) - 1L
+  expect_equal(ie$df, rep(expected_df, nrow(ie)))
+  expect_equal(ie$p, 2 * pt(-abs(ie$t), df = ie$df))
+  expect_true(all(ie$p >= 2 * pnorm(-abs(ie$t)) - 1e-12))
   out <- tempfile("mfrm-export-")
   on.exit(unlink(out, recursive = TRUE), add = TRUE)
-  invisible(save_outputs(fit, out, formats = "png", item_plots = FALSE))
+  expect_no_warning(invisible(
+    save_outputs(fit, out, formats = "png", item_plots = FALSE)))
   expect_true(file.exists(file.path(out, "tables",
                                     "interaction_omnibus_test.csv")))
   expect_true(file.exists(file.path(out, "tables",
                                     "response_cell_statistics.csv")))
 })
 
-test_that("MFRM interaction inference uses the least-supported facet level", {
+test_that("MFRM interaction inference uses the least-supported cell", {
   set.seed(3101)
   simP <- function(th, tau) {
     x <- 0:length(tau); p <- exp(x * th - c(0, cumsum(tau))); p / sum(p)
@@ -1145,10 +1482,28 @@ test_that("MFRM interaction inference uses the least-supported facet level", {
   fit <- rasch_mfrm(d, "person", "item", "score", facets = "rater",
                     interaction = "rater")
   expect_false(fit$interaction_test$inference_available)
+  expect_identical(fit$interaction_test$inference_available,
+                   is.finite(fit$interaction_test$p))
   expect_equal(min(fit$interaction_support$n_persons), 12)
   expect_true(is.na(fit$interaction_test$p))
   expect_true(all(is.na(fit$interaction_effects$p)))
   expect_true(all(is.finite(fit$interaction_effects$gamma)))
+
+  # A single sparse item-by-rater cell must withhold inference even when that
+  # rater has ample observations on the remaining items.
+  d2 <- expand.grid(person = persons, item = items,
+                    rater = paste0("R", 1:3), stringsAsFactors = FALSE)
+  d2 <- d2[d2$rater != "R1" | d2$item != "I1" |
+             d2$person %in% persons[1:12], ]
+  d2$score <- vapply(seq_len(nrow(d2)), function(i)
+    sample(0:2, 1, prob = simP(theta[d2$person[i]], c(-0.5, 0.5))), 0L)
+  fit2 <- rasch_mfrm(d2, "person", "item", "score", facets = "rater",
+                     interaction = "rater")
+  sparse <- fit2$interaction_support$item == "I1" &
+    fit2$interaction_support$level == "R1"
+  expect_equal(fit2$interaction_support$n_persons[sparse], 12)
+  expect_false(fit2$interaction_test$inference_available)
+  expect_true(all(is.na(fit2$interaction_effects$p)))
 })
 
 test_that("btl eff_params is withheld with clustered inference", {
@@ -1162,4 +1517,66 @@ test_that("btl eff_params is withheld with clustered inference", {
   f <- suppressWarnings(btl(d, "a", "b", "winner", judge = "judge"))
   expect_false(isTRUE(f$cl$inference_available))
   expect_true(is.na(f$cl$eff_params))
+})
+
+test_that("DIF post-hoc adjustment retains unsupported planned contrasts", {
+  set.seed(8301)
+  n <- 360L
+  group <- factor(rep(c("A", "B", "C"), each = n / 3L))
+  stratum <- factor(c(rep("X", 2L * n / 3L), rep("Y", n / 3L)))
+  theta <- stats::rnorm(n)
+  difficulty <- seq(-1.2, 1.2, length.out = 6L)
+  response <- vapply(difficulty, function(delta) {
+    stats::rbinom(n, 1L, stats::plogis(theta - delta))
+  }, integer(n))
+  colnames(response) <- paste0("I", seq_len(ncol(response)))
+
+  fit <- rasch(data.frame(response, group, stratum),
+               items = colnames(response), factors = c("group", "stratum"))
+  out <- dif_posthoc(fit, "I1", term = "group", min_n = 20L)
+
+  expect_identical(out$family$contrast, "B - A")
+  expect_identical(out$family_n_per_item, 3L)
+  expect_identical(out$family_n, 3L)
+  expect_equal(out$table$p_adj,
+               stats::p.adjust(out$table$p, method = "holm", n = 3L))
+  expect_true(any(grepl("remain in the multiplicity family", out$notes,
+                        fixed = TRUE)))
+
+  factors <- data.frame(group, stratum)
+  cells <- rasch:::.factor_cells(factors, sep = ":")
+  cellmap <- unique(data.frame(cell = as.character(cells), factors))
+  family <- rasch:::.dif_posthoc_family(
+    factors, cellmap, target = "group", within = character(0))
+  expect_identical(family$planned, c("B - A", "C - A", "C - B"))
+  expect_identical(family$planned_n, 3L)
+
+  auto <- dif_contrasts(fit, factors = c("group", "stratum"),
+                        items = "I1", min_n = 20L)
+  expect_identical(nrow(auto$table), 1L)
+  expect_identical(auto$family_n_per_item, 4L)
+  expect_identical(auto$family_n, 4L)
+  expect_equal(auto$table$p_adj,
+               stats::p.adjust(auto$table$p, method = "holm", n = 4L))
+  expect_match(auto$family$cells,
+               "A:X -1.00, B:X \\+1.00")
+  expect_true(any(grepl("remain in the multiplicity family", auto$notes,
+                        fixed = TRUE)))
+})
+
+test_that("DIF contrast labels cannot overwrite punctuation-bearing levels", {
+  f <- factor(c("a", "b - c", "c - a", "b"),
+              levels = c("a", "b - c", "c - a", "b"))
+  one <- rasch:::.dif_factor_contrasts(f, "group")
+  expect_length(one, choose(nlevels(f), 2L))
+  expect_false(anyDuplicated(names(one)) > 0L)
+
+  factors <- data.frame(group = f)
+  cells <- rasch:::.factor_cells(factors, sep = ":")
+  cellmap <- unique(data.frame(cell = as.character(cells), factors))
+  posthoc <- rasch:::.dif_posthoc_family(
+    factors, cellmap, target = "group", within = character(0))
+  expect_equal(posthoc$planned_n, choose(nlevels(f), 2L))
+  expect_length(posthoc$family, choose(nlevels(f), 2L))
+  expect_false(anyDuplicated(names(posthoc$family)) > 0L)
 })

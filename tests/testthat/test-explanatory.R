@@ -31,6 +31,178 @@ sim_lpcm_explanatory <- function(n = 700, seed = 4102) {
   list(X = X, predictors = predictors)
 }
 
+test_that("Kent calibration refuses singular or indefinite uncertainty", {
+  C <- diag(2)
+  good <- rasch:::.kent_calibration(4, C, 2 * diag(2), diag(2))
+  expect_equal(good$lambda, c(2, 2))
+  expect_equal(good$chisq, 2)
+  expect_equal(good$p, pchisq(2, 2, lower.tail = FALSE))
+
+  singular <- rasch:::.kent_calibration(4, C, diag(2), matrix(0, 2, 2))
+  expect_true(is.na(singular$chisq))
+  expect_true(is.na(singular$p))
+  expect_length(singular$lambda, 0L)
+
+  indefinite <- rasch:::.kent_calibration(4, C, diag(c(1, -1)), diag(2))
+  expect_true(is.na(indefinite$chisq))
+  expect_true(is.na(indefinite$p))
+
+  asymmetric <- matrix(c(1, 0.5, 0, 1), 2L)
+  expect_true(is.na(
+    rasch:::.kent_calibration(4, C, asymmetric, diag(2))$chisq))
+  expect_true(is.na(
+    rasch:::.kent_calibration(4, C, diag(2), asymmetric)$chisq))
+})
+
+test_that("failed explanatory calibration withholds covariance inference", {
+  d <- sim_lltm(n = 250, seed = 4110)
+  M <- ncol(d$X)
+  B <- rbind(diag(M - 1L), rep(-1, M - 1L))
+  colnames(B) <- paste0("b", seq_len(ncol(B)))
+  real_solve <- rasch:::.pcml_solve
+  z <- testthat::with_mocked_bindings(
+    rasch:::.pcml_design(d$X, B, colnames(B)),
+    .pcml_solve = function(...) {
+      ans <- real_solve(...)
+      ans$converged <- FALSE
+      ans
+    },
+    .package = "rasch")
+  expect_false(z$converged)
+  expect_true(all(is.na(z$thr$se)))
+  expect_true(all(is.na(z$cov_tau)))
+  expect_true(all(is.na(z$cov_beta)))
+  expect_true(all(is.na(z$coefficients$se)))
+  expect_true(all(is.na(z$coefficients$p)))
+  expect_true(all(is.na(z$coefficients$p_adj)))
+})
+
+test_that("explanatory coefficients use supported person-cluster inference", {
+  set.seed(991)
+  n_cluster <- 24L
+  repeats <- 3L
+  predictors <- data.frame(
+    item = paste0("I", 1:10),
+    operation = rep(0:1, each = 5),
+    format = rep(c("A", "B"), 5),
+    stringsAsFactors = FALSE)
+  theta <- rep(rnorm(n_cluster), each = repeats)
+  delta <- -0.5 + 0.7 * predictors$operation +
+    0.35 * (predictors$format == "B")
+  X <- sapply(delta, function(d)
+    rbinom(length(theta), 1, plogis(theta - d)))
+  colnames(X) <- predictors$item
+  id <- rep(sprintf("P%02d", seq_len(n_cluster)), each = repeats)
+
+  fit <- rasch_explanatory(
+    X, predictors, ~ operation + format, id = id)
+  cf <- fit$est$coefficients
+  expect_true(fit$est$cluster_support$repeated)
+  expect_true(fit$est$cluster_inference)
+  expect_identical(fit$est$cluster_support$n, n_cluster)
+  expect_equal(fit$est$cluster_support$cr1,
+               n_cluster / (n_cluster - 1L))
+  expect_identical(fit$est$cluster_support$correction,
+                   "linearised delete-one-person jackknife")
+  expect_equal(cf$df, rep(n_cluster - 1L, nrow(cf)))
+  expect_equal(cf$p, 2 * pt(-abs(cf$t), df = n_cluster - 1L),
+               tolerance = 1e-12)
+
+  # A fixed-departure refit repeats the calibration with the same independent
+  # person clusters and therefore retains the same coefficient reference.
+  relaxed <- relax_explanatory(fit, "I1", "location")
+  expect_identical(relaxed$est$cluster_support$n, n_cluster)
+  expect_true(relaxed$est$cluster_inference)
+  expect_identical(relaxed$est$cluster_support$correction,
+                   "linearised delete-one-person jackknife")
+  expect_equal(relaxed$est$coefficients$df,
+               rep(n_cluster - 1L, nrow(relaxed$est$coefficients)))
+
+  unsupported_id <- rep(sprintf("C%d", 1:6), length.out = nrow(X))
+  unsupported <- rasch_explanatory(
+    X, predictors, ~ operation + format, id = unsupported_id)
+  expect_false(unsupported$est$cluster_inference)
+  expect_identical(unsupported$est$cluster_support$n, 6L)
+  expect_true(all(is.na(unsupported$est$coefficients[c(
+    "se", "t", "df", "p", "p_adj")])))
+  expect_true(any(grepl("fewer than 10 person clusters",
+                        unsupported$est$notes, fixed = TRUE)))
+
+  low_X <- as.matrix(expand.grid(
+    I1 = 0:1, I2 = 0:1, I3 = 0:1, I4 = 0:1))[2:9, , drop = FALSE]
+  low_predictors <- data.frame(
+    item = colnames(low_X), x = c(-1, -0.3, 0.4, 1))
+  low <- rasch_explanatory(low_X, low_predictors, ~ x)
+  expect_false(low$est$cluster_support$repeated)
+  expect_false(low$est$cluster_inference)
+  expect_true(all(is.na(low$est$coefficients[c(
+    "se", "t", "df", "p", "p_adj")])))
+})
+
+test_that("one row per person keeps the finite coefficient reference", {
+  # The sandwich rests on the same finite count of independent units whether
+  # or not identifiers repeat. Reading single-row units as a limiting normal
+  # rejects a true null far more often than the printed probability states.
+  set.seed(4471)
+  n_person <- 30L
+  predictors <- data.frame(
+    item = paste0("I", 1:10),
+    operation = rep(0:1, each = 5),
+    format = rep(c("A", "B"), 5),
+    stringsAsFactors = FALSE)
+  theta <- rnorm(n_person)
+  delta <- -0.5 + 0.7 * predictors$operation +
+    0.35 * (predictors$format == "B")
+  X <- sapply(delta, function(d)
+    rbinom(n_person, 1, plogis(theta - d)))
+  colnames(X) <- predictors$item
+
+  fit <- rasch_explanatory(X, predictors, ~ operation + format,
+                           id = sprintf("P%02d", seq_len(n_person)))
+  cf <- fit$est$coefficients
+  n_units <- fit$est$cluster_support$n
+  expect_false(fit$est$cluster_support$repeated)
+  expect_true(fit$est$cluster_inference)
+  expect_equal(cf$df, rep(n_units - 1L, nrow(cf)))
+  expect_equal(cf$p, 2 * pt(-abs(cf$t), df = n_units - 1L),
+               tolerance = 1e-12)
+  # strictly larger than the limiting-normal probabilities it replaces
+  expect_true(all(cf$p > 2 * pnorm(-abs(cf$t))))
+})
+
+test_that("explanatory CJ accepts predictors for set-aside boundary objects", {
+  pr <- t(utils::combn(LETTERS[1:4], 2L))
+  core <- do.call(rbind, lapply(seq_len(nrow(pr)), function(i)
+    data.frame(a = rep(pr[i, 1L], 2L), b = rep(pr[i, 2L], 2L),
+               winner = pr[i, ])))
+  # E and F occur in the observed comparisons but form an isolated
+  # undefeated/winless pair.  Neither can be extrapolated against the fitted
+  # core, so neither appears in the reported object table.
+  d <- rbind(core,
+             data.frame(a = rep("E", 4L), b = rep("F", 4L),
+                        winner = rep("E", 4L)))
+  predictors <- data.frame(object = LETTERS[1:6], x = seq_len(6L))
+  fit <- btl_explanatory(d, predictors, ~ x, "a", "b", winner = "winner")
+  expect_s3_class(fit, "rasch_btl_explanatory")
+  expect_setequal(fit$objects$object, LETTERS[1:4])
+  expect_true(all(c("E", "F") %in%
+    c(fit$observed_comparisons$object_a,
+      fit$observed_comparisons$object_b)))
+})
+
+test_that("explanatory CJ rejects predictors seen only in unusable rows", {
+  pairs <- rbind(c("A", "B"), c("A", "D"), c("B", "D"))
+  d <- do.call(rbind, lapply(seq_len(nrow(pairs)), function(i)
+    data.frame(a = rep(pairs[i, 1L], 20), b = rep(pairs[i, 2L], 20),
+               winner = rep(pairs[i, ], 10))))
+  d <- rbind(d, data.frame(a = "C", b = "A", winner = NA_character_))
+  predictors <- data.frame(object = c("A", "B", "C", "D"), x = 1:4)
+
+  expect_error(
+    btl_explanatory(d, predictors, ~ x, "a", "b", winner = "winner"),
+    "not present in the comparisons")
+})
+
 test_that("LLTM recovers item-feature effects and retains Rasch scoring", {
   d <- sim_lltm()
   f <- rasch_explanatory(d$X, d$predictors,
@@ -42,6 +214,12 @@ test_that("LLTM recovers item-feature effects and retains Rasch scoring", {
   expect_equal(f$est$n_parameters, 2L)
   expect_lt(abs(f$est$coefficients["operation", "estimate"] - 0.75), .25)
   expect_lt(abs(f$est$coefficients["formatB", "estimate"] - 0.35), .25)
+  # independent rows are still a finite number of sampling units
+  n_units <- f$est$cluster_support$n
+  expect_equal(f$est$coefficients$df, rep(n_units - 1L, 2L))
+  expect_equal(f$est$coefficients$p,
+               2 * pt(-abs(f$est$coefficients$t), df = n_units - 1L),
+               tolerance = 1e-12)
   expect_equal(f$person$theta, f$score_table$theta[f$person$raw + 1L],
                tolerance = 1e-10)
 
@@ -117,6 +295,38 @@ test_that("LPCM accepts threshold effects and selected interactions", {
   expect_equal(nrow(f$explanatory$metadata), sum(f$m))
 })
 
+test_that("a partly represented threshold departure adds only new directions", {
+  d <- simulate_rasch(500, 6, model = "PCM", n_categories = 4, seed = 91)
+  items <- sprintf("I%02d", 1:6)
+  X <- as.data.frame(d[items])
+  predictors <- expand.grid(
+    threshold = 1:3, item = items, KEEP.OUT.ATTRS = FALSE,
+    stringsAsFactors = FALSE)
+  predictors <- predictors[
+    order(match(predictors$item, items), predictors$threshold), ]
+  predictors$x <- 0
+  predictors$x[predictors$item == "I01"] <- c(1, 0, -1)
+  predictors$trend <- rep(seq_along(items), each = 3)
+  fit <- rasch_explanatory(
+    X, predictors, ~ x + trend, level = "threshold")
+
+  full <- rasch:::.explanatory_candidate(fit, "I01", "thresholds")
+  addition <- rasch:::.explanatory_addition(fit$est$B, full)
+  expect_equal(ncol(full), 2L)
+  expect_equal(ncol(addition), 1L)
+  expect_equal(qr(cbind(fit$est$B, addition), tol = 1e-10)$rank,
+               ncol(fit$est$B) + 1L)
+
+  diagnostics <- explanatory_diagnostics(fit)
+  row <- diagnostics$item == "I01" &
+    diagnostics$component == "Threshold structure"
+  expect_true(any(row))
+  expect_equal(diagnostics$parameters_added[row], 1L)
+  relaxed <- relax_explanatory(fit, "I01", "thresholds")
+  expect_s3_class(relaxed, "rasch_explanatory")
+  expect_equal(tail(relaxed$explanatory$relaxations$parameters_added, 1L), 1L)
+})
+
 test_that("large-sample explanatory convergence is judged on parameter scale", {
   # This seed leaves an absolute projected score of about 2.1e-4 although
   # the remaining Newton move is only 2.1e-8 and the estimates are stable.
@@ -190,6 +400,29 @@ test_that("Rasch explanatory predictors may be continuous, categorical or ordina
   expect_true(is.ordered(fit$explanatory$metadata$ordinal))
 })
 
+test_that("ordinal contrast names remain unique when level labels collide", {
+  set.seed(4110)
+  lev <- c("a b", "a-b", "a.b", "c", "d")
+  ord <- ordered(lev, levels = lev)
+  X <- matrix(rbinom(1000, 1, .5), 200, 5,
+              dimnames = list(NULL, paste0("I", 1:5)))
+  p <- data.frame(item = colnames(X), ord = ord, check.names = FALSE)
+  rf <- rasch_explanatory(X, p, ~ ord)
+  expect_s3_class(rf, "rasch_explanatory")
+  expect_identical(anyDuplicated(rf$est$coefficients$term), 0L)
+  expect_true(all(grepl("adjacent_[1-4]", rf$est$coefficients$term)))
+
+  d <- simulate_btl(5, 20, reps_per_pair = 8, seed = 4111)
+  bp <- data.frame(object = paste0("O", 1:5), ord = ord,
+                   check.names = FALSE)
+  bf <- btl_explanatory(
+    d, bp, ~ ord, "object_a", "object_b", winner = "winner",
+    judge = "judge")
+  expect_s3_class(bf, "rasch_btl_explanatory")
+  expect_identical(anyDuplicated(bf$object_coefficients$term), 0L)
+  expect_true(all(grepl("adjacent_[1-4]", bf$object_coefficients$term)))
+})
+
 test_that("threshold metadata and unidentified formulae are checked", {
   d <- sim_lpcm_explanatory(n = 350)
   p <- merge(d$predictors,
@@ -217,13 +450,46 @@ test_that("diagnostics use one Holm family and fixed departures refit all output
   expect_equal(sort(unique(dg$component)), "Item location")
 
   before <- f$person$theta
-  g <- relax_explanatory(f, dg$item[1], "location")
+  g <- relax_explanatory(f, paste0(" ", dg$item[1], " "), "location")
   expect_equal(nrow(g$explanatory$relaxations), 1L)
   expect_gt(g$est$n_parameters, f$est$n_parameters)
   expect_false(isTRUE(all.equal(before, g$person$theta)))
   expect_equal(g$residuals,
                (g$X - g$moments$E) / sqrt(g$moments$V),
                tolerance = 1e-10)
+  expect_error(relax_explanatory(f, data.frame(item = dg$item[1])),
+               "exactly one item")
+  failed <- f
+  failed$est$converged <- FALSE
+  expect_output(print(failed), "comparison: unavailable")
+  expect_error(explanatory_test(failed), "did not converge")
+  expect_error(explanatory_diagnostics(failed), "did not converge")
+  expect_error(relax_explanatory(failed, dg$item[1]), "did not converge")
+  bad_reference <- f
+  bad_reference$reference_fit$est$converged <- FALSE
+  expect_error(explanatory_test(bad_reference), "reference fit did not converge")
+})
+
+test_that("non-convergent explanatory candidates are withheld, not dropped", {
+  d <- sim_lltm(n = 300)
+  f <- rasch_explanatory(d$X, d$predictors, ~ operation + format)
+  real_design <- rasch:::.pcml_design
+  testthat::local_mocked_bindings(
+    .pcml_design = function(...) {
+      out <- real_design(...)
+      out$converged <- FALSE
+      out
+    },
+    .package = "rasch")
+  dg <- explanatory_diagnostics(f)
+  expect_gt(nrow(dg), 0L)
+  expect_true(all(!dg$converged))
+  expect_true(all(is.na(dg$departure)))
+  expect_true(all(is.na(dg$p)))
+  expect_true(all(is.na(dg$p_adj)))
+  expect_match(attr(dg, "note"), "non-convergent")
+  expect_error(relax_explanatory(f, dg$item[1L]),
+               "relaxed explanatory calibration did not converge")
 })
 
 test_that("item changes preserve and refit explanatory calibrations", {
@@ -336,10 +602,31 @@ test_that("explanatory CJ recovers object effects and compares with a free fit",
 
   dg <- explanatory_diagnostics(f)
   expect_equal(dg$p_adj, p.adjust(dg$p, "holm"))
-  g <- relax_btl_explanatory(f, dg$object[1])
+  g <- relax_btl_explanatory(f, paste0(" ", dg$object[1], " "))
   expect_s3_class(g, "rasch_btl_explanatory")
   expect_equal(nrow(g$explanatory$relaxations), 1L)
   expect_false(isTRUE(all.equal(f$objects$location, g$objects$location)))
+  expect_error(relax_btl_explanatory(
+    f, data.frame(object = dg$object[1])), "exactly one object")
+  failed <- f
+  failed$converged <- FALSE
+  expect_error(explanatory_test(failed), "did not converge")
+  expect_error(explanatory_diagnostics(failed), "did not converge")
+  expect_error(relax_btl_explanatory(failed, dg$object[1]), "did not converge")
+  bad_reference <- f
+  bad_reference$reference_fit$converged <- FALSE
+  expect_error(explanatory_test(bad_reference), "reference fit did not converge")
+
+  real_refit <- rasch:::.btl_explanatory_refit
+  testthat::local_mocked_bindings(
+    .btl_explanatory_refit = function(...) {
+      out <- real_refit(...)
+      out$converged <- FALSE
+      out
+    },
+    .package = "rasch")
+  expect_error(relax_btl_explanatory(f, dg$object[1]),
+               "relaxed explanatory comparative judgement calibration did not converge")
 })
 
 test_that("ordered explanatory CJ retains its response-threshold model", {

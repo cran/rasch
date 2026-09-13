@@ -14,15 +14,17 @@ spread_test(fit, maxit = 60, tol = 1e-08, alpha = 0.05, p_adjust = "holm")
 \item{alpha}{Significance level for the one-sided dependence screen.}
 
 \item{p_adjust}{Multiplicity adjustment across the eligible superitems;
-one of \code{stats::p.adjust.methods}.}
+one of \code{stats::p.adjust.methods}. An eligible superitem remains in
+the family if its probability is unavailable.}
 }
 \value{
 A data frame with one row per recorded superitem: \code{item},
   \code{m}, whether the binomial bound is \code{eligible}, the
   \code{spread} estimate and its \code{se}, the bound \code{lub}
   (available for dichotomous-component subtests with maximum scores 2 to
-  8), \code{z} = (spread - lub)/se, the one-sided \code{p} and adjusted
-  \code{p_adj}, \code{below_bound} for the point-estimate comparison, and
+  8), \code{t} = (spread - lub)/se, reference \code{df}, the one-sided
+  \code{p} and adjusted \code{p_adj}, \code{below_bound} for the
+  point-estimate comparison, and
   \code{dependent} for adjusted evidence at \code{alpha}.
   Items not formed by \code{combine_items()} are omitted.
   The result retains \code{alpha} and \code{p_adjust} as attributes.
@@ -39,12 +41,23 @@ The function therefore reports whether the point estimate is below the
 bound separately from a one-sided test of \eqn{H_0: \lambda \geq \lambda_0}
 against \eqn{H_1: \lambda < \lambda_0}. Evidence of dependence requires the
 adjusted one-sided probability to be below \code{alpha}; a point estimate
-below the bound alone is not treated as a verdict.
+below the bound alone is not treated as a verdict. The tabulated bounds
+are exact for subtests of two and three items. For larger subtests the
+binomial thresholds are no longer equally spaced, and the spread that
+\code{\link{pcml_pc}} recovers from independent, equally difficult
+components sits above the tabulated value (about 0.45, 0.41, 0.34, and
+0.27 for four, five, six, and eight items against 0.41, 0.35, 0.29, and
+0.22), so the screen is conservative there: a subtest of four or more
+items needs a spread well below the tabulated bound before the test
+reports dependence.
 Applied to the superitems recorded by \code{\link{combine_items}}. The
 binomial bound applies only when every component was dichotomous; a
 composite containing a polytomous item is shown but its bound and verdict
-are withheld. The input calibration and the principal-components refit
-must both converge.
+are withheld. When person identifiers repeat, the spread refit's sandwich
+covariance clusters the score contributions by person and probabilities use
+a t reference with the number of independent person clusters minus one
+degree of freedom. Independent rows retain the asymptotic normal reference.
+The input calibration and the principal-components refit must both converge.
 }
 \examples{
 set.seed(1); N <- 600

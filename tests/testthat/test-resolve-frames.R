@@ -21,6 +21,7 @@ efrm_with_dif <- function(N = 400, K = 10, shift = 1.2, seed = 3) {
 }
 
 test_that("resolving keeps the item measuring inside each frame", {
+  skip_on_cran()
   z <- efrm_with_dif()
   f <- z$fit
   r <- resolve_frames(f, "I04", boot_reps = 0)
@@ -61,7 +62,8 @@ test_that("resolving refuses to leave the group units unidentified", {
   expect_error(resolve_frames(z$fit, z$items[1:9], boot_reps = 0),
                "unidentified")
   expect_error(resolve_frames(z$fit, "NOPE"), "not in the fit")
-  expect_error(resolve_frames(z$fit, character()), "at least one item")
+  expect_error(resolve_frames(z$fit, character()),
+               "at least one non-missing item")
 })
 
 test_that("resolve_frames refuses the fits it cannot serve", {

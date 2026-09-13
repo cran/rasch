@@ -12,7 +12,6 @@ rasch_mfrm(
   facets,
   items = NULL,
   n_groups = NULL,
-  adjust_N = NA,
   na_codes = -1,
   interaction = NULL,
   factors = NULL,
@@ -21,9 +20,11 @@ rasch_mfrm(
 )
 }
 \arguments{
-\item{data}{Long-format data frame.}
+\item{data}{Long-format data frame, or a wide data frame when \code{items}
+is supplied.}
 
-\item{person}{Name of the person identifier column.}
+\item{person}{Name of the person identifier column. Person, item, score,
+facet, and person-factor columns must define distinct roles.}
 
 \item{item}{Name of the item column.}
 
@@ -44,18 +45,19 @@ where the facet varies within items.}
 Marais (2019, ch. 15) (at least 50
 non-extreme persons per interval, at most 10 intervals, at least 2).}
 
-\item{adjust_N}{Optional reference sample size for the chi-square.}
-
-\item{na_codes}{Score values to read as missing (default \code{-1}); any
-negative score is also treated as missing.}
+\item{na_codes}{Numeric or character score values to read as missing. They
+are matched before scores are converted to numbers, including numerically
+equivalent labels (for example, \code{"09"} matches a score of 9).
+The default is \code{-1}; any negative score is also treated as missing.}
 
 \item{interaction}{Optional name of one facet to interact with the items
 (interactive facet mode). See Details.}
 
 \item{factors}{Optional person factors for DIF analysis: a character
 vector naming columns constant within person, or a data frame with one
-row per data row or unique person. Facets belong in \code{facets}, not
-here.}
+row per data row or unique person. Within each person, observed factor
+values must agree; missing entries do not override an observed value.
+Facets belong in \code{facets}, not here.}
 
 \item{maxit, tol}{Newton-Raphson iteration cap and convergence tolerance.}
 }
@@ -63,10 +65,13 @@ here.}
 An object of classes \code{"rasch_mfrm"} and \code{"rasch"}.
   Model-specific components describe the facets, items, thresholds, and
   facet specification. Interactive fits also contain an omnibus test and
-  the corresponding item-by-facet effects. The component \code{fit_resid}
+  the corresponding item-by-facet effects, whose \code{t}, \code{df},
+  \code{p}, and Holm-adjusted \code{p_adj} columns use the finite-person
+  reference described in Details. The component \code{fit_resid}
   averages virtual-item residuals within a margin. Its response-weighted
   counterpart is \code{fit_resid_pooled}; its degrees of freedom are in
-  \code{df_fit}.
+  \code{df_fit}. A non-converged fit retains estimates and residual patterns
+  for diagnosis but withholds standard errors and inferential probabilities.
 }
 \description{
 Fits an additive many-facet Rasch model (Linacre 1989) to scored responses
@@ -99,10 +104,14 @@ before fitting the model.
 An item-by-facet interaction retains equal discrimination but allows facet
 differences to vary by item. The omnibus Wald test in
 \code{interaction_test} is the primary test; cell tests are Holm-adjusted
-follow-ups. Interaction probabilities require at least
-\eqn{\max\{30,q+2\}} persons and effective persons at every level of the
-interactive facet, where \eqn{q} is the omnibus degrees of freedom.
-Estimates remain descriptive when this condition is not met.
+follow-ups. Each cell table reports a Wald \code{t} statistic and its
+denominator degrees of freedom, using the least effective item-by-level
+person support minus one. Interaction probabilities require at least
+\eqn{\max\{30,q+2\}} persons and effective persons in every observed
+item-by-level cell, where \eqn{q} is the omnibus degrees of freedom.
+The interaction covariance must also identify the omnibus contrast and
+leave positive denominator degrees of freedom. Estimates remain descriptive
+when these conditions are not met.
 }
 \examples{
 set.seed(1)

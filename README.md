@@ -51,14 +51,16 @@ occasions, raters, and other parts of the measurement design.
 | Function | Model |
 |---|---|
 | `rasch()` | Dichotomous Rasch, partial credit, and rating scale models |
-| `rasch_explanatory()` | Linear logistic test and linear partial credit models |
-| `btl_explanatory()` | Explanatory comparative judgement models |
 | `rasch_mfrm()` | Many-facet Rasch model |
 | `rasch_efrm()` | Extended frame of reference model |
+| `rasch_explanatory()` | Linear logistic test and linear partial credit models |
 | `btl()` | Comparative judgement models for dichotomous and polytomous paired comparisons |
 | `btl_efrm()` | Extended frame of reference model for paired comparisons |
+| `btl_explanatory()` | Explanatory comparative judgement models |
 
 Person measures are estimated by weighted likelihood (Warm, 1989).
+Externally imposed item or item-set weights can be used for a supplementary
+person measure without changing the fitted calibration or its diagnostics.
 Anchored estimation is available for equating, and incomplete linked
 designs can be fitted when their observed response structure identifies a
 common scale.
@@ -83,9 +85,16 @@ rasch::run_app()
 
 The application imports data, assigns variables to their measurement roles,
 fits the selected model, and displays the resulting tables and plots. An
-analysis can be saved as a `.rasch` project and reopened. Tables, figures and
-HTML, Word or PDF reports can be downloaded. The R code for each result is
-shown in the interface.
+analysis can be saved as a `.rasch` project and reopened with its data roles
+and estimation settings. Tables, figures and HTML, Word or PDF reports can be
+downloaded. The R code for each result is shown in the interface. Its
+fit bootstrap calibrates item and person fit, or pair, object and judge fit
+for comparative judgement, in a cancellable background process. Its adjusted
+probabilities refer to the fitted global null, separately for each statistic.
+The simulation page generates each supported data structure, with controls for
+its principal parameters and planted departures.
+Simulated data can be downloaded as a CSV or together with the generating call,
+true values and explanatory metadata.
 
 <p align="center">
   <img src="man/figures/app-items.png" alt="Item statistics and an item characteristic curve in the rasch Shiny application" width="90%" />
@@ -123,9 +132,17 @@ fit <- rasch(d, model = "PCM", id = "id", factors = "group")
 summary(fit)
 fit_summary_table(fit)
 targeting_table(fit)
-dif_anova(fit)
+dif <- dif_anova(fit)
 residual_correlations(fit)
-dimensionality_test(fit)
+dimensionality_test(fit, B = 99, seed = 1)
+
+# Optional sensitivity analysis for the DIF reference distribution
+dif_bootstrap(fit, dif, B = 999, seed = 1)
+
+# Calibrated item and person fit (use more replicates for a final analysis)
+boot <- fit_bootstrap(fit, B = 199, seed = 1)
+boot$items
+boot$persons
 
 plot_pimap(fit)
 plot_icc(fit, "I05", group = "group")
@@ -134,9 +151,13 @@ plot_icc(fit, "I05", group = "group")
 wright_map(fit, person_panels = "group")
 ```
 
+The DIF bootstrap is a sensitivity analysis under the fitted global invariant
+null. The adjusted residual analysis remains primary.
+
 The [function reference](https://drjoshmcgrane.github.io/rasch/reference/index.html)
 documents the data requirements and returned values for each analysis. The
-[vignettes](https://drjoshmcgrane.github.io/rasch/articles/) cover the Rasch
+[vignettes](https://drjoshmcgrane.github.io/rasch/articles/) begin with the
+data structures required by each model and cover the Rasch
 workflow, many-facet and extended-frame models, comparative judgement,
 explanatory modelling, repeated-measures DIF and validation.
 

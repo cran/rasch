@@ -9,7 +9,8 @@ tailored_analysis(
   chance = 0.25,
   anchor_items = NULL,
   se_method = c("none", "bootstrap"),
-  boot_reps = 999L
+  boot_reps = 999L,
+  seed = NULL
 )
 }
 \arguments{
@@ -30,14 +31,20 @@ descriptively. \code{"bootstrap"} resamples persons and repeats the
 complete four-step procedure, including automatic anchor selection, to
 obtain standard errors, percentile intervals, and Holm-adjusted tests.
 When a person identifier occurs on several rows, all of that person's
-rows are resampled together.}
+rows are resampled together. A resample requiring no tailoring contributes
+zero item shifts.}
 
 \item{boot_reps}{Person-bootstrap replicates when
 \code{se_method = "bootstrap"}; at least 50, default 999. The
 sign-count bootstrap p-value has resolution floor \code{2/(boot_reps
 + 1)}, so after the Holm adjustment across m items the smallest
 achievable adjusted p is \code{2m/(boot_reps + 1)}; a warning fires
-when that floor exceeds 0.05 (detection would be impossible).}
+when that floor is at or above 0.05 (the procedure declares significance
+only below 0.05, so detection would be impossible).}
+
+\item{seed}{Optional non-negative whole-number seed for the person
+bootstrap. The caller's random-number state is restored on exit; see
+\code{\link{rasch_rng}} for generator support.}
 }
 \value{
 A list of class \code{"rasch_tailored"}: \code{tailored},
@@ -45,8 +52,20 @@ A list of class \code{"rasch_tailored"}: \code{tailored},
   \code{table} (initial, tailored, origin-equated locations, the
   tailored-minus-equated \code{shift}; bootstrap uncertainty columns when
   requested), the number of
-  responses removed, the anchor items used, \code{se_method}, and the
-  number of usable bootstrap replicates \code{boot_reps_used}.
+  responses removed, the anchor items used, \code{se_method}, and bootstrap
+  accounting: requested, usable, non-converged, other failures, and the
+  minimum usable count. \code{anchor_items_requested} distinguishes anchors
+  supplied by the analyst from automatic anchor selection; it is
+  \code{NULL} for the latter. The algorithm identifier and fitted-model and
+  result signatures authenticate a saved result against the calibration
+  and procedure from which it was computed.
+  The final \code{anchored} component is a fixed-calibration scoring fit.
+  Its person estimates and observed diagnostics remain available, but
+  downstream item changes and refit-based bootstraps are not supported.
+  Returned fits retain keyed scoring and structural records. Raw option
+  data in the tailored fit exclude the responses removed by tailoring.
+  For item-shift uncertainty, use this function's person bootstrap on the
+  original calibration.
 }
 \description{
 Runs the four-step tailored procedure of Andrich, Marais and Humphry
@@ -56,9 +75,12 @@ observed response whose modelled probability of success, at the step-1
 person and item estimates, is below \code{chance}, and re-estimates
 items and persons. Step 3 (origin-equated) re-analyses the
 \emph{original} data with the mean location of the anchor items fixed at
-their tailored values by average anchoring, so the two calibrations
-share an origin. Step 4 (all-anchored) fixes every item at its tailored
-difficulty and re-estimates persons on the original data. Guessing is
+its tailored value by average item anchoring (see \code{\link{pcml}}):
+every item keeps its initial position relative to the others and the
+calibration as a whole moves onto the tailored origin, so the two
+calibrations can be compared item by item. Step 4 (all-anchored) fixes
+every item at its tailored difficulty and re-estimates persons on the
+original data. Guessing is
 indicated when difficult items are estimated harder in the tailored
 analysis than in the origin-equated one; the comparison table and
 \code{\link{plot_equate}} on the two calibrations show it directly.

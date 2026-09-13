@@ -10,7 +10,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-<meta name="author" content="Josh McGrane" />
+<meta name="author" content="Joshua A. McGrane" />
 
 
 <title>The Extended Frame of Reference model</title>
@@ -339,7 +339,7 @@ code > span.er { color: #a61717; background-color: #e3d2d2; }
 
 
 <h1 class="title toc-ignore">The Extended Frame of Reference model</h1>
-<h4 class="author">Josh McGrane</h4>
+<h4 class="author">Joshua A. McGrane</h4>
 
 
 
@@ -357,16 +357,25 @@ P(X_{ni}=x)=
 \sum_{k=1}^{y}\delta_{ik}]\}},\qquad
 \rho_{sg}=\alpha_s\phi_g .
 \]</span></p>
-<p>The item-set unit is <span class="math inline">\(\alpha_s\)</span>,
-and the person-group unit is <span class="math inline">\(\phi_g\)</span>. The partial credit model holds
-within each frame in its natural unit. Dichotomous items are the
-one-threshold case.</p>
+<p>Following Humphry and Andrich (2008, eq. 15), the multiplicative
+parameter of a frame is the ratio of the common reference unit to the
+frame’s own unit: <span class="math inline">\(\alpha_s\)</span> carries
+that ratio for item set <span class="math inline">\(s\)</span>, and
+<span class="math inline">\(\phi_g\)</span> for person group <span class="math inline">\(g\)</span>. Their geometric means are fixed at
+one; no observed set or group is the reference. A set with <span class="math inline">\(\alpha_s = 1.3\)</span> has a smaller natural unit
+than the geometric-mean set unit, so its response curves are steeper on
+the common scale. Two observed sets can be compared directly by the
+ratio <span class="math inline">\(\alpha_s/\alpha_t\)</span>. The
+partial credit model holds within each frame in its natural unit;
+dichotomous items are the one-threshold case.</p>
 <p>Use this model when variation in the unit is part of the measurement
 account. Poor fit to an equal-unit model is not by itself evidence for a
 frame-dependent unit.</p>
 </div>
 <div id="fit-the-model" class="section level2">
 <h2>Fit the model</h2>
+<p>The distributed vignette uses a precomputed fit, including its
+bootstrap uncertainty. The code below reproduces the calculation.</p>
 <div class="sourceCode" id="cb2"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" tabindex="-1"></a>d <span class="ot">&lt;-</span> <span class="fu">simulate_efrm</span>(</span>
 <span id="cb2-2"><a href="#cb2-2" tabindex="-1"></a>  <span class="at">n_per_group =</span> <span class="dv">150</span>,</span>
 <span id="cb2-3"><a href="#cb2-3" tabindex="-1"></a>  <span class="at">items_per_set =</span> <span class="dv">8</span>,</span>
@@ -374,87 +383,115 @@ frame-dependent unit.</p>
 <span id="cb2-5"><a href="#cb2-5" tabindex="-1"></a>  <span class="at">group_unit_ratio =</span> <span class="fl">1.10</span>,</span>
 <span id="cb2-6"><a href="#cb2-6" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">25</span></span>
 <span id="cb2-7"><a href="#cb2-7" tabindex="-1"></a>)</span>
-<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a>truth <span class="ot">&lt;-</span> <span class="fu">attr</span>(d, <span class="st">&quot;truth&quot;</span>)</span></code></pre></div>
+<span id="cb2-8"><a href="#cb2-8" tabindex="-1"></a>truth <span class="ot">&lt;-</span> <span class="fu">attr</span>(d, <span class="st">&quot;truth&quot;</span>)</span>
+<span id="cb2-9"><a href="#cb2-9" tabindex="-1"></a>d<span class="sc">$</span>site <span class="ot">&lt;-</span> <span class="fu">rep</span>(<span class="fu">c</span>(<span class="st">&quot;A&quot;</span>, <span class="st">&quot;B&quot;</span>), <span class="at">length.out =</span> <span class="fu">nrow</span>(d))</span>
+<span id="cb2-10"><a href="#cb2-10" tabindex="-1"></a>d</span>
+<span id="cb2-11"><a href="#cb2-11" tabindex="-1"></a><span class="co">#&gt; Simulated efrm data: 300 persons, 2 sets x 2 groups, 16 items (2 categories)</span></span>
+<span id="cb2-12"><a href="#cb2-12" tabindex="-1"></a><span class="co">#&gt; Generating values and departures:</span></span>
+<span id="cb2-13"><a href="#cb2-13" tabindex="-1"></a><span class="co">#&gt;   - set-unit ratio 1.30 across 2 sets</span></span>
+<span id="cb2-14"><a href="#cb2-14" tabindex="-1"></a><span class="co">#&gt;   - group-unit ratio 1.10 across 2 groups</span></span></code></pre></div>
+<p>The simulated data carry the units the fit below has to recover: a
+set-unit ratio of 1.30 and a group-unit ratio of 1.10.</p>
 <div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">rasch_efrm</span>(</span>
 <span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>  d,</span>
 <span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a>  <span class="at">item_sets =</span> truth<span class="sc">$</span>item_sets,</span>
 <span id="cb3-4"><a href="#cb3-4" tabindex="-1"></a>  <span class="at">groups =</span> <span class="st">&quot;group&quot;</span>,</span>
 <span id="cb3-5"><a href="#cb3-5" tabindex="-1"></a>  <span class="at">id =</span> <span class="st">&quot;id&quot;</span>,</span>
-<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a>  <span class="at">boot_reps =</span> <span class="dv">30</span>,</span>
-<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">1</span></span>
-<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a>)</span>
-<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a>fit</span>
-<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a><span class="co">#&gt; rasch extended frame of reference analysis: 16 items in 2 set(s) x 2 group(s) = 4 frames, 300 persons</span></span>
-<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a><span class="co">#&gt; Within-frame pairwise conditional ML: converged in 10 iterations</span></span>
-<span id="cb3-12"><a href="#cb3-12" tabindex="-1"></a><span class="co">#&gt; PSI 0.781, power of fit: reasonable</span></span>
-<span id="cb3-13"><a href="#cb3-13" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb3-14"><a href="#cb3-14" tabindex="-1"></a><span class="co">#&gt; Person group units (phi):</span></span>
-<span id="cb3-15"><a href="#cb3-15" tabindex="-1"></a><span class="co">#&gt;  group   phi se_log_phi</span></span>
-<span id="cb3-16"><a href="#cb3-16" tabindex="-1"></a><span class="co">#&gt;     g1 0.897      0.040</span></span>
-<span id="cb3-17"><a href="#cb3-17" tabindex="-1"></a><span class="co">#&gt;     g2 1.115      0.040</span></span>
-<span id="cb3-18"><a href="#cb3-18" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb3-19"><a href="#cb3-19" tabindex="-1"></a><span class="co">#&gt; Item set units (alpha) and locations:</span></span>
-<span id="cb3-20"><a href="#cb3-20" tabindex="-1"></a><span class="co">#&gt;   set alpha se_log_alpha     mu n_items</span></span>
-<span id="cb3-21"><a href="#cb3-21" tabindex="-1"></a><span class="co">#&gt;  set1 0.840        0.049  0.081       8</span></span>
-<span id="cb3-22"><a href="#cb3-22" tabindex="-1"></a><span class="co">#&gt;  set2 1.190        0.049 -0.081       8</span></span>
-<span id="cb3-23"><a href="#cb3-23" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb3-24"><a href="#cb3-24" tabindex="-1"></a><span class="co">#&gt; Equal-unit comparison: 2(ll_EFRM - ll_equal) = 20.620 with 1 extra unit parameter(s)</span></span>
-<span id="cb3-25"><a href="#cb3-25" tabindex="-1"></a><span class="co">#&gt; (composite likelihood: descriptive; informative for group units (phi))</span></span>
-<span id="cb3-26"><a href="#cb3-26" tabindex="-1"></a><span class="co">#&gt; Omnibus Wald tests of equal units:</span></span>
-<span id="cb3-27"><a href="#cb3-27" tabindex="-1"></a><span class="co">#&gt;               term df   wald       p</span></span>
-<span id="cb3-28"><a href="#cb3-28" tabindex="-1"></a><span class="co">#&gt;  group units (phi)  1  7.442   0.006</span></span>
-<span id="cb3-29"><a href="#cb3-29" tabindex="-1"></a><span class="co">#&gt;  set units (alpha)  1 12.711 &lt; 0.001</span></span>
-<span id="cb3-30"><a href="#cb3-30" tabindex="-1"></a><span class="co">#&gt; Holm-adjusted exploratory unit contrasts (H0: unit = 1):</span></span>
-<span id="cb3-31"><a href="#cb3-31" tabindex="-1"></a><span class="co">#&gt;        parameter estimate    se      z       p p_adj significant</span></span>
-<span id="cb3-32"><a href="#cb3-32" tabindex="-1"></a><span class="co">#&gt;      log phi[g1]   -0.109 0.040 -2.728   0.006 0.013           *</span></span>
-<span id="cb3-33"><a href="#cb3-33" tabindex="-1"></a><span class="co">#&gt;      log phi[g2]    0.109 0.040  2.728   0.006 0.013           *</span></span>
-<span id="cb3-34"><a href="#cb3-34" tabindex="-1"></a><span class="co">#&gt;  log alpha[set1]   -0.174 0.049 -3.565 &lt; 0.001 0.001           *</span></span>
-<span id="cb3-35"><a href="#cb3-35" tabindex="-1"></a><span class="co">#&gt;  log alpha[set2]    0.174 0.049  3.565 &lt; 0.001 0.001           *</span></span>
-<span id="cb3-36"><a href="#cb3-36" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb3-37"><a href="#cb3-37" tabindex="-1"></a><span class="co">#&gt; Notes: person measures use the weighted score; per-group score curves replace the raw-score table (see score_curves); a universal raw-score conversion is not defined across the expanded frame response cells; use score_curves and design-specific information</span></span></code></pre></div>
+<span id="cb3-6"><a href="#cb3-6" tabindex="-1"></a>  <span class="at">factors =</span> <span class="st">&quot;site&quot;</span>,</span>
+<span id="cb3-7"><a href="#cb3-7" tabindex="-1"></a>  <span class="at">boot_reps =</span> <span class="dv">50</span>,</span>
+<span id="cb3-8"><a href="#cb3-8" tabindex="-1"></a>  <span class="at">workers =</span> <span class="dv">1</span>,</span>
+<span id="cb3-9"><a href="#cb3-9" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">25</span></span>
+<span id="cb3-10"><a href="#cb3-10" tabindex="-1"></a>)</span>
+<span id="cb3-11"><a href="#cb3-11" tabindex="-1"></a>fit</span></code></pre></div>
+<pre><code>#&gt; rasch extended frame of reference analysis: 16 items in 2 set(s) x 2 group(s) = 4 frames, 300 persons
+#&gt; Within-frame pairwise conditional ML: converged in 10 iterations
+#&gt; PSI 0.781, separation quality: reasonable
+#&gt; 
+#&gt; Person group units (phi):
+#&gt;  group   phi se_log_phi
+#&gt;     g1 0.897      0.040
+#&gt;     g2 1.115      0.040
+#&gt; 
+#&gt; Item set units (alpha) and locations:
+#&gt;   set alpha se_log_alpha     mu n_items
+#&gt;  set1 0.840        0.043  0.081       8
+#&gt;  set2 1.190        0.043 -0.081       8
+#&gt; 
+#&gt; Equal-unit comparison: 2(ll_EFRM - ll_equal) = 20.620 with 1 extra unit parameter(s)
+#&gt; (composite likelihood: descriptive; informative for group units (phi))
+#&gt; Omnibus Wald tests of equal units (Holm-adjusted family):
+#&gt;               term df df2   wald      f       p   p_adj significant
+#&gt;  group units (phi)  1 Inf  7.442  7.442   0.006   0.006           *
+#&gt;  set units (alpha)  1  49 16.034 16.034 &lt; 0.001 &lt; 0.001           *
+#&gt; Holm-adjusted exploratory unit contrasts (H0: unit = 1):
+#&gt;        parameter estimate    se      z  df       p   p_adj significant
+#&gt;      log phi[g1]   -0.109 0.040 -2.728 Inf   0.006   0.006           *
+#&gt;      log phi[g2]    0.109 0.040  2.728 Inf   0.006                    
+#&gt;  log alpha[set1]   -0.174 0.043 -4.004  49 &lt; 0.001 &lt; 0.001           *
+#&gt;  log alpha[set2]    0.174 0.043  4.004  49 &lt; 0.001                    
+#&gt; (the units are centred: the second row of a two-row family restates the first, so its adjustment is withheld)
+#&gt; 
+#&gt; Notes: person measures use the weighted score; per-group score curves replace the raw-score table (see score_curves); a universal raw-score conversion is not defined across the expanded frame response cells; use score_curves and design-specific information; two centred unit rows are one hypothesis: the adjusted probability and flag are reported on the first row of the pair and withheld on the second, which restates it</code></pre>
 <p>The principal model-specific tables are:</p>
-<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a>fit<span class="sc">$</span>phi_table       <span class="co"># person-group units</span></span>
-<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a><span class="co">#&gt;  group   phi se_log_phi</span></span>
-<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a><span class="co">#&gt;     g1 0.897      0.040</span></span>
-<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a><span class="co">#&gt;     g2 1.115      0.040</span></span>
-<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a>fit<span class="sc">$</span>alpha_table     <span class="co"># item-set units</span></span>
-<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a><span class="co">#&gt;   set alpha se_log_alpha</span></span>
-<span id="cb4-7"><a href="#cb4-7" tabindex="-1"></a><span class="co">#&gt;  set1 0.840        0.049</span></span>
-<span id="cb4-8"><a href="#cb4-8" tabindex="-1"></a><span class="co">#&gt;  set2 1.190        0.049</span></span>
-<span id="cb4-9"><a href="#cb4-9" tabindex="-1"></a>fit<span class="sc">$</span>set_table       <span class="co"># linked set locations</span></span>
-<span id="cb4-10"><a href="#cb4-10" tabindex="-1"></a><span class="co">#&gt;   set     mu alpha n_items</span></span>
-<span id="cb4-11"><a href="#cb4-11" tabindex="-1"></a><span class="co">#&gt;  set1  0.081 0.840       8</span></span>
-<span id="cb4-12"><a href="#cb4-12" tabindex="-1"></a><span class="co">#&gt;  set2 -0.081 1.190       8</span></span>
-<span id="cb4-13"><a href="#cb4-13" tabindex="-1"></a>fit<span class="sc">$</span>frames          <span class="co"># complete frame units</span></span>
-<span id="cb4-14"><a href="#cb4-14" tabindex="-1"></a><span class="co">#&gt;   set group n_persons n_items alpha   phi   rho se_log_rho origin infit_ms</span></span>
-<span id="cb4-15"><a href="#cb4-15" tabindex="-1"></a><span class="co">#&gt;  set1    g1       150       8 0.840 0.897 0.754      0.061  0.081    1.031</span></span>
-<span id="cb4-16"><a href="#cb4-16" tabindex="-1"></a><span class="co">#&gt;  set2    g1       150       8 1.190 0.897 1.067      0.065 -0.081    1.048</span></span>
-<span id="cb4-17"><a href="#cb4-17" tabindex="-1"></a><span class="co">#&gt;  set1    g2       150       8 0.840 1.115 0.937      0.065  0.081    1.063</span></span>
-<span id="cb4-18"><a href="#cb4-18" tabindex="-1"></a><span class="co">#&gt;  set2    g2       150       8 1.190 1.115 1.327      0.061 -0.081    1.012</span></span>
-<span id="cb4-19"><a href="#cb4-19" tabindex="-1"></a><span class="co">#&gt;  outfit_ms fit_resid n_responses</span></span>
-<span id="cb4-20"><a href="#cb4-20" tabindex="-1"></a><span class="co">#&gt;      0.989     0.185        1168</span></span>
-<span id="cb4-21"><a href="#cb4-21" tabindex="-1"></a><span class="co">#&gt;      0.988    -0.316        1168</span></span>
-<span id="cb4-22"><a href="#cb4-22" tabindex="-1"></a><span class="co">#&gt;      1.008     0.422        1184</span></span>
-<span id="cb4-23"><a href="#cb4-23" tabindex="-1"></a><span class="co">#&gt;      0.865    -1.361        1184</span></span>
-<span id="cb4-24"><a href="#cb4-24" tabindex="-1"></a>fit<span class="sc">$</span>linking         <span class="co"># set-linking design</span></span>
-<span id="cb4-25"><a href="#cb4-25" tabindex="-1"></a><span class="co">#&gt; $phi_edges</span></span>
-<span id="cb4-26"><a href="#cb4-26" tabindex="-1"></a><span class="co">#&gt; $phi_edges[[1]]</span></span>
-<span id="cb4-27"><a href="#cb4-27" tabindex="-1"></a><span class="co">#&gt; [1] 2 1</span></span>
-<span id="cb4-28"><a href="#cb4-28" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb4-29"><a href="#cb4-29" tabindex="-1"></a><span class="co">#&gt; $phi_edges[[2]]</span></span>
-<span id="cb4-30"><a href="#cb4-30" tabindex="-1"></a><span class="co">#&gt; [1] 2 1</span></span>
-<span id="cb4-31"><a href="#cb4-31" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb4-32"><a href="#cb4-32" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb4-33"><a href="#cb4-33" tabindex="-1"></a><span class="co">#&gt; $alpha_edges</span></span>
-<span id="cb4-34"><a href="#cb4-34" tabindex="-1"></a><span class="co">#&gt;  set_a set_b   n log_slope converged edge_mass    loglik</span></span>
-<span id="cb4-35"><a href="#cb4-35" tabindex="-1"></a><span class="co">#&gt;   set1  set2 300     0.348         1     0.009 -3522.108</span></span>
-<span id="cb4-36"><a href="#cb4-36" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb4-37"><a href="#cb4-37" tabindex="-1"></a><span class="co">#&gt; $alpha_method</span></span>
-<span id="cb4-38"><a href="#cb4-38" tabindex="-1"></a><span class="co">#&gt; [1] &quot;finite-grid semiparametric maximum likelihood&quot;</span></span>
-<span id="cb4-39"><a href="#cb4-39" tabindex="-1"></a><span class="co">#&gt; </span></span>
-<span id="cb4-40"><a href="#cb4-40" tabindex="-1"></a><span class="co">#&gt; $alpha_grid</span></span>
-<span id="cb4-41"><a href="#cb4-41" tabindex="-1"></a><span class="co">#&gt;  lower  upper points </span></span>
-<span id="cb4-42"><a href="#cb4-42" tabindex="-1"></a><span class="co">#&gt;     -8      8     61</span></span></code></pre></div>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a>fit<span class="sc">$</span>phi_table       <span class="co"># person-group units</span></span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a><span class="co">#&gt;  group   phi se_log_phi</span></span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a><span class="co">#&gt;     g1 0.897      0.040</span></span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a><span class="co">#&gt;     g2 1.115      0.040</span></span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a>fit<span class="sc">$</span>alpha_table     <span class="co"># item-set unit ratios (reference unit / set unit)</span></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a><span class="co">#&gt;   set alpha se_log_alpha</span></span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a><span class="co">#&gt;  set1 0.840        0.043</span></span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a><span class="co">#&gt;  set2 1.190        0.043</span></span>
+<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a>fit<span class="sc">$</span>set_table       <span class="co"># linked set locations</span></span>
+<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a><span class="co">#&gt;   set     mu alpha n_items</span></span>
+<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a><span class="co">#&gt;  set1  0.081 0.840       8</span></span>
+<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a><span class="co">#&gt;  set2 -0.081 1.190       8</span></span>
+<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a>fit<span class="sc">$</span>frames          <span class="co"># complete frame units</span></span>
+<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a><span class="co">#&gt;   set group n_persons n_items alpha   phi   rho se_log_rho origin infit_ms</span></span>
+<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a><span class="co">#&gt;  set1    g1       150       8 0.840 0.897 0.754      0.062  0.081    1.031</span></span>
+<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a><span class="co">#&gt;  set2    g1       150       8 1.190 0.897 1.067      0.056 -0.081    1.048</span></span>
+<span id="cb5-17"><a href="#cb5-17" tabindex="-1"></a><span class="co">#&gt;  set1    g2       150       8 0.840 1.115 0.937      0.056  0.081    1.063</span></span>
+<span id="cb5-18"><a href="#cb5-18" tabindex="-1"></a><span class="co">#&gt;  set2    g2       150       8 1.190 1.115 1.327      0.062 -0.081    1.012</span></span>
+<span id="cb5-19"><a href="#cb5-19" tabindex="-1"></a><span class="co">#&gt;  outfit_ms fit_resid n_responses</span></span>
+<span id="cb5-20"><a href="#cb5-20" tabindex="-1"></a><span class="co">#&gt;      0.989     0.185        1168</span></span>
+<span id="cb5-21"><a href="#cb5-21" tabindex="-1"></a><span class="co">#&gt;      0.988    -0.316        1168</span></span>
+<span id="cb5-22"><a href="#cb5-22" tabindex="-1"></a><span class="co">#&gt;      1.008     0.422        1184</span></span>
+<span id="cb5-23"><a href="#cb5-23" tabindex="-1"></a><span class="co">#&gt;      0.865    -1.361        1184</span></span>
+<span id="cb5-24"><a href="#cb5-24" tabindex="-1"></a>fit<span class="sc">$</span>linking         <span class="co"># set-linking design</span></span>
+<span id="cb5-25"><a href="#cb5-25" tabindex="-1"></a><span class="co">#&gt; $phi_edges</span></span>
+<span id="cb5-26"><a href="#cb5-26" tabindex="-1"></a><span class="co">#&gt; $phi_edges[[1]]</span></span>
+<span id="cb5-27"><a href="#cb5-27" tabindex="-1"></a><span class="co">#&gt; [1] 2 1</span></span>
+<span id="cb5-28"><a href="#cb5-28" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-29"><a href="#cb5-29" tabindex="-1"></a><span class="co">#&gt; $phi_edges[[2]]</span></span>
+<span id="cb5-30"><a href="#cb5-30" tabindex="-1"></a><span class="co">#&gt; [1] 2 1</span></span>
+<span id="cb5-31"><a href="#cb5-31" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-32"><a href="#cb5-32" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-33"><a href="#cb5-33" tabindex="-1"></a><span class="co">#&gt; $alpha_edges</span></span>
+<span id="cb5-34"><a href="#cb5-34" tabindex="-1"></a><span class="co">#&gt;  set_a set_b   n log_slope converged edge_mass    loglik</span></span>
+<span id="cb5-35"><a href="#cb5-35" tabindex="-1"></a><span class="co">#&gt;   set1  set2 294     0.348         1     0.000 -3522.116</span></span>
+<span id="cb5-36"><a href="#cb5-36" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-37"><a href="#cb5-37" tabindex="-1"></a><span class="co">#&gt; $boot_reps_requested</span></span>
+<span id="cb5-38"><a href="#cb5-38" tabindex="-1"></a><span class="co">#&gt; [1] 50</span></span>
+<span id="cb5-39"><a href="#cb5-39" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-40"><a href="#cb5-40" tabindex="-1"></a><span class="co">#&gt; $boot_reps_used</span></span>
+<span id="cb5-41"><a href="#cb5-41" tabindex="-1"></a><span class="co">#&gt; [1] 50</span></span>
+<span id="cb5-42"><a href="#cb5-42" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-43"><a href="#cb5-43" tabindex="-1"></a><span class="co">#&gt; $boot_reps_failed</span></span>
+<span id="cb5-44"><a href="#cb5-44" tabindex="-1"></a><span class="co">#&gt; [1] 0</span></span>
+<span id="cb5-45"><a href="#cb5-45" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-46"><a href="#cb5-46" tabindex="-1"></a><span class="co">#&gt; $alpha_method</span></span>
+<span id="cb5-47"><a href="#cb5-47" tabindex="-1"></a><span class="co">#&gt; [1] &quot;finite-grid semiparametric maximum likelihood&quot;</span></span>
+<span id="cb5-48"><a href="#cb5-48" tabindex="-1"></a><span class="co">#&gt; </span></span>
+<span id="cb5-49"><a href="#cb5-49" tabindex="-1"></a><span class="co">#&gt; $alpha_grid</span></span>
+<span id="cb5-50"><a href="#cb5-50" tabindex="-1"></a><span class="co">#&gt;  lower  upper points </span></span>
+<span id="cb5-51"><a href="#cb5-51" tabindex="-1"></a><span class="co">#&gt;     -8      8     61</span></span></code></pre></div>
+<p>The frame-defining group is part of the model and is not retested as
+DIF. Other person factors can be examined with <code>dif_anova()</code>.
+Its bootstrap conditions on each person’s subtotal within each observed
+item set, then repeats the Extended Frames fit and the complete DIF
+analysis. Its familywise probabilities refer to the fitted global
+invariant null.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>dif <span class="ot">&lt;-</span> <span class="fu">dif_anova</span>(fit)</span>
+<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a><span class="fu">dif_bootstrap</span>(fit, dif, <span class="at">B =</span> <span class="dv">999</span>, <span class="at">seed =</span> <span class="dv">2026</span>)<span class="sc">$</span>summary</span></code></pre></div>
 <p>Person-group units are estimated from common threshold patterns
 across groups. Set units are estimated from persons observed in more
 than one set. For a linked pair, the natural coordinates satisfy <span class="math inline">\(u_b=r u_a+c\)</span>. The package estimates <span class="math inline">\(r\)</span>, <span class="math inline">\(c\)</span>, and masses for the nuisance person
@@ -481,16 +518,18 @@ connect to a common scale. A linking response pattern must span a score
 range of at least four within a set. Overlapping item sets are not
 permitted.</p>
 <p>Several group factors may define crossed frames:</p>
-<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a>fit_crossed <span class="ot">&lt;-</span> <span class="fu">rasch_efrm</span>(</span>
-<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a>  data,</span>
-<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a>  <span class="at">item_sets =</span> item_sets,</span>
-<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a>  <span class="at">groups =</span> <span class="fu">c</span>(<span class="st">&quot;language&quot;</span>, <span class="st">&quot;cohort&quot;</span>),</span>
-<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a>  <span class="at">id =</span> <span class="st">&quot;id&quot;</span></span>
-<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a>)</span>
-<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a>fit_crossed<span class="sc">$</span>phi_factorial</span>
-<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a>fit_crossed<span class="sc">$</span>phi_factorial_tests</span></code></pre></div>
+<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a>fit_crossed <span class="ot">&lt;-</span> <span class="fu">rasch_efrm</span>(</span>
+<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a>  data,</span>
+<span id="cb7-3"><a href="#cb7-3" tabindex="-1"></a>  <span class="at">item_sets =</span> item_sets,</span>
+<span id="cb7-4"><a href="#cb7-4" tabindex="-1"></a>  <span class="at">groups =</span> <span class="fu">c</span>(<span class="st">&quot;language&quot;</span>, <span class="st">&quot;cohort&quot;</span>),</span>
+<span id="cb7-5"><a href="#cb7-5" tabindex="-1"></a>  <span class="at">id =</span> <span class="st">&quot;id&quot;</span></span>
+<span id="cb7-6"><a href="#cb7-6" tabindex="-1"></a>)</span>
+<span id="cb7-7"><a href="#cb7-7" tabindex="-1"></a>fit_crossed<span class="sc">$</span>phi_factorial</span>
+<span id="cb7-8"><a href="#cb7-8" tabindex="-1"></a>fit_crossed<span class="sc">$</span>phi_factorial_tests</span></code></pre></div>
 <p>The factorial tables give the GLS decomposition of the estimated log
-group units. They do not replace the frame-level estimates.</p>
+group units. Use <code>p_adj</code>, which applies Holm’s correction
+across the factorial terms, for decisions. The tables do not replace the
+frame-level estimates.</p>
 </div>
 <div id="uncertainty-and-equal-unit-comparisons" class="section level2">
 <h2>Uncertainty and equal-unit comparisons</h2>
@@ -510,39 +549,80 @@ separate process. The analyst can select up to four workers, follow
 completed batches, or cancel the process without replacing the current
 analysis. R scripts can supply <code>progress</code> and
 <code>cancel</code> callbacks for the same controls.</p>
-<div class="sourceCode" id="cb6"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" tabindex="-1"></a>fit<span class="sc">$</span>efrm_vs_rasch<span class="sc">$</span>unit_omnibus</span>
-<span id="cb6-2"><a href="#cb6-2" tabindex="-1"></a><span class="co">#&gt;               term df   wald       p</span></span>
-<span id="cb6-3"><a href="#cb6-3" tabindex="-1"></a><span class="co">#&gt;  group units (phi)  1  7.442   0.006</span></span>
-<span id="cb6-4"><a href="#cb6-4" tabindex="-1"></a><span class="co">#&gt;  set units (alpha)  1 12.711 &lt; 0.001</span></span>
-<span id="cb6-5"><a href="#cb6-5" tabindex="-1"></a>fit<span class="sc">$</span>efrm_vs_rasch<span class="sc">$</span>unit_tests</span>
-<span id="cb6-6"><a href="#cb6-6" tabindex="-1"></a><span class="co">#&gt;        parameter estimate    se      z       p p_adj significant</span></span>
-<span id="cb6-7"><a href="#cb6-7" tabindex="-1"></a><span class="co">#&gt;      log phi[g1]   -0.109 0.040 -2.728   0.006 0.013           *</span></span>
-<span id="cb6-8"><a href="#cb6-8" tabindex="-1"></a><span class="co">#&gt;      log phi[g2]    0.109 0.040  2.728   0.006 0.013           *</span></span>
-<span id="cb6-9"><a href="#cb6-9" tabindex="-1"></a><span class="co">#&gt;  log alpha[set1]   -0.174 0.049 -3.565 &lt; 0.001 0.001           *</span></span>
-<span id="cb6-10"><a href="#cb6-10" tabindex="-1"></a><span class="co">#&gt;  log alpha[set2]    0.174 0.049  3.565 &lt; 0.001 0.001           *</span></span></code></pre></div>
-<p>The omnibus Wald tests assess the set- and group-unit families.
-Individual unit contrasts are Holm-adjusted follow-ups. The raw
+<p>The fit records the requested, usable and failed bootstrap counts.
+The requested number must exceed the free directions in the largest
+covariance block used by the fit. The stored bootstrap row contains
+several constrained blocks and is not treated as one covariance. Once
+estimation begins, the linking covariance needs at least 30 usable
+replicates and a majority of those requested; otherwise the fit stops. A
+numerical failure or non-convergence on any supported link invalidates
+the whole replicate. Pairs without enough informative common persons can
+be omitted only if the remaining links connect all sets. Full-bootstrap
+refits with unidentified group units are also discarded. The conditional
+calibration checks the exact likelihood curvature as well as the score.
+Stationary saddles and flat solutions are refused; the same check
+applies to bootstrap refits. Saved frame fits without a current
+likelihood-check record must be refitted before reopening in the app. So
+must an extended frame fit whose stored score curves predate the shared
+design enumeration, since their designs and labels are no longer the
+ones <code>test_information()</code> and the curve plots would give.
+Neither refusal alters the source file. The alpha–phi cross-covariance
+has the same usable-draw rule and is withheld if it cannot be estimated.
+A full bootstrap that falls below its minimum returns hybrid standard
+errors instead, retaining its attempted, usable and failed counts in
+<code>full_boot_reps_*</code>.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>fit<span class="sc">$</span>efrm_vs_rasch<span class="sc">$</span>unit_omnibus</span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a><span class="co">#&gt;               term df df2   wald      f       p   p_adj significant</span></span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a><span class="co">#&gt;  group units (phi)  1 Inf  7.442  7.442   0.006   0.006           *</span></span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a><span class="co">#&gt;  set units (alpha)  1  49 16.034 16.034 &lt; 0.001 &lt; 0.001           *</span></span>
+<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a>fit<span class="sc">$</span>efrm_vs_rasch<span class="sc">$</span>unit_tests</span>
+<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a><span class="co">#&gt;        parameter estimate    se      z  df       p   p_adj significant</span></span>
+<span id="cb8-7"><a href="#cb8-7" tabindex="-1"></a><span class="co">#&gt;      log phi[g1]   -0.109 0.040 -2.728 Inf   0.006   0.006           *</span></span>
+<span id="cb8-8"><a href="#cb8-8" tabindex="-1"></a><span class="co">#&gt;      log phi[g2]    0.109 0.040  2.728 Inf   0.006                    </span></span>
+<span id="cb8-9"><a href="#cb8-9" tabindex="-1"></a><span class="co">#&gt;  log alpha[set1]   -0.174 0.043 -4.004  49 &lt; 0.001 &lt; 0.001           *</span></span>
+<span id="cb8-10"><a href="#cb8-10" tabindex="-1"></a><span class="co">#&gt;  log alpha[set2]    0.174 0.043  4.004  49 &lt; 0.001</span></span></code></pre></div>
+<p>The omnibus Wald tests assess the set- and group-unit families. Their
+probabilities are adjusted together by Holm’s method. Individual unit
+contrasts form a separate Holm-adjusted follow-up family. The raw
 composite-likelihood difference is descriptive and compares the
 group-unit stage only. Set units are identified in the linking stage and
-are assessed by their Wald test. Probabilities require at least 50
-persons or effective persons in every group and at least 50 common
-persons on every set-link edge. Sparse designs retain the unit estimates
-without an inferential probability.</p>
-<p>Simulation under normal, bimodal and deliberately different group
-distributions gave set-unit bias within 0.004 log-units,
+are assessed by their Wald test. <code>compare_fits()</code> withholds
+generic likelihood differences involving EFRM: its calibration
+likelihood uses within-set pairs, whereas ordinary PCM also uses
+cross-set pairs. The matched group-unit comparison is retained in
+<code>fit$efrm_vs_rasch</code>. Probabilities require at least 50
+persons or effective persons in every group and a path between each pair
+of sets whose links each have at least 50 informative common persons. A
+person at the same extreme tail in both sets remains in the likelihood
+but does not count as link support. Sparse designs retain the unit
+estimates without an inferential probability.</p>
+<p>Two-set simulations under normal, bimodal and deliberately different
+group distributions gave set-unit bias within 0.004 log-units,
 empirical-to-reported SE ratios from 0.97 to 1.05, and null rejection
 from 4.0 to 5.0 per cent for the hybrid method. The complete person
 bootstrap was mildly conservative in the corresponding null design. Sets
 with only three dichotomous items were not identified; four-item sets
-were recovered without bias.</p>
+were recovered without bias in adequately supported samples.</p>
+<p>A separate null study checked the complete decision families. With
+200 persons per group and six items per set, 489 of 500 fits were
+analysed. The Holm familywise rejection rates were 3.5 per cent for the
+omnibus tests and 1.6 per cent for the individual unit contrasts. A
+boundary design with 100 persons per group and four items per set
+refused 493 of 1,000 fits and did not converge in another 24. Among the
+483 analysed fits, the corresponding rates were 5.2 and 2.5 per cent. A
+design should not be used merely because it is formally
+identifiable.</p>
 </div>
 <div id="item-invariance-across-frames" class="section level2">
 <h2>Item invariance across frames</h2>
 <p>The fitted EFRM gives an item one location across its frames, scaled
 by the frame unit. <code>frame_invariance()</code> examines that
-restriction by calibrating each frame separately. Each compared frame
-needs at least 50 persons with two or more responses. Items with weak
-separate-frame standard errors are excluded from the comparison.</p>
+restriction by calibrating each frame separately. Each compared set and
+frame needs at least 50 distinct persons contributing an informative
+item pair: not both zero or both at their item maxima after any item
+removal or category recoding in that frame’s separate calibration. Items
+with weak separate-frame standard errors are excluded from the
+comparison.</p>
 <p>For frame <span class="math inline">\(f\)</span>, the common-scale
 item location is <span class="math inline">\(\hat\delta_{if}^{*}=\hat\delta_{if}/\hat\rho_f\)</span>.
 The separate calibrations have independent origins, so differences are
@@ -553,18 +633,21 @@ conditions on the fitted frame units:</p>
 C\{V_1/\hat\rho_1^2+V_2/\hat\rho_2^2\}C^{\mathsf T},
 \qquad C=I-\mathbf 1\mathbf w^{\mathsf T} .
 \]</span></p>
-<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a>inv <span class="ot">&lt;-</span> <span class="fu">frame_invariance</span>(fit, <span class="at">se_method =</span> <span class="st">&quot;conditional&quot;</span>)</span>
-<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a>inv<span class="sc">$</span>summary</span>
-<span id="cb7-3"><a href="#cb7-3" tabindex="-1"></a>inv<span class="sc">$</span>locations</span>
-<span id="cb7-4"><a href="#cb7-4" tabindex="-1"></a>inv<span class="sc">$</span>discrimination</span></code></pre></div>
-<p>A person-within-frame bootstrap includes uncertainty in the fitted
-units:</p>
-<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>inv_boot <span class="ot">&lt;-</span> <span class="fu">frame_invariance</span>(</span>
-<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>  fit,</span>
-<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>  <span class="at">se_method =</span> <span class="st">&quot;bootstrap&quot;</span>,</span>
-<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a>  <span class="at">boot_reps =</span> <span class="dv">300</span>,</span>
-<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">1</span></span>
-<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a>)</span></code></pre></div>
+<div class="sourceCode" id="cb9"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a>inv <span class="ot">&lt;-</span> <span class="fu">frame_invariance</span>(fit, <span class="at">se_method =</span> <span class="st">&quot;conditional&quot;</span>)</span>
+<span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a>inv<span class="sc">$</span>summary</span>
+<span id="cb9-3"><a href="#cb9-3" tabindex="-1"></a>inv<span class="sc">$</span>locations</span>
+<span id="cb9-4"><a href="#cb9-4" tabindex="-1"></a>inv<span class="sc">$</span>discrimination</span></code></pre></div>
+<p>A whole-person bootstrap within person group retains each sampled
+row’s item-set response pattern and includes uncertainty in the fitted
+units. A replicate is used only if it retains the same item-comparison
+family, and therefore the same centred frame origin, as the observed
+analysis:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" tabindex="-1"></a>inv_boot <span class="ot">&lt;-</span> <span class="fu">frame_invariance</span>(</span>
+<span id="cb10-2"><a href="#cb10-2" tabindex="-1"></a>  fit,</span>
+<span id="cb10-3"><a href="#cb10-3" tabindex="-1"></a>  <span class="at">se_method =</span> <span class="st">&quot;bootstrap&quot;</span>,</span>
+<span id="cb10-4"><a href="#cb10-4" tabindex="-1"></a>  <span class="at">boot_reps =</span> <span class="dv">300</span>,</span>
+<span id="cb10-5"><a href="#cb10-5" tabindex="-1"></a>  <span class="at">seed =</span> <span class="dv">1</span></span>
+<span id="cb10-6"><a href="#cb10-6" tabindex="-1"></a>)</span></code></pre></div>
 <p>The conditional method returns raw and Holm-adjusted probabilities
 for the location comparisons. Its standardised-infit and slope-ratio
 columns are descriptive. The bootstrap returns discrimination
@@ -592,9 +675,10 @@ to decide which items provide the defensible reference.</p>
 each frame. The item continues to contribute to person measurement but
 no longer links those frames. <code>drop_items()</code> removes it. Both
 functions refit the model and update the frame, item and person
-estimates.</p>
-<div class="sourceCode" id="cb9"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" tabindex="-1"></a>resolved <span class="ot">&lt;-</span> <span class="fu">resolve_frames</span>(fit, <span class="st">&quot;S1I02&quot;</span>)</span>
-<span id="cb9-2"><a href="#cb9-2" tabindex="-1"></a>removed <span class="ot">&lt;-</span> <span class="fu">drop_items</span>(fit, <span class="st">&quot;S1I02&quot;</span>)</span></code></pre></div>
+estimates. Each set must retain common items linking its groups’
+origins; a unit link through another set is not sufficient.</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" tabindex="-1"></a>resolved <span class="ot">&lt;-</span> <span class="fu">resolve_frames</span>(fit, <span class="st">&quot;S1I02&quot;</span>)</span>
+<span id="cb11-2"><a href="#cb11-2" tabindex="-1"></a>removed <span class="ot">&lt;-</span> <span class="fu">drop_items</span>(fit, <span class="st">&quot;S1I02&quot;</span>)</span></code></pre></div>
 <p>The remaining common items and linked sets must still identify the
 frame units. The functions preserve the original crossed factors,
 uncertainty method and fitting controls, and return a result only when

@@ -85,6 +85,17 @@ test_that("ties, extremes, counts, and disconnection are handled", {
   expect_true(any(grepl("tie", ft_d$notes)))
   ft_h <- btl(d, "a", "b", "win", ties = "half")
   expect_gt(ft_h$n_comparisons, ft_d$n_comparisons)
+  expect_equal(sum(ft_h$observed_comparisons$weight), nrow(d))
+  # The two half rows are one comparison for sandwich purposes. Giving every
+  # original row its own judge reproduces that meat, apart from CR1.
+  d$row_cluster <- sprintf("R%04d", seq_len(nrow(d)))
+  ft_h_cluster <- btl(d, "a", "b", "win", judge = "row_cluster",
+                      ties = "half")
+  cr1 <- nrow(d) / (nrow(d) - 1)
+  expect_equal(ft_h$objects$location, ft_h_cluster$objects$location,
+               tolerance = 1e-10)
+  expect_equal(ft_h$cov_beta, ft_h_cluster$cov_beta / cr1,
+               tolerance = 1e-8)
   # counts replicate rows
   dc <- data.frame(a = c("A", "A", "B"), b = c("B", "C", "C"),
                    win = c("A", "C", "B"), k = c(30, 30, 30))
@@ -101,7 +112,17 @@ test_that("ties, extremes, counts, and disconnection are handled", {
   d3$win[d3$a == "E" | d3$b == "E"] <- "E"
   ft3 <- btl(d3, "a", "b", "win")
   expect_true(any(grepl("response boundary", ft3$notes)))
-  expect_false("E" %in% ft3$objects$object)
+  # the undefeated object is set aside from estimation but reported at an
+  # extrapolated location with the extreme flag and no standard error
+  e_row <- ft3$objects[ft3$objects$object == "E", ]
+  expect_true(isTRUE(e_row$extreme))
+  expect_true(is.na(e_row$se))
+  expect_gt(e_row$location,
+            max(ft3$objects$location[!ft3$objects$extreme]))
+  expect_true("E" %in% c(ft3$observed_comparisons$object_a,
+                         ft3$observed_comparisons$object_b))
+  expect_false("E" %in% c(ft3$comparisons$object_a,
+                          ft3$comparisons$object_b))
   # disconnected comparison graphs are refused with the components listed
   dd <- data.frame(a = c("A", "A", "C", "C"), b = c("B", "B", "D", "D"),
                    win = c("A", "B", "C", "D"))
@@ -125,6 +146,18 @@ test_that("plot_btl draws and print method runs", {
   ft <- btl(sim_btl(beta, 40, seed = 5), "a", "b", "win")
   pdf(NULL); on.exit(dev.off())
   expect_no_error(plot_btl(ft))
+  drawn <- NULL
+  testthat::with_mocked_bindings(
+    plot_btl(ft),
+    .btl_equate_cov_df = function(...) 4,
+    segments = function(x0, y0, x1, y1, ...) {
+      drawn <<- list(lower = x0, upper = x1)
+    },
+    .package = "rasch")
+  d <- ft$objects[order(ft$objects$location), ]
+  critical <- qt(0.975, 4)
+  expect_equal(drawn$lower, d$location - critical * d$se)
+  expect_equal(drawn$upper, d$location + critical * d$se)
   expect_output(print(ft), "Bradley-Terry-Luce")
 })
 
@@ -367,15 +400,54 @@ test_that("btl_dif finds a planted judge-group effect on the right object only",
   expect_equal(sum(dif$summary$uniform_DIF), 1L)
   # magnitude route: right size, right object, nothing else
   s6 <- dif$sizes[dif$sizes$object == "S06", ]
+  expect_identical(dif$size_family_n, nrow(dif$sizes))
   expect_true(s6$significant && s6$practical)
   expect_lt(abs(abs(s6$difference) - 1), 3 * s6$se)
   expect_equal(sum(dif$sizes$significant), 1L)
+  # the chi-square note explains the fit's withheld total_p; the resolved
+  # refits never report that statistic, so it must not surface as a finding
+  # about a resolved object
+  expect_true(any(grepl("pairwise chi-square probability is withheld",
+                        f$notes, fixed = TRUE)))
+  expect_false(any(grepl("pairwise chi-square", dif$notes, fixed = TRUE)))
+  # the same rule for the dependence table's withheld carry-over probability:
+  # the fit that reports the table keeps the note, the DIF refit does not
+  d$ord <- ave(seq_len(nrow(d)), d$judge, FUN = seq_along)
+  fo <- btl(d, "a", "b", winner = "win", judge = "judge", order = "ord")
+  expect_true(any(grepl("carry-over probability withheld", fo$notes,
+                        fixed = TRUE)))
+  difo <- btl_dif(fo, grp, objects = "S06")
+  expect_false(any(grepl("carry-over", difo$notes, fixed = TRUE)))
+  expect_true(any(is.finite(difo$sizes$difference)))
   expect_output(print(dif), "Resolved locations")
   # grouped characteristic curve renders
   pdf(NULL); on.exit(dev.off())
   expect_no_error(plot_btl_icc(f, "S06", group = grp))
 
   old_graded <- rasch:::.btl_graded
+  invalid_covariance <- testthat::with_mocked_bindings(
+    btl_dif(f, grp, objects = "S06"),
+    .btl_graded = function(...) {
+      z <- old_graded(...)
+      copy <- grep("^S06 \\(", rownames(z$cov_beta))[1]
+      z$cov_beta[copy, copy] <- -1e6
+      z
+    },
+    .package = "rasch")
+  expect_true(all(is.finite(invalid_covariance$levels$location)))
+  expect_true(all(is.na(invalid_covariance$levels$se)))
+  expect_true(all(is.finite(invalid_covariance$sizes$difference)))
+  expect_true(all(is.na(invalid_covariance$sizes$se)))
+  expect_true(all(is.na(invalid_covariance$sizes$p_adj)))
+  expect_true(any(grepl("not positive semidefinite",
+                        invalid_covariance$notes)))
+
+  no_supported_cells <- btl_dif(f, grp, objects = "S06", min_n = 1000L)
+  expect_null(no_supported_cells$sizes)
+  expect_identical(no_supported_cells$size_family_n, 1L)
+  expect_match(paste(no_supported_cells$notes, collapse = " "),
+               "unavailable follow-up question(s)", fixed = TRUE)
+
   testthat::local_mocked_bindings(
     .btl_graded = function(...) {
       z <- old_graded(...)
@@ -385,6 +457,7 @@ test_that("btl_dif finds a planted judge-group effect on the right object only",
     .package = "rasch")
   failed_resolution <- btl_dif(f, grp)
   expect_null(failed_resolution$sizes)
+  expect_gt(failed_resolution$size_family_n, 0L)
   expect_true(any(grepl("resolved calibration did not converge",
                         failed_resolution$notes)))
 })
@@ -504,8 +577,33 @@ test_that("fit_summary_table dispatches for paired-comparison fits", {
   expect_equal(ft$value[ft$statistic == "Objects"], "4")
   expect_equal(ft$value[ft$statistic == "Standard errors"],
                "sandwich, clustered by judge")
+  expect_identical(ft$value[ft$statistic == "Pairwise fit probability"],
+                   "unavailable (judge clustering)")
+  printed_fit <- capture.output(print(bt))
+  expect_true(any(grepl("probability unavailable", printed_fit,
+                        fixed = TRUE)))
+  expect_false(any(grepl("p = $", printed_fit)))
   expect_true(any(grepl("Within-judge exposure", ft$statistic)))
   expect_true(any(grepl("Within-judge carry-over", ft$statistic)))
+  expect_true(all(grepl("Holm p", ft$value[
+    grepl("Within-judge", ft$statistic)])))
+  # An older or incomplete fit must not silently substitute an unadjusted
+  # probability on a surface whose decisions use the Holm family.
+  no_adjustment <- bt
+  no_adjustment$dependence$p_adj <- NULL
+  ft_unavailable <- fit_summary_table(no_adjustment)
+  dependence_rows <- grepl("Within-judge", ft_unavailable$statistic)
+  expect_true(all(grepl("Holm p unavailable",
+                        ft_unavailable$value[dependence_rows], fixed = TRUE)))
+  expect_false(any(grepl(" p = ", ft_unavailable$value[dependence_rows],
+                         fixed = TRUE)))
+  printed_unavailable <- capture.output(print(no_adjustment))
+  printed_dependence <- printed_unavailable[
+    grepl("Within-judge|First-position", printed_unavailable)]
+  expect_true(any(grepl("Holm p unavailable", printed_dependence,
+                        fixed = TRUE)))
+  expect_false(any(grepl(" p = ", printed_dependence, fixed = TRUE)))
+  expect_no_error(plot_btl_dependence(no_adjustment, "exposure"))
   # graded fit reports its category count and threshold structure
   d$grade <- vapply(seq_len(nrow(d)), function(r) {
     p <- item_moments(beta[d$a[r]] - beta[d$b[r]], c(-1, 0, 1))$P
@@ -577,14 +675,16 @@ test_that("btl_dif resolves interactions by cells and supersedes lower terms", {
   # the interaction is flagged and supersedes the significant A main effect
   expect_true(s5$uniform_DIF[s5$term == "A:B"])
   expect_true(s5$superseded[s5$term == "A"])
-  # only the non-superseded interaction is resolved, into all four cells
+  # only the non-superseded interaction is resolved. The cell locations stay
+  # visible, while its magnitude is the difference-in-differences contrast.
   s5sz <- r$sizes[r$sizes$object == "S05" & r$sizes$term == "A:B", ]
-  expect_setequal(unique(c(s5sz$level_a, s5sz$level_b)),
+  expect_equal(nrow(s5sz), 1L)
+  expect_match(s5sz$contrast, "g2 - g1 x h2 - h1", fixed = TRUE)
+  expect_setequal(r$levels$level[r$levels$object == "S05" &
+                                  r$levels$term == "A:B"],
                   c("g1:h1", "g1:h2", "g2:h1", "g2:h2"))
-  # the g2:h2 cell is the outlier: every pair involving it is large and flagged
-  g2h2 <- s5sz[s5sz$level_a == "g2:h2" | s5sz$level_b == "g2:h2", ]
-  expect_true(all(abs(g2h2$difference) > 2))
-  expect_true(any(g2h2$significant))
+  expect_gt(abs(s5sz$difference), 2)
+  expect_true(s5sz$significant)
 })
 
 test_that("btl_dif tolerates adversarial factor names (band, f1)", {
@@ -619,6 +719,41 @@ test_that("btl_dif tolerates adversarial factor names (band, f1)", {
   expect_false(grepl("term\\(s\\) f1", note))
 })
 
+test_that("unavailable object DIF terms remain in the Holm family", {
+  set.seed(901)
+  objects <- LETTERS[1:5]
+  judges <- sprintf("J%02d", 1:20)
+  group <- setNames(rep(c("g1", "g2"), each = 10), judges)
+  beta <- setNames(seq(-1, 1, length.out = 5), objects)
+  pairs <- t(combn(objects, 2))
+  rows <- list()
+  for (i in seq_len(nrow(pairs))) {
+    # A is observed only in g1. The other objects retain both groups, so the
+    # requested family is usable but A's two questions are not estimable.
+    js <- if ("A" %in% pairs[i, ]) judges[1:10] else judges
+    for (r in 1:3) for (j in js)
+      rows[[length(rows) + 1L]] <- data.frame(
+        a = pairs[i, 1], b = pairs[i, 2], judge = j)
+  }
+  d <- do.call(rbind, rows)
+  d$win <- ifelse(runif(nrow(d)) < plogis(beta[d$a] - beta[d$b]),
+                  d$a, d$b)
+  fit <- btl(d, "a", "b", "win", judge = "judge")
+  out <- btl_dif(fit, list(group = group), min_n = 2)
+
+  unavailable <- out$terms$object == "A" &
+    out$terms$term %in% c("group", "group:band")
+  expect_equal(sum(unavailable), 2L)
+  expect_true(all(is.na(out$terms$p[unavailable])))
+  family <- out$terms$term != "band"
+  expect_equal(sum(family), 2L * length(objects))
+  usable <- family & is.finite(out$terms$p)
+  expect_equal(out$terms$p_adj[usable],
+               p.adjust(out$terms$p[usable], "holm", n = sum(family)))
+  expect_match(paste(out$notes, collapse = " "),
+               "remain in the adjusted-probability family")
+})
+
 test_that("btl stores per-comparison dependence covariates and plots them", {
   set.seed(1)
   beta <- c(A = -0.8, B = -0.2, C = 0.4, D = 0.9)
@@ -648,7 +783,10 @@ test_that("btl stores per-comparison dependence covariates and plots them", {
   expect_true(all(c("covariate", "observed", "fitted", "n") %in% names(be)))
   expect_setequal(be$covariate, c(-1, 0, 1))          # exposure's three levels
   expect_equal(sum(be$n), f$n_comparisons)
+  expect_equal(plot_btl_dependence(f), be)
   expect_no_error(plot_btl_dependence(f, "carry_over"))
+  expect_error(plot_btl_dependence(f, c("exposure", "carry_over")),
+               "effect.*one of")
   expect_error(plot_btl_dependence(btl(d, "a", "b", winner = "win"),
                                    "exposure"), "no dependence data")
 })
@@ -689,6 +827,10 @@ test_that("graded free-threshold fits with dependence estimate correctly (C1)", 
   expect_lt(abs(dep[["exposure"]] - 0.4), 3 * f$dependence$se[1])
   expect_lt(abs(dep[["carry_over"]] - 0.8), 3 * f$dependence$se[2])
   expect_true(is.na(f$dependence$p[f$dependence$effect == "carry_over"]))
+  use <- is.finite(f$dependence$p)
+  expect_equal(f$dependence$p_adj[use],
+               p.adjust(f$dependence$p[use], "holm",
+                        n = nrow(f$dependence)))
   expect_match(paste(f$notes, collapse = " "), "fewer than 30 judges")
   # thresholds recovered too (the corrupted block used to distort them)
   expect_lt(max(abs(f$thresholds$tau - tau)), 0.25)
@@ -804,7 +946,8 @@ test_that("btl_transitivity and btl_dimensionality read one-D vs a swirl", {
   }
   # one-dimensional: consistent, leading bimension within the noise band
   f1 <- mk(0, 2)
-  t1 <- btl_transitivity(f1); d1 <- btl_dimensionality(f1, reps = 40)
+  t1 <- btl_transitivity(f1)
+  d1 <- btl_dimensionality(f1, reps = 40, independent_comparisons = TRUE)
   expect_lt(t1$summary$circular_rate, 0.1)
   expect_gt(t1$summary$consistency, 0.6)
   expect_false(d1$leading_structured)
@@ -812,11 +955,25 @@ test_that("btl_transitivity and btl_dimensionality read one-D vs a swirl", {
   expect_s3_class(t1, "rasch_btl_transitivity")
   expect_s3_class(d1, "rasch_btl_dim")
   expect_false(is.null(t1$judges))    # judges present -> per-judge table
+  expect_equal(d1$reference$p,
+               (1 + sum(d1$reference$draws >= d1$bimensions$strength[1])) /
+                 (length(d1$reference$draws) + 1))
+  expect_equal(d1$reference$p_adj, d1$reference$p)
+  expect_identical(d1$leading_structured, d1$reference$p_adj <= 0.05)
+  current_print <- capture.output(print(d1))
+  expect_true(any(grepl(sprintf("adjusted p = %.3f", d1$reference$p_adj),
+                        current_print, fixed = TRUE)))
+  old_d1 <- d1
+  old_d1$reference$p <- old_d1$reference$p_adj <- NULL
+  old_print <- expect_no_error(capture.output(print(old_d1)))
+  expect_true(any(grepl("adjusted p unavailable", old_print, fixed = TRUE)))
 
   # a cyclic swirl: leading bimension clears the reference, most of residual
-  f2 <- mk(1.6, 2); d2 <- btl_dimensionality(f2, reps = 40)
+  f2 <- mk(1.6, 2)
+  d2 <- btl_dimensionality(f2, reps = 40, independent_comparisons = TRUE)
   expect_true(d2$leading_structured)
   expect_gt(d2$bimensions$strength[1], d2$reference$p95)
+  expect_identical(d2$leading_structured, d2$reference$p_adj <= 0.05)
   expect_gt(d2$bimensions$prop_residual[1], 0.5)
 
   # genuine intransitivity (flat locations, strong cycle) -> loops above chance
@@ -846,6 +1003,10 @@ test_that("judge_surprise flags a judge's systematic contrary judgements", {
 
   js <- judge_surprise(f, "J1")
   expect_s3_class(js, "rasch_btl_judge")
+  eligible <- js$objects$n >= js$min_n
+  expect_equal(js$objects$p_adj[eligible],
+               p.adjust(js$objects$p[eligible], "holm"))
+  expect_true(all(is.na(js$objects$p_adj[!eligible])))
   s <- js$objects[js$objects$surprise, ]
   expect_true(all(c("O1", "O8") %in% s$object))          # both extremes flagged
   # correct direction: O8 strong under-rated (z<0), O1 weak over-rated (z>0)
@@ -853,6 +1014,21 @@ test_that("judge_surprise flags a judge's systematic contrary judgements", {
   expect_gt(js$objects$z[js$objects$object == "O1"], 0)
   expect_equal(js$objects$type[js$objects$object == "O8"],
                "strong object under-rated")
+
+  # The scale origin is arbitrary. Anchoring two objects ten logits higher is
+  # a pure translation of this fit and must not change which judgements are
+  # surprising or how their direction is described.
+  anchors <- setNames(
+    f$objects$location[match(c("O1", "O8"), f$objects$object)] + 10,
+    c("O1", "O8"))
+  translated <- btl(d, "a", "b", "win", judge = "judge",
+                    anchors = anchors)
+  js_translated <- judge_surprise(translated, "J1")
+  ref <- js$objects[order(js$objects$object), ]
+  got <- js_translated$objects[order(js_translated$objects$object), ]
+  expect_equal(got$z, ref$z, tolerance = 1e-10)
+  expect_identical(got$surprise, ref$surprise)
+  expect_identical(got$type, ref$type)
   # a model-conforming judge shows no systematic surprise
   expect_equal(sum(judge_surprise(f, "J3")$objects$surprise), 0L)
 
@@ -876,22 +1052,59 @@ test_that("judge_pair_surprise flags the matchups a judge got against the grain"
 
   jp <- judge_pair_surprise(f, "J1")
   expect_s3_class(jp, "rasch_btl_judge_pairs")
+  eligible <- jp$pairs$n >= jp$min_n
+  expect_equal(jp$pairs$p_adj[eligible],
+               p.adjust(jp$pairs$p[eligible], "holm"))
+  expect_true(all(is.na(jp$pairs$p_adj[!eligible])))
   s <- jp$pairs[jp$pairs$surprise, ]
   expect_gt(nrow(s), 3L)
   # a flagged matchup is one where the stronger object under-performed
   expect_true(all(s$z < 0))
   expect_true(all(s$loc_hi >= s$loc_lo))          # orientation to the stronger
-  # the large majority of surprises involve an extreme J1 distorted (a
-  # stray noise flag on another pair is allowed at the ~5% rate)
+  # after familywise adjustment the retained surprises involve an extreme
+  # whose judgements J1 deliberately distorted
   involves <- vapply(seq_len(nrow(s)), function(i)
     any(c("O1", "O8") %in% c(s$object_hi[i], s$object_lo[i])), TRUE)
-  expect_gte(sum(involves), 6L)
-  # a model-conforming judge trips at most the ~5% noise rate
-  expect_lte(sum(judge_pair_surprise(f, "J3")$pairs$surprise), 2L)
+  expect_true(all(involves))
+  # a model-conforming judge produces no familywise flag in this fixture
+  expect_equal(sum(judge_pair_surprise(f, "J3")$pairs$surprise), 0L)
 
   pdf(NULL); on.exit(dev.off())
   expect_no_error(plot_btl_judge_map(f, "J1"))
   expect_error(judge_pair_surprise(f, "nobody"), "no comparisons")
+})
+
+test_that("unavailable judge residuals remain in the Holm family", {
+  d <- simulate_btl(6, 6, reps_per_pair = 4, seed = 10041)
+  f <- btl(d, "object_a", "object_b", winner = "winner", judge = "judge")
+  judge <- f$comparisons$judge[1L]
+  real_moments <- rasch:::.btl_fitted_moments
+  unavailable <- function(fit, cmp) {
+    z <- real_moments(fit, cmp)
+    z$E[1L] <- NA_real_
+    z$V[1L] <- NA_real_
+    z
+  }
+
+  js <- testthat::with_mocked_bindings(
+    judge_surprise(f, judge, min_n = 1L),
+    .btl_fitted_moments = unavailable, .package = "rasch")
+  planned_object <- js$objects$n >= js$min_n
+  usable_object <- planned_object & is.finite(js$objects$p)
+  expect_true(any(planned_object & !usable_object))
+  expect_equal(
+    js$objects$p_adj[usable_object],
+    p.adjust(js$objects$p[usable_object], "holm", n = sum(planned_object)))
+
+  jp <- testthat::with_mocked_bindings(
+    judge_pair_surprise(f, judge, min_n = 1L),
+    .btl_fitted_moments = unavailable, .package = "rasch")
+  planned_pair <- jp$pairs$n >= jp$min_n
+  usable_pair <- planned_pair & is.finite(jp$pairs$p)
+  expect_true(any(planned_pair & !usable_pair))
+  expect_equal(
+    jp$pairs$p_adj[usable_pair],
+    p.adjust(jp$pairs$p[usable_pair], "holm", n = sum(planned_pair)))
 })
 
 test_that("btl_dimensionality is calibrated and powered on non-cyclic 2-D data", {
@@ -913,13 +1126,62 @@ test_that("btl_dimensionality is calibrated and powered on non-cyclic 2-D data",
     btl(d, "a", "b", "win", judge = "judge")
   }
   # genuine 2-D structure is flagged, with the leading bimension dominant
-  d2 <- btl_dimensionality(sim(1, TRUE, 2.4, 70), reps = 80)
+  d2 <- btl_dimensionality(sim(1, TRUE, 2.4, 70), reps = 80,
+                          independent_comparisons = TRUE)
   expect_true(d2$leading_structured)
   expect_gt(d2$bimensions$strength[1], d2$reference$p95)
   expect_gt(d2$bimensions$prop_residual[1], 0.5)
   # a single-attribute (truly 1-D) fit is not flagged, even well separated
-  d1 <- btl_dimensionality(sim(7, FALSE, 1.6, 40), reps = 80)
+  d1 <- btl_dimensionality(sim(7, FALSE, 1.6, 40), reps = 80,
+                          independent_comparisons = TRUE)
   expect_false(d1$leading_structured)
+})
+
+test_that("ordered count rows are refused before fitting", {
+  d <- simulate_btl(5, 12, reps_per_pair = 3,
+                    dependence = list(exposure = 0.3, carry_over = 0.2),
+                    seed = 991)
+  d$count <- 1L
+  fit <- btl(d, "object_a", "object_b", winner = "winner", judge = "judge",
+             order = "order", count = "count")
+  ignored <- d
+  ignored$count[1L] <- 5L
+  ignored$winner[1L] <- NA_character_
+  expect_no_error(btl(ignored, "object_a", "object_b", winner = "winner",
+                      judge = "judge", order = "order", count = "count"))
+  d$count <- 5L
+  expect_error(
+    btl(d, "object_a", "object_b", winner = "winner", judge = "judge",
+        order = "order", count = "count"),
+    "count-compressed rows cannot be combined")
+
+  # Keep the downstream guard for a fit saved by an earlier package version.
+  # Such a fit may still carry an ordered row with a replication weight.
+  fit$comparisons$weight <- 5
+  fit$dependence_data$weight <- 5
+  out <- btl_dimensionality(fit, reps = 20)
+  expect_true(is.finite(out$bimensions$strength[1L]))
+  expect_true(is.na(out$leading_structured))
+  expect_true(is.na(out$reference$mean))
+  expect_identical(out$reference$reps, 0L)
+  expect_length(out$reference$draws, 0L)
+  expect_true(any(grepl("within-row comparison sequence", out$notes,
+                        fixed = TRUE)))
+  printed <- capture.output(print(out))
+  expect_true(any(grepl("reference unavailable", printed, fixed = TRUE)))
+  expect_false(any(grepl("reference 5% upper limit: NA", printed,
+                         fixed = TRUE)))
+  grDevices::pdf(NULL)
+  on.exit(grDevices::dev.off(), add = TRUE)
+  expect_no_error(plot_btl_scree(out))
+
+  # Whole count rows are estimable when position is the only fitted effect:
+  # no within-row response history has to be invented.
+  pos <- btl(d, "object_a", "object_b", winner = "winner",
+             position = TRUE, count = "count")
+  pos_out <- suppressWarnings(btl_dimensionality(pos, reps = 20))
+  expect_identical(pos_out$reference$reps, 20L)
+  expect_true(is.finite(pos_out$reference$mean))
 })
 
 test_that("the default (unanchored, no-position) path is unchanged", {
@@ -991,6 +1253,20 @@ test_that("position bias: a first-position advantage is recovered", {
   expect_gt(fp$t, 2)
   # the print label is the positional one, not "Within-judge"
   expect_output(print(ff), "First-position advantage")
+  position_summary <- fit_summary_table(ff)
+  expect_true(any(grepl("First-position advantage",
+                        position_summary$statistic, fixed = TRUE)))
+  expect_false(any(grepl("Within-judge position",
+                         position_summary$statistic, fixed = TRUE)))
+})
+
+test_that("position effects are refused when confounded with object locations", {
+  d <- rbind(
+    data.frame(a = "A", b = "B", win = rep(c("A", "B"), 20)),
+    data.frame(a = "B", b = "C", win = rep(c("B", "C"), 20)))
+  expect_no_error(btl(d, "a", "b", winner = "win"))
+  expect_error(btl(d, "a", "b", winner = "win", position = TRUE),
+               "not separately identified")
 })
 
 test_that("anchored estimation reproduces the free scale and equates panels", {
@@ -1013,6 +1289,16 @@ test_that("anchored estimation reproduces the free scale and equates panels", {
   expect_equal(fa$objects$se[fa$objects$object %in% c("B", "D")], c(0, 0))
   expect_setequal(names(fa$anchors), c("B", "D"))
   expect_output(print(fa), "Anchored at 2 object")
+
+  fa_pad <- btl(d, "a", "b", winner = "win",
+                anchors = stats::setNames(loc_free[c("B", "D")],
+                                          c(" B ", "D ")))
+  expect_setequal(names(fa_pad$anchors), c("B", "D"))
+  expect_equal(fa_pad$objects$location, fa$objects$location,
+               tolerance = 1e-8)
+  expect_error(
+    btl(d, "a", "b", winner = "win", anchors = c(B = 0, " B " = 1)),
+    "after trimming")
 
   # (b) two-panel equating: overlapping objects anchor panel 2 onto panel 1's
   # scale; the non-common objects then land at their true spacing
@@ -1046,6 +1332,11 @@ test_that("anchored estimation reproduces the free scale and equates panels", {
                "do not match any object")
   expect_error(btl(d, "a", "b", winner = "win", anchors = c(1, 2)),
                "named numeric")
+  bad_name <- c(0, 1); names(bad_name) <- c("A", NA_character_)
+  expect_error(btl(d, "a", "b", winner = "win", anchors = bad_name),
+               "named numeric")
+  expect_error(btl(d, "a", "b", winner = "win", anchors = c(" " = 0)),
+               "named numeric")
   # an anchored boundary object is an error, not silent removal
   set.seed(9)
   db <- data.frame(a = rep(pr[, 1], each = 30), b = rep(pr[, 2], each = 30))
@@ -1056,8 +1347,21 @@ test_that("anchored estimation reproduces the free scale and equates panels", {
                "boundary")
   # the same boundary object, left free, is still removed with a note
   fb <- btl(db, "a", "b", winner = "win", anchors = c(C = 0.1))
-  expect_false("A" %in% fb$objects$object)
+  expect_true(isTRUE(fb$objects$extreme[fb$objects$object == "A"]))
+  expect_true(is.na(fb$objects$se[fb$objects$object == "A"]))
   expect_true(any(grepl("boundary", fb$notes)))
+})
+
+test_that("an anchor is not silently dropped with its only comparison", {
+  d <- data.frame(
+    a = c(rep("A", 20), rep("B", 20), "D"),
+    b = c(rep("B", 20), rep("C", 20), "A"),
+    winner = c(rep(c("A", "B"), 10), rep(c("B", "C"), 10), "D"),
+    count = c(rep(1L, 40), 0L))
+  expect_error(
+    btl(d, "a", "b", winner = "winner", count = "count",
+        anchors = c(A = 0, D = 1)),
+    "anchored object.*no usable comparisons.*D")
 })
 
 test_that("position and order covariates are estimated together", {
@@ -1163,12 +1467,30 @@ test_that("model-based BTL diagnostics refuse an unconverged calibration", {
                   judge = rep(sprintf("J%02d", 1:10), length.out = 200))
   d$win <- ifelse(stats::runif(nrow(d)) < .5, d$a, d$b)
   f <- btl(d, "a", "b", "win", judge = "judge")
+  limited <- suppressWarnings(
+    btl(d, "a", "b", "win", judge = "judge", maxit = 1L))
+  expect_false(limited$converged)
+  expect_true(all(is.na(limited$objects$se)))
+  expect_true(is.na(limited$osi$PSI))
+  expect_false(limited$cl$inference_available)
+  expect_true(is.na(limited$cl$eff_params))
+  expect_true(all(is.na(limited$cov_parameters)))
   f$converged <- FALSE
   expect_error(btl_information(f), "did not converge")
   expect_error(btl_next_pairs(f), "did not converge")
   expect_error(btl_dimensionality(f, reps = 20), "did not converge")
   expect_error(judge_surprise(f, "J01"), "did not converge")
   expect_error(judge_pair_surprise(f, "J01"), "did not converge")
+  expect_error(plot_btl(f), "did not converge")
+  expect_error(plot_btl_categories(f), "did not converge")
+  expect_error(plot_btl_icc(f, "A"), "did not converge")
+  expect_error(plot_btl_dependence(f), "did not converge")
+})
+
+test_that("BTL result plots refuse the wrong result class directly", {
+  expect_error(plot_btl_transitivity(list()), "btl_transitivity")
+  expect_error(plot_btl_scree(list()), "btl_dimensionality")
+  expect_error(plot_btl_dim_map(list()), "btl_dimensionality")
 })
 
 test_that("BTL DIF does not redefine an externally anchored object", {
@@ -1189,4 +1511,131 @@ test_that("BTL DIF does not redefine an externally anchored object", {
   expect_true(z$summary$uniform_DIF)
   expect_null(z$sizes)
   expect_true(any(grepl("externally anchored", z$notes)))
+})
+
+test_that("named judge factors are matched by judge before row length", {
+  set.seed(731)
+  objects <- LETTERS[1:5]
+  pairs <- t(combn(objects, 2))
+  d <- data.frame(a = rep(pairs[, 1], length.out = 120),
+                  b = rep(pairs[, 2], length.out = 120),
+                  judge = sprintf("J%03d", 1:120))
+  beta <- setNames(seq(-1, 1, length.out = 5), objects)
+  d$win <- ifelse(runif(nrow(d)) < plogis(beta[d$a] - beta[d$b]),
+                  d$a, d$b)
+  fit <- btl(d, "a", "b", "win", judge = "judge")
+  group <- setNames(rep(c("g1", "g2"), each = 60), d$judge)
+  a <- btl_dif(fit, list(group = group))
+  b <- btl_dif(fit, list(group = group[sample(names(group))]))
+  expect_equal(a$terms, b$terms)
+  expect_equal(a$summary, b$summary)
+})
+
+test_that("a boundary object is reported at an extrapolated location", {
+  set.seed(701)
+  d <- simulate_btl(n_objects = 8, n_judges = 30, reps_per_pair = 4)
+  # Make O1 deterministically winless; relying on one seed to happen to
+  # produce a boundary object makes this a simulator-RNG test instead.
+  has_o1 <- d$object_a == "O1" | d$object_b == "O1"
+  d$winner[has_o1] <- ifelse(d$object_a[has_o1] == "O1",
+                              d$object_b[has_o1], d$object_a[has_o1])
+  f <- btl(d, "object_a", "object_b", winner = "winner", judge = "judge")
+  ext <- f$objects[f$objects$object == "O1", ]
+  cal <- f$objects[!f$objects$extreme, ]
+  expect_identical(ext$object, "O1")
+  expect_true(ext$extreme)
+  # winless: below every calibrated location, finite, no SE, no fit
+  expect_true(is.finite(ext$location))
+  expect_lt(ext$location, min(cal$location))
+  expect_true(is.na(ext$se))
+  expect_true(is.na(ext$fit_resid))
+  expect_match(paste(f$notes, collapse = " "), "extrapolated location")
+  expect_true("O1" %in% c(f$observed_comparisons$object_a,
+                          f$observed_comparisons$object_b))
+  expect_setequal(f$observed_comparisons$judge, d$judge)
+  trn <- btl_transitivity(f)
+  expect_equal(trn$summary$n_objects, 8L)
+  expect_equal(trn$summary$n_pairs, choose(8L, 2L))
+  expect_true("O1" %in% trn$objects$object)
+  grDevices::pdf(NULL)
+  on.exit(grDevices::dev.off(), add = TRUE)
+  expect_no_error(plot_btl_icc(f, " O2 ", min_n = 1))
+  expect_error(plot_btl_icc(f, "O1", min_n = 1), "response boundary")
+  judges <- sort(unique(f$comparisons$judge))
+  group <- stats::setNames(rep(c("g1", "g2"), length.out = length(judges)),
+                           judges)
+  bd <- btl_dif(f, group, min_n = 2)
+  expect_false("O1" %in% bd$summary$object)
+  expect_match(paste(bd$notes, collapse = " "), "extrapolations")
+  expect_error(btl_dif(f, group, objects = "O1", min_n = 2),
+               "response boundary")
+  one_judge <- f$comparisons$judge[1]
+  expect_false("O1" %in% names(judge_surprise(
+    f, paste0(" ", one_judge, " "), min_n = 1)$all_locations))
+  expect_false("O1" %in% names(judge_pair_surprise(
+    f, paste0(" ", one_judge, " "), min_n = 1)$all_locations))
+  # the extrapolated row takes no part in equating
+  set.seed(9000)
+  d2 <- simulate_btl(n_objects = 8, n_judges = 30, reps_per_pair = 2)
+  f2 <- btl(d2, "object_a", "object_b", winner = "winner", judge = "judge")
+  eq <- btl_equate(f, f2, independent = TRUE)
+  expect_false("O1" %in% eq$table$object)
+})
+
+test_that("the observed-ICC display survives a fully omitted comparator set", {
+  set.seed(21)
+  d <- simulate_btl(n_objects = 8, n_judges = 30, reps_per_pair = 2)
+  f <- btl(d, "object_a", "object_b", winner = "winner", judge = "judge")
+  png(tf <- tempfile(fileext = ".png"))
+  on.exit({dev.off(); unlink(tf)}, add = TRUE)
+  # every opponent falls below the default min_n: the model curve and the
+  # omission note still draw, with no visible points
+  expect_no_error(plot_btl_icc(f, "O2"))
+})
+
+test_that("the grouped BTL ICC refuses an empty grouping display", {
+  d <- simulate_btl(n_objects = 8, n_judges = 30, reps_per_pair = 10,
+                    seed = 22)
+  f <- btl(d, "object_a", "object_b", winner = "winner", judge = "judge")
+  grDevices::pdf(NULL)
+  on.exit(grDevices::dev.off(), add = TRUE)
+
+  expect_error(plot_btl_icc(f, "O2", group = rep(NA_character_,
+                                                   nrow(f$comparisons))),
+               "no observed judge-group values")
+  blank <- stats::setNames(rep("  ", length(unique(f$comparisons$judge))),
+                           unique(f$comparisons$judge))
+  expect_error(plot_btl_icc(f, "O2", group = blank),
+               "no observed judge-group values")
+
+  group <- ifelse(f$comparisons$object_a == "O2" |
+                    f$comparisons$object_b == "O2", NA_character_, "g1")
+  expect_error(plot_btl_icc(f, "O2", group = group),
+               "for object 'O2'")
+})
+
+test_that("the dependence plot's baseline carries a fitted position effect", {
+  d <- simulate_btl(8, 14, reps_per_pair = 12,
+                    dependence = list(exposure = 0.6), seed = 42)
+  f <- btl(d, "object_a", "object_b", winner = "winner", judge = "judge",
+           order = "order", position = TRUE)
+  expect_true("position" %in% f$dependence$effect)
+  # the partial residual under the FULL fitted model centres on zero; a
+  # baseline that omits the fitted position coefficient displaces every
+  # point through the nonlinear expected-score map
+  dd <- f$dependence_data
+  bl <- setNames(f$objects$location, f$objects$object)
+  tau <- if (!is.null(f$thresholds)) f$thresholds$tau else numeric(1)
+  dep <- setNames(f$dependence$estimate, f$dependence$effect)
+  Em <- function(v) vapply(v, function(t) item_moments(t, tau)$E, 0)
+  base <- unname(bl[dd$object_a] - bl[dd$object_b])
+  lin <- base + dep[["exposure"]] * dd$exposure +
+    dep[["carry_over"]] * dd$carry_over + dep[["position"]] * dd$position
+  expect_lt(abs(mean(dd$response - Em(lin))), 0.005)
+  expect_gt(abs(mean(dd$response - Em(lin - dep[["position"]] * dd$position))),
+            0.02)
+  # and the plot itself runs on a position-fitted model
+  pdf(NULL); on.exit(dev.off())
+  expect_no_error(plot_btl_dependence(f, "exposure"))
+  expect_no_error(plot_btl_dependence(f, "carry_over"))
 })

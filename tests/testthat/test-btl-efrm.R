@@ -1,6 +1,124 @@
 # fast path for tests whose subject is not the standard errors: the
-# conditional SEs are exact for beta/phi and the estimates are identical
+# conditional path avoids bootstrapping; the point estimates are identical
 befit <- function(...) btl_efrm(..., se_method = "conditional")
+
+test_that("panel-unit reconciliation uses scale-free precision weights", {
+  block <- function(value, variance) list(
+    ref = "A", free = "B", lrho = c(B = value),
+    cov = matrix(variance, 1L, 1L, dimnames = list("B", "B")))
+  z <- rasch:::.btlef_reconcile_phi(
+    c("A", "B"), list(block(1, 1e-14), block(3, 4e-14)))
+  # inverse-variance mean = (1 + 3 / 4) / (1 + 1 / 4) = 1.4;
+  # centring changes the two origins but not their difference
+  expect_equal(unname(z$lphi["B"] - z$lphi["A"]), 1.4,
+               tolerance = 1e-10)
+  expect_error(rasch:::.btlef_reconcile_phi(
+    c("A", "B"), list(block(1, -1))), "positive definite")
+  asym_block <- list(
+    ref = "A", free = c("B", "C"), lrho = c(B = 1, C = 2),
+    cov = matrix(c(1, 0.5, 0, 1), 2L,
+                 dimnames = list(c("B", "C"), c("B", "C"))))
+  expect_error(rasch:::.btlef_reconcile_phi(
+    c("A", "B", "C"), list(asym_block)), "asymmetric")
+  bad <- rasch:::.btlef_wald_unit(
+    c(0.2, -0.2), diag(c(1, -0.5)), "unit")
+  expect_true(is.na(bad$wald))
+  expect_true(is.na(bad$p))
+  asymmetric <- matrix(c(1, 0.5, 0, 1), 2L)
+  bad <- rasch:::.btlef_wald_unit(c(0.2, -0.2), asymmetric, "unit")
+  expect_true(is.na(bad$wald))
+})
+
+test_that("panel reconciliation carries cross-set judge covariance", {
+  block <- function(value, influence) {
+    influence <- matrix(influence, ncol = 1L,
+                        dimnames = list(names(influence), "B"))
+    list(ref = "A", free = "B", lrho = c(B = value),
+         cov = crossprod(influence), influence_lrho = influence)
+  }
+  base <- c(J1 = 0.5, J2 = -0.5, J3 = 0.5, J4 = -0.5)
+
+  # The established point estimate uses only the two within-set variances:
+  # weights .8 and .2 give a log-ratio of 1.4 in every case below. With all
+  # judges shared, the joint observation covariance is singular, but it is
+  # propagated rather than inverted. Cross-covariance is 2, so the fixed
+  # estimator has variance .8 + 2(.8)(.2)(2) = 1.44 before centring.
+  shared <- rasch:::.btlef_reconcile_phi(c("A", "B"), list(
+    block(1, base), block(3, 2 * base)))
+  expect_equal(unname(shared$lphi["B"] - shared$lphi["A"]), 1.4,
+               tolerance = 1e-12)
+  expect_equal(unname(shared$se_log_phi), rep(sqrt(1.44) / 2, 2),
+               tolerance = 1e-12)
+
+  # Name alignment uses only J3/J4 here: their product is 1. The remaining
+  # judges belong to only one set and therefore add no cross-set covariance.
+  partial2 <- c(J3 = 1, J4 = -1, J5 = 1, J6 = -1)
+  partial <- rasch:::.btlef_reconcile_phi(c("A", "B"), list(
+    block(1, base), block(3, partial2)))
+  expect_equal(unname(partial$se_log_phi), rep(sqrt(1.12) / 2, 2),
+               tolerance = 1e-12)
+
+  # Disjoint judge pools reproduce the old block-diagonal covariance.
+  disjoint2 <- c(K1 = 1, K2 = -1, K3 = 1, K4 = -1)
+  disjoint <- rasch:::.btlef_reconcile_phi(c("A", "B"), list(
+    block(1, base), block(3, disjoint2)))
+  expect_equal(unname(disjoint$se_log_phi), rep(sqrt(0.8) / 2, 2),
+               tolerance = 1e-12)
+
+  # Negative cross-set dependence must reduce, not inflate, the same
+  # estimator's covariance. Reversing the partially shared contributions
+  # gives cross-covariance -1 and variance .48 before centring.
+  negative <- rasch:::.btlef_reconcile_phi(c("A", "B"), list(
+    block(1, base), block(3, -partial2)))
+  expect_equal(unname(negative$se_log_phi), rep(sqrt(0.48) / 2, 2),
+               tolerance = 1e-12)
+})
+
+test_that("conditional BTL-EFRM SE retains shared-judge covariance", {
+  set.seed(831)
+  d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2,
+                         n_judges_per_panel = 30, n_panels = 2,
+                         reps_within = 30, reps_cross = 10, seed = 831)
+  truth <- attr(d, "truth")
+  # A persistent judge discrimination creates visible covariance between the
+  # separately estimated panel ratios without changing the sampling unit.
+  q <- setNames(exp(rnorm(length(unique(d$judge)), 0, 0.85)), unique(d$judge))
+  eta <- q[d$judge] * (truth$v[d$object_a] - truth$v[d$object_b])
+  ya <- rbinom(nrow(d), 1L, plogis(eta))
+  d$winner <- ifelse(ya == 1L, d$object_a, d$object_b)
+
+  fit <- btl_efrm(d, "object_a", "object_b", winner = "winner",
+                  judge = "judge", panels = "panel",
+                  object_sets = truth$object_sets,
+                  se_method = "conditional")
+  blocks <- lapply(names(truth$object_sets), function(s) {
+    os <- truth$object_sets[[s]]
+    rows <- d$object_a %in% os & d$object_b %in% os
+    f <- rasch:::.btlef_stage1(
+      match(d$object_a[rows], os), match(d$object_b[rows], os),
+      as.integer(d$winner[rows] == d$object_a[rows]),
+      as.character(d$panel[rows]), as.character(d$judge[rows]),
+      length(os), 60, 1e-8)
+    expect_equal(crossprod(f$influence_lrho), f$cov_lrho,
+                 tolerance = 1e-12)
+    list(ref = f$ref, free = f$free, lrho = log(f$rho[f$free]),
+         cov = f$cov_lrho, influence_lrho = f$influence_lrho)
+  })
+  joint <- rasch:::.btlef_reconcile_phi(c("panel1", "panel2"), blocks)
+  independent <- rasch:::.btlef_reconcile_phi(
+    c("panel1", "panel2"), lapply(blocks, function(z) {
+      z$influence_lrho <- NULL
+      z
+    }))
+
+  expect_equal(log(fit$phi_table$phi), unname(joint$lphi), tolerance = 1e-10)
+  expect_equal(fit$phi_table$se_log_phi, unname(joint$se_log_phi),
+               tolerance = 1e-10)
+  expect_equal(joint$lphi, independent$lphi, tolerance = 1e-12)
+  expect_gt(min(joint$se_log_phi - independent$se_log_phi), 0.01)
+  expect_equal(round(unname(independent$se_log_phi[1]), 4), 0.1011)
+  expect_equal(round(unname(joint$se_log_phi[1]), 4), 0.1189)
+})
 
 # Extended frame of reference for paired comparisons: reduction to btl(),
 # recovery of panel and set units, null calibration, and the guards.
@@ -22,6 +140,55 @@ test_that("G = 1, S = 1 reduces exactly to btl()", {
   expect_equal(fit$alpha_table$alpha, 1)
   expect_error(btl_dif(fit, factors = rep("g", nrow(fit$comparisons))),
                "not defined after a BTL-EFRM frame adjustment")
+})
+
+test_that("a non-converged BTL-EFRM fit retains no inferential fields", {
+  d <- simulate_btl_efrm(n_objects_per_set = 8, n_sets = 1, n_panels = 1,
+                         reps_within = 40, seed = 1)
+  expect_warning(
+    fit <- btl_efrm(d, "object_a", "object_b", winner = "winner",
+                    judge = "judge", panels = "panel",
+                    object_sets = attr(d, "truth")$object_sets,
+                    se_method = "conditional", maxit = 2),
+    "did NOT converge")
+  expect_false(fit$converged)
+  expect_true(all(is.na(fit$objects$se)))
+  expect_true(all(is.na(fit$objects$se_beta)))
+  expect_true(all(is.na(fit$phi_table$se_log_phi)))
+  expect_true(all(is.na(fit$phi_table$p)))
+  expect_true(all(is.na(fit$phi_table$p_adj)))
+  expect_true(is.na(fit$total_p))
+  expect_true(is.na(fit$osi$PSI))
+  expect_null(fit$cov_beta)
+  expect_true(is.na(fit$equal_unit$two_delta_ll))
+  expect_match(paste(fit$notes, collapse = " "), "probabilities withheld")
+})
+
+test_that("a failed equal-unit refit cannot supply a likelihood difference", {
+  d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
+                         n_judges_per_panel = 10, reps_within = 20,
+                         reps_cross = 20, seed = 381)
+  original <- rasch:::.btlef_stage1
+  testthat::local_mocked_bindings(
+    .btlef_stage1 = function(ia, ib, y, panel, judge, K, maxit, tol,
+                             rho_fixed = NULL) {
+      z <- original(ia, ib, y, panel, judge, K, maxit, tol,
+                    rho_fixed = rho_fixed)
+      if (length(unique(panel)) == 1L && identical(unique(panel), "all"))
+        z$converged <- FALSE
+      z
+    },
+    .package = "rasch"
+  )
+  fit <- btl_efrm(d, "object_a", "object_b", winner = "winner",
+                  judge = "judge", panels = "panel",
+                  object_sets = attr(d, "truth")$object_sets,
+                  se_method = "conditional")
+  expect_true(fit$converged)
+  expect_true(is.na(fit$equal_unit$loglik_single))
+  expect_true(is.na(fit$equal_unit$difference))
+  expect_true(is.na(fit$equal_unit$two_delta_ll))
+  expect_match(fit$equal_unit$note, "unavailable")
 })
 
 test_that("conditional panel units are recovered but inference is withheld", {
@@ -70,6 +237,7 @@ test_that("planted set units (alpha) and origins (kappa) are recovered", {
                   c("panel units (phi)", "set units (alpha)",
                     "set origins (kappa)"))
   expect_true(all(is.na(fit$unit_omnibus$p)))
+  expect_true(all(is.na(fit$unit_omnibus$p_adj)))
   expect_true(all(c("p_adj", "significant") %in%
                     names(fit$alpha_table)))
 })
@@ -118,6 +286,35 @@ test_that("guards fire with informative errors", {
              panels = "panel", object_sets = os_dup),
     "more than one set")
 
+  # External mappings use the same canonical labels as the comparison data.
+  judges <- unique(d$judge)
+  pmap_pad <- stats::setNames(
+    d$panel[match(judges, d$judge)], paste0(" ", judges, " "))
+  os_pad <- lapply(os, function(x) paste0(" ", x, " "))
+  names(os_pad) <- paste0(" ", names(os_pad), " ")
+  f_pad <- befit(d, "object_a", "object_b", winner = "winner",
+                 judge = "judge", panels = pmap_pad, object_sets = os_pad)
+  expect_setequal(f_pad$alpha_table$set, c("set1", "set2"))
+  bad_set_names <- os
+  names(bad_set_names) <- c("set", " set ")
+  expect_error(
+    befit(d, "object_a", "object_b", winner = "winner", judge = "judge",
+          panels = "panel", object_sets = bad_set_names),
+    "after trimming")
+
+  shaped_panels <- matrix(d$panel[match(judges, d$judge)], nrow = 1L)
+  names(shaped_panels) <- judges
+  expect_error(
+    befit(d, "object_a", "object_b", winner = "winner", judge = "judge",
+          panels = shaped_panels, object_sets = os),
+    "plain named")
+  shaped_sets <- os
+  shaped_sets[[1L]] <- matrix(shaped_sets[[1L]], nrow = 1L)
+  expect_error(
+    befit(d, "object_a", "object_b", winner = "winner", judge = "judge",
+          panels = "panel", object_sets = shaped_sets),
+    "named list")
+
   # insufficient cross-set links: no set pair reaches min_link
   expect_error(
     befit(d, "object_a", "object_b", winner = "winner", judge = "judge",
@@ -159,6 +356,41 @@ test_that("plot_btl_units draws without error", {
                   panels = "panel", object_sets = attr(d, "truth")$object_sets)
   pdf(NULL); on.exit(dev.off())
   expect_silent(plot_btl_units(fit))
+
+  failed <- fit
+  failed$converged <- FALSE
+  expect_error(plot_btl_units(failed), "did not converge")
+})
+
+test_that("plot_btl_units uses each unit's inferential reference", {
+  d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
+                         reps_within = 25, reps_cross = 25, seed = 404)
+  fit <- befit(d, "object_a", "object_b", winner = "winner", judge = "judge",
+               panels = "panel", object_sets = attr(d, "truth")$object_sets)
+  fit$phi_table$phi <- 1
+  fit$phi_table$se_log_phi <- 1
+  fit$phi_table$df <- c(4, Inf)
+  fit$alpha_table$alpha <- 1
+  fit$alpha_table$se_log_alpha <- 1
+  fit$alpha_table$df <- c(NA, 9)
+  widths <- NULL
+  testthat::local_mocked_bindings(
+    segments = function(x0, y0, x1, y1, ...)
+      widths <<- (x1 - x0) / 2,
+    .package = "rasch")
+  grDevices::pdf(NULL); on.exit(grDevices::dev.off(), add = TRUE)
+  plot_btl_units(fit)
+  expect_equal(sort(widths),
+               sort(stats::qt(0.975, c(4, Inf, 9))), tolerance = 1e-12)
+
+  # Saved objects from before the df field used the normal reference.
+  fit$phi_table$df <- NULL
+  fit$alpha_table$df <- NULL
+  widths <- NULL
+  plot_btl_units(fit)
+  expect_length(widths, nrow(fit$phi_table) + nrow(fit$alpha_table))
+  expect_equal(widths, rep(stats::qnorm(0.975), length(widths)),
+               tolerance = 1e-12)
 })
 
 test_that("frame estimates propagate through paired-comparison diagnostics", {
@@ -186,12 +418,19 @@ test_that("frame estimates propagate through paired-comparison diagnostics", {
   expect_equal(info$total, sum(cmp$information), tolerance = 1e-10)
   expect_equal(sum(info$objects$information), 2 * info$total,
                tolerance = 1e-10)
+  expect_true(is.finite(fit$total_chisq))
+  expect_true(is.finite(fit$total_df))
+  expect_true(is.na(fit$total_p))
+  expect_match(paste(fit$notes, collapse = " "),
+               "row-based probability is withheld")
   expect_no_error(judge_surprise(fit, fit$judges$judge[1]))
   expect_no_error(btl_dimensionality(fit, reps = 20))
   expect_error(btl_next_pairs(fit), "panel and object set")
 
   tab <- fit_summary_table(fit)
   expect_equal(tab$value[tab$statistic == "Object sets"], "2")
+  expect_identical(tab$value[tab$statistic == "Pairwise fit probability"],
+                   "unavailable (judge clustering)")
   pdf(NULL); on.exit(dev.off())
   expect_silent(plot_btl_icc(fit, fit$objects$object[1]))
   expect_silent(plot_btl_targeting(fit))
@@ -225,9 +464,29 @@ test_that("bootstrap SEs propagate linking uncertainty (estimates unchanged)", {
                  se_method = "conditional")
   expect_equal(fb$alpha_table$alpha, fc$alpha_table$alpha)   # same estimator
   expect_equal(fb$objects$v, fc$objects$v)
-  # the bootstrap carries stage-one noise the conditional errors omit
-  expect_gt(fb$alpha_table$se_log_alpha[2], fc$alpha_table$se_log_alpha[2])
+  # The bootstrap refits stage one rather than conditioning on it. Its
+  # realised SE need not exceed the conditional SE in every finite set of
+  # resamples, so test the distinct, finite result rather than its direction.
+  expect_true(is.finite(fb$alpha_table$se_log_alpha[2]))
+  expect_gt(fb$alpha_table$se_log_alpha[2], 0)
+  expect_false(isTRUE(all.equal(fb$alpha_table$se_log_alpha[2],
+                                fc$alpha_table$se_log_alpha[2],
+                                tolerance = 1e-8)))
+  expect_identical(fb$boot_reps_requested, 40L)
+  expect_identical(fb$boot_reps_used + fb$boot_reps_failed,
+                   fb$boot_reps_requested)
   expect_true(all(is.finite(fb$unit_omnibus$df2)))
+  expect_equal(fb$unit_omnibus$p_adj,
+               p.adjust(fb$unit_omnibus$p, "holm"))
+  # Centring makes the two panel units one hypothesis reported twice, so the
+  # follow-up family holds it once and both rows report its adjusted value.
+  expect_equal(fb$phi_table$p[1], fb$phi_table$p[2])
+  expect_equal(fb$phi_table$p_adj[1], fb$phi_table$p_adj[2])
+  follow_p <- c(fb$phi_table$p[1], fb$alpha_table$p, fb$kappa_table$p)
+  follow_adj <- c(fb$phi_table$p_adj[1], fb$alpha_table$p_adj,
+                  fb$kappa_table$p_adj)
+  ok <- is.finite(follow_p)
+  expect_equal(follow_adj[ok], p.adjust(follow_p[ok], "holm"))
 
   # The model-based bootstrap draws comparison outcomes independently. Its
   # reference is therefore normal/chi-square, not the finite-judge reference
@@ -235,8 +494,34 @@ test_that("bootstrap SEs propagate linking uncertainty (estimates unchanged)", {
   set.seed(10)
   fp <- btl_efrm(d, "object_a", "object_b", "winner", "judge", "panel", os,
                  se_method = "bootstrap", boot_reps = 30)
+  expect_identical(fp$boot_reps_requested, 30L)
+  expect_identical(fp$boot_reps_used + fp$boot_reps_failed,
+                   fp$boot_reps_requested)
   expect_true(all(is.infinite(fp$unit_omnibus$df2)))
   expect_true(all(is.infinite(fp$alpha_table$df)))
+})
+
+test_that("BTL-EFRM omnibus families are not truncated by unavailable covariance", {
+  V <- diag(c(0.04, 0.09))
+  full <- .btlef_wald_unit(c(0.2, -0.3), V, "set units")
+  expect_equal(full$df, 2L)
+  expect_true(is.finite(full$p))
+
+  V[2, 2] <- NA_real_
+  unavailable <- .btlef_wald_unit(c(0.2, -0.3), V, "set units")
+  expect_identical(unavailable$term, "set units")
+  expect_true(is.na(unavailable$df))
+  expect_true(is.na(unavailable$wald))
+  expect_true(is.na(unavailable$p))
+
+  singular <- .btlef_wald_unit(c(0.2, 0.2),
+                               matrix(c(1, 1, 1, 1), 2), "set units")
+  expect_equal(singular$df, 1L)
+  expect_true(is.finite(singular$p))
+  outside <- .btlef_wald_unit(c(0.2, -0.3),
+                              matrix(c(1, 1, 1, 1), 2), "set units")
+  expect_true(is.na(outside$df))
+  expect_true(is.na(outside$p))
 })
 
 test_that("judge-bootstrap unit tests respect panel-specific judge support", {
@@ -255,6 +540,121 @@ test_that("judge-bootstrap unit tests respect panel-specific judge support", {
   expect_true(all(is.finite(fit$phi_table$phi)))
   expect_false(any(grepl("set-unit and set-origin inference is withheld",
                          fit$notes, fixed = TRUE)))
+})
+
+test_that("set-unit df follow the support path to the reference set", {
+  skip_on_cran()
+  d <- simulate_btl_efrm(
+    n_objects_per_set = 4, n_sets = 3, n_judges_per_panel = 30,
+    n_panels = 1, reps_within = 40, reps_cross = 40, seed = 181
+  )
+  os <- attr(d, "truth")$object_sets
+  set_of <- setNames(rep(names(os), lengths(os)), unlist(os))
+  sa <- unname(set_of[d$object_a])
+  sb <- unname(set_of[d$object_b])
+  lo <- pmin(sa, sb)
+  hi <- pmax(sa, sb)
+  same <- sa == sb
+  keep <- same |
+    (lo == "set1" & hi == "set2" &
+       d$judge %in% sprintf("J%03d", 1:9)) |
+    (lo == "set2" & hi == "set3" &
+       d$judge %in% sprintf("J%03d", 1:20))
+
+  fit <- btl_efrm(
+    d[keep, ], "object_a", "object_b", "winner", "judge", "panel", os,
+    se_method = "judge_bootstrap", boot_reps = 30, workers = 1, seed = 20
+  )
+  edge <- fit$unit_support$edge
+  weak <- edge$effective_judges[
+    edge$set_a == "set1" & edge$set_b == "set2"
+  ]
+  support <- setNames(
+    fit$unit_support$set$effective_judges,
+    fit$unit_support$set$set
+  )
+  dfs <- setNames(fit$alpha_table$df, fit$alpha_table$set)
+
+  expect_equal(unname(support[c("set2", "set3")]), rep(weak, 2))
+  expect_equal(unname(dfs[c("set2", "set3")]), rep(floor(weak) - 1, 2))
+  # The sole panel unit is fixed at one and is not a hypothesis. It must not
+  # enlarge the Holm family for the four free set-unit/origin questions.
+  free_set <- fit$alpha_table$set != fit$reference_set
+  follow_p <- c(fit$alpha_table$p[free_set],
+                fit$kappa_table$p[free_set])
+  follow_adj <- c(fit$alpha_table$p_adj[free_set],
+                  fit$kappa_table$p_adj[free_set])
+  expect_true(all(is.finite(follow_p)))
+  expect_equal(follow_adj, p.adjust(follow_p, "holm"))
+  expect_true(is.na(fit$phi_table$p_adj))
+  set3_objects <- fit$objects$object[fit$objects$set == "set3"]
+  expect_equal(.btl_equate_cov_df(fit, set3_objects), floor(weak) - 1)
+})
+
+test_that("two panel units are one hypothesis in the follow-up family", {
+  skip_on_cran()
+  pu <- c(0.6, 1 / 0.6)
+  pu <- pu / exp(mean(log(pu)))
+  d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
+                         n_judges_per_panel = 12, reps_within = 25,
+                         reps_cross = 25, panel_units = pu, seed = 12)
+  os <- attr(d, "truth")$object_sets
+  fit <- btl_efrm(d, "object_a", "object_b", "winner", "judge", "panel", os,
+                  se_method = "judge_bootstrap", boot_reps = 30, workers = 1,
+                  seed = 3)
+  # centring makes log phi_1 = -log phi_2, so the two rows are one test
+  expect_equal(abs(fit$phi_table$t[1]), abs(fit$phi_table$t[2]))
+  expect_equal(fit$phi_table$p[1], fit$phi_table$p[2])
+  expect_equal(fit$phi_table$p_adj[1], fit$phi_table$p_adj[2])
+  free_set <- fit$alpha_table$set != fit$reference_set
+  fam_p <- c(fit$phi_table$p[1], fit$alpha_table$p[free_set],
+             fit$kappa_table$p[free_set])
+  expect_true(all(is.finite(fam_p)))
+  expect_equal(fit$phi_table$p_adj[1], p.adjust(fam_p, "holm")[1])
+  # the planted panel unit gives the family's smallest probability, so its
+  # step-down multiplier is the number of distinct questions (three), not the
+  # four that counting the duplicated row would give
+  expect_lt(fam_p[1], min(fam_p[-1]))
+  expect_equal(fit$phi_table$p_adj[1], 3 * fit$phi_table$p[1])
+})
+
+test_that("set pairs below min_link do not enter the linking fit", {
+  d <- simulate_btl_efrm(
+    n_objects_per_set = 3, n_sets = 3, n_judges_per_panel = 8,
+    n_panels = 2, reps_within = 20, reps_cross = 3, seed = 44
+  )
+  os <- attr(d, "truth")$object_sets
+  set_of <- setNames(rep(names(os), lengths(os)), unlist(os))
+  sa <- unname(set_of[d$object_a])
+  sb <- unname(set_of[d$object_b])
+  lo <- pmin(sa, sb)
+  hi <- pmax(sa, sb)
+  weak_edge <- lo == "set1" & hi == "set3"
+  keep <- !weak_edge
+  keep[which(weak_edge)[1L]] <- TRUE
+  sparse <- d[keep, ]
+
+  with_weak <- btl_efrm(
+    sparse, "object_a", "object_b", "winner", "judge", "panel", os,
+    min_link = 20, se_method = "conditional", boot_reps = 0
+  )
+  without_weak <- btl_efrm(
+    sparse[!(unname(set_of[sparse$object_a]) %in% c("set1", "set3") &
+               unname(set_of[sparse$object_b]) %in% c("set1", "set3") &
+               unname(set_of[sparse$object_a]) !=
+                 unname(set_of[sparse$object_b])), ],
+    "object_a", "object_b", "winner", "judge", "panel", os,
+    min_link = 20, se_method = "conditional", boot_reps = 0
+  )
+
+  expect_equal(with_weak$alpha_table$alpha, without_weak$alpha_table$alpha)
+  expect_equal(with_weak$kappa_table$kappa, without_weak$kappa_table$kappa)
+  expect_equal(with_weak$objects$location, without_weak$objects$location)
+  expect_false(with_weak$n_cross$used[
+    with_weak$n_cross$set_a == "set1" & with_weak$n_cross$set_b == "set3"
+  ])
+  expect_true(any(grepl("omitted from estimation", with_weak$notes,
+                        fixed = TRUE)))
 })
 
 test_that("bootstrap SEs are calibrated on the chain-linked design", {
@@ -303,7 +703,11 @@ test_that("a set with no stable panel-ratio information is screened, not fatal",
     pnl <- if (i <= 100) "panel1" else "panel2"
     data.frame(object_a = sobj[(i %% 5) + 1],
                object_b = paste0("w", (i %% 2) + 1),
-               winner = if (i %% 3 == 0) paste0("w", (i %% 2) + 1)
+               # Preserve positive cross-set support for the reconciled
+               # weak-set ordering (w1 below w2). The former nearly equal
+               # cross rates hit alpha = 0 and silently used unit one.
+               winner = if (i %% 10 < if (i %% 2 == 0) 2 else 8)
+                          paste0("w", (i %% 2) + 1)
                         else sobj[(i %% 5) + 1],
                judge = jd_of(pnl, i), panel = pnl)
   }))
@@ -321,6 +725,7 @@ test_that("a set with no stable panel-ratio information is screened, not fatal",
 })
 
 test_that("estimates and convergence are invariant to duplicating the data", {
+  skip_on_cran()
   # an absolute gradient threshold is scale-dependent: on k-fold duplicated
   # data a converged fit was flagged unconverged, which (with the stability
   # screen) silently rerouted a set's estimation and CHANGED the estimates;
@@ -378,6 +783,7 @@ test_that("btl_efrm refuses (quasi-)complete cross-set separation", {
 })
 
 test_that("BTL-EFRM judge bootstrap reports progress and restores the RNG", {
+  skip_on_cran()
   d <- simulate_btl_efrm(n_objects_per_set = 6, n_sets = 2, n_panels = 2,
                          n_judges_per_panel = 8, reps_within = 25,
                          reps_cross = 25, seed = 701)
@@ -411,9 +817,9 @@ test_that("BTL-EFRM judge bootstrap reports progress and restores the RNG", {
 
 test_that("parallel BTL-EFRM judge bootstraps are seed-identical", {
   skip_on_cran()
-  skip_if_not(file.exists(file.path(system.file(package = "rasch"),
-                                    "DESCRIPTION")),
-              "parallel integration test needs an installed package")
+  skip_if_not(rasch:::.rasch_namespace_is_installed(),
+              "parallel integration test needs an installed package namespace")
+  expect_true(rasch:::.rasch_namespace_is_installed())
   old_workers <- options(rasch.max_workers = 2L)
   on.exit(options(old_workers), add = TRUE)
   probe <- try(parallel::makePSOCKcluster(2L), silent = TRUE)
@@ -437,4 +843,14 @@ test_that("parallel BTL-EFRM judge bootstraps are seed-identical", {
 
 test_that("BTL-EFRM defaults to four available workers", {
   expect_identical(formals(btl_efrm)$workers, 4L)
+})
+
+test_that("BTL-EFRM sizes bootstrap rank to its actual covariance blocks", {
+  d <- simulate_btl_efrm(n_objects_per_set = 16, n_sets = 2,
+                         n_panels = 2, n_judges_per_panel = 4,
+                         reps_within = 1, reps_cross = 1, seed = 707)
+  expect_error(
+    btl_efrm(d, "object_a", "object_b", "winner", "judge", "panel",
+             attr(d, "truth")$object_sets, boot_reps = 30, workers = 1),
+    "at least 32 replicates")
 })

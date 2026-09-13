@@ -3,6 +3,76 @@ simEF <- function(th, tau, r) {
   p <- exp(r * (x * th - c(0, cumsum(tau)))); p / sum(p)
 }
 
+test_that("EFRM group support follows the informative stage-one pairs", {
+  Xv <- matrix(NA_integer_, 4L, 4L)
+  # Row 1 has a cross-set pair only; row 2 has a same-set pair at its
+  # minimum total.  Neither contributes to the conditional likelihood.
+  Xv[1L, c(1L, 3L)] <- c(1L, 0L)
+  Xv[2L, 1:2] <- c(0L, 0L)
+  Xv[3L, 1:2] <- c(0L, 1L)
+  Xv[4L, ] <- c(0L, 1L, 1L, 0L)
+  vmap <- data.frame(group = rep("g", 4L),
+                     set = rep(c("A", "B"), each = 2L))
+  z <- rasch:::.efrm_group_support(Xv, vmap, rep(1L, 4L), "g")
+  expect_identical(z$n_persons, 2L)
+  # The informative pair loads are one and two, respectively.
+  expect_equal(z$effective_persons, 9 / 5)
+
+  # A maximum-total pair is a conditional-likelihood constant too.
+  Xv[3L, 1:2] <- c(1L, 1L)
+  z2 <- rasch:::.efrm_group_support(Xv, vmap, rep(1L, 4L), "g")
+  expect_identical(z2$n_persons, 1L)
+})
+
+test_that("EFRM set support follows the strongest path to the graph root", {
+  sets <- c("A", "B", "C", "D")
+  chain <- data.frame(
+    set_a = c("A", "B", "A", "C"),
+    set_b = c("B", "C", "C", "D"),
+    n = c(80, 40, 10, 70))
+  z <- rasch:::.efrm_set_path_support(sets, chain, chain$n)
+  # C and D cannot borrow the strong terminal edge across the B--C bottleneck;
+  # the weak direct A--C edge is redundant and does not reduce that path.
+  expect_equal(unname(z), c(Inf, 80, 40, 40))
+
+  stronger <- chain
+  stronger$n[stronger$set_a == "A" & stronger$set_b == "C"] <- 60
+  z2 <- rasch:::.efrm_set_path_support(sets, stronger, stronger$n)
+  expect_equal(unname(z2), c(Inf, 80, 60, 60))
+})
+
+test_that("EFRM unit tests do not discard indefinite covariance directions", {
+  bad <- rasch:::.efrm_wald_zero(
+    c(0.2, -0.2), diag(c(1, -0.5)), "unit")
+  expect_true(is.na(bad$wald))
+  expect_true(is.na(bad$p))
+  asymmetric <- matrix(c(1, 0.5, 0, 1), 2L)
+  bad <- rasch:::.efrm_wald_zero(c(0.2, -0.2), asymmetric, "unit")
+  expect_true(is.na(bad$wald))
+  singular <- matrix(c(1, -1, -1, 1), 2L)
+  expect_true(is.finite(
+    rasch:::.efrm_wald_zero(c(0.2, -0.2), singular, "unit")$p))
+  bad <- rasch:::.efrm_wald_zero(c(0.2, 0.2), singular, "unit")
+  expect_true(is.na(bad$wald))
+})
+
+test_that("hybrid EFRM refuses an unusable stage-one covariance", {
+  d <- simulate_efrm(n_per_group = 100, items_per_set = 5, n_sets = 2,
+                     n_groups = 1, seed = 7001)
+  tr <- attr(d, "truth")
+  old_solve <- rasch:::.efrm_solve
+  expect_error(testthat::with_mocked_bindings(
+    rasch_efrm(d, item_sets = tr$item_sets, groups = "group", id = "id",
+               boot_reps = 30, workers = 1),
+    .efrm_solve = function(...) {
+      z <- old_solve(...)
+      z$cov_joint[1L, 1L] <- -1e6
+      z
+    },
+    .package = "rasch"),
+    "positive-semidefinite joint stage-one covariance")
+})
+
 test_that("EFRM recovers person-group units (one set, four groups)", {
   skip_on_cran()   # heavy simulation; verified locally and on CI
   set.seed(7); L <- 20; per_g <- 400
@@ -58,6 +128,13 @@ test_that("EFRM recovers item-set units from common persons (polytomous)", {
   est <- setNames(fit$item_arbitrary$location, fit$item_arbitrary$item)
   expect_gt(cor(est[names(loc_true)], loc_true), 0.97)
   expect_gt(cor(fit$person$theta, th, use = "complete.obs"), 0.9)
+  expect_true(all(is.na(fit$thresholds_arbitrary$se)))
+  expect_true(all(is.na(fit$item_arbitrary$se)))
+  expect_true(all(is.na(fit$unit_cov$cov_delta)))
+  expect_identical(fit$unit_cov$method, "stage-one-only")
+  expect_false(fit$unit_support$alpha_inference)
+  expect_match(paste(fit$notes, collapse = " "),
+               "set-link uncertainty was omitted")
 })
 
 test_that("EFRM recovers the full unit grid (two sets x two groups)", {
@@ -85,6 +162,10 @@ test_that("EFRM recovers the full unit grid (two sets x two groups)", {
   expect_setequal(fit$efrm_vs_rasch$unit_omnibus$term,
                   c("group units (phi)", "set units (alpha)"))
   expect_true(all(is.finite(fit$efrm_vs_rasch$unit_omnibus$p)))
+  expect_equal(fit$efrm_vs_rasch$unit_omnibus$p_adj,
+               p.adjust(fit$efrm_vs_rasch$unit_omnibus$p, "holm"))
+  expect_equal(fit$efrm_vs_rasch$unit_omnibus$significant,
+               fit$efrm_vs_rasch$unit_omnibus$p_adj < 0.05)
   expect_true(all(c("p_adj", "significant") %in%
                     names(fit$efrm_vs_rasch$unit_tests)))
 })
@@ -100,10 +181,132 @@ test_that("EFRM withholds unit tests for a sparsely represented group", {
                     item_sets = list(all = colnames(X)), groups = "group",
                     boot_reps = 0)
   expect_false(fit$unit_support$phi_inference)
-  expect_equal(min(fit$unit_support$group$n_persons), 10)
+  # One of the ten small-group rows is an all-extreme within-set response and
+  # carries no pairwise-conditional information for the group unit.
+  expect_equal(min(fit$unit_support$group$n_persons), 9)
   expect_true(all(is.na(fit$efrm_vs_rasch$unit_omnibus$p)))
+  expect_true(all(is.na(fit$efrm_vs_rasch$unit_omnibus$p_adj)))
   expect_true(all(is.na(fit$efrm_vs_rasch$unit_tests$p)))
   expect_true(all(is.finite(fit$phi_table$phi)))
+  interval_drawn <- FALSE
+  grDevices::pdf(NULL)
+  on.exit(grDevices::dev.off(), add = TRUE)
+  testthat::with_mocked_bindings(
+    plot_frames(fit),
+    segments = function(...) interval_drawn <<- TRUE,
+    .package = "rasch")
+  expect_false(interval_drawn)
+})
+
+test_that("NPML set links at an optimiser boundary are refused", {
+  set.seed(1)
+  n <- 100L
+  u <- rnorm(n)
+  Xa <- cbind(rbinom(n, 1, plogis(u + 1)),
+              rbinom(n, 1, plogis(u - 1)))
+  Xb <- matrix(1L, n, 2L)
+  Xb[seq_len(3L), ] <- 0L
+  Xm <- cbind(Xa, Xb)
+  vmap <- data.frame(set = rep(c("a", "b"), each = 2L), group = "g")
+  z <- rasch:::.efrm_npml_pair(
+    Xm, vmap, tau_v = rep(0, 4L), disc_v = rep(1, 4L),
+    sets_u = c("a", "b"), a = 1L, b = 2L, idx = seq_len(n),
+    init_log_ratio = 0, init_offset = 0, min_link_persons = 5L,
+    grid_n = 31L)
+  expect_null(z)
+})
+
+test_that("same-tail extremes do not inflate EFRM link support", {
+  set.seed(4)
+  n <- 300L
+  u <- rnorm(n)
+  d <- seq(-1.5, 1.5, length.out = 6L)
+  Xa <- sapply(d, function(dd) rbinom(n, 1L, plogis(u - dd)))
+  Xb <- sapply(d, function(dd) rbinom(n, 1L, plogis(1.5 * u - dd)))
+  Xm <- cbind(Xa, Xb)
+  vmap <- data.frame(set = rep(c("a", "b"), each = 6L), group = "g")
+  link <- function(X) rasch:::.efrm_npml_pair(
+    X, vmap, tau_v = rep(0, 12L), disc_v = rep(1, 12L),
+    sets_u = c("a", "b"), a = 1L, b = 2L, idx = seq_len(nrow(X)),
+    init_log_ratio = 0, init_offset = 0, min_link_persons = 5L)
+  z0 <- link(Xm)
+  expect_false(is.null(z0))
+  # A person at the same extreme tail in both sets has a likelihood that
+  # rises towards one end of the grid, so the masses explaining such
+  # persons sit on the edge. Appending 120 of them puts about three per cent
+  # of the fitted masses on the grid ends, which a check on the total edge
+  # mass would refuse as truncation. Those persons stay in the likelihood
+  # and carry no information about the link, so the estimate barely moves.
+  Xe <- rbind(Xm, matrix(1L, 80L, 12L), matrix(0L, 40L, 12L))
+  z1 <- link(Xe)
+  expect_false(is.null(z1))
+  expect_identical(z1$n, z0$n)
+  expect_lt(z1$edge_mass, 1e-3)
+  expect_lt(abs(z1$log_ratio - z0$log_ratio), 0.02)
+  expect_lt(abs(z1$offset - z0$offset), 0.02)
+})
+
+test_that("opposing set extremes remain informative to an EFRM link", {
+  score_a <- c(0, 2, 0, 2, 1)
+  score_b <- c(0, 2, 2, 0, 1)
+  same_tail <- rasch:::.efrm_same_tail_extreme(
+    score_a, rep(2, 5), score_b, rep(2, 5))
+
+  expect_identical(same_tail, c(TRUE, TRUE, FALSE, FALSE, FALSE))
+
+  # Classification is invariant to the fitted unit. In particular, a small
+  # discrimination must not make an interior score look like a minimum.
+  expect_identical(
+    rasch:::.efrm_same_tail_extreme(
+      c(5e-13, 0), c(1e-12, 1e-12), c(5e-13, 0), c(1e-12, 1e-12)),
+    c(FALSE, TRUE))
+
+  # The outer linking stage must not discard an otherwise supported
+  # likelihood edge merely because too few persons have finite WLE starts.
+  # The pair likelihood is responsible for deciding whether the raw response
+  # patterns provide the requested support.
+  n <- 30L
+  u <- matrix(NA_real_, n, 2L)
+  w <- g <- matrix(NA_real_, n, 2L)
+  pair_calls <- 0L
+  pair_link <- function(a, b, idx, init_ls, init_off) {
+    pair_calls <<- pair_calls + 1L
+    expect_equal(c(init_ls, init_off), c(0, 0))
+    list(log_ratio = 0, offset = 0, n = n, converged = TRUE,
+         edge_mass = 0, loglik = -10)
+  }
+  linked <- rasch:::.efrm_link_sets(
+    u, w, g, c("A", "B"), min_link_persons = n,
+    boot_reps = 0L, pair_link = pair_link)
+  expect_equal(pair_calls, 1L)
+  expect_equal(unname(linked$alpha), c(1, 1))
+})
+
+test_that("concordant extremes cannot satisfy EFRM link support", {
+  set.seed(41)
+  n <- 180L
+  u <- rnorm(n)
+  d <- seq(-1.5, 1.5, length.out = 6L)
+  Xa <- sapply(d, function(dd) rbinom(n, 1L, plogis(u - dd)))
+  Xb <- sapply(d, function(dd) rbinom(n, 1L, plogis(1.2 * u - dd)))
+  Xm <- cbind(Xa, Xb)
+  vmap <- data.frame(set = rep(c("a", "b"), each = 6L), group = "g")
+  link <- function(min_n) rasch:::.efrm_npml_pair(
+    Xm, vmap, tau_v = rep(0, 12L), disc_v = rep(1, 12L),
+    sets_u = c("a", "b"), a = 1L, b = 2L, idx = seq_len(n),
+    init_log_ratio = 0, init_offset = 0, min_link_persons = min_n,
+    grid_n = 31L)
+  z <- link(5L)
+  expect_false(is.null(z))
+
+  # Same-tail rows remain in the likelihood but cannot manufacture the
+  # minimum number of persons that identify the transformation.
+  Xe <- rbind(Xm, matrix(1L, 50L, 12L), matrix(0L, 50L, 12L))
+  expect_null(rasch:::.efrm_npml_pair(
+    Xe, vmap, tau_v = rep(0, 12L), disc_v = rep(1, 12L),
+    sets_u = c("a", "b"), a = 1L, b = 2L, idx = seq_len(nrow(Xe)),
+    init_log_ratio = 0, init_offset = 0,
+    min_link_persons = z$n + 1L, grid_n = 31L))
 })
 
 test_that("a single frame reduces to the ordinary rasch fit", {
@@ -129,6 +332,33 @@ test_that("a single frame reduces to the ordinary rasch fit", {
   expect_equal(ctt_table(saved_before_flag)$table$item, colnames(X))
   expect_equal(colnames(guttman_table(saved_before_flag)$matrix),
                colnames(X)[order(fr$items$location)])
+})
+
+test_that("EFRM fits the same cleaned frame labels that it validates", {
+  set.seed(921)
+  N <- 120; L <- 6
+  X <- matrix(rbinom(N * L, 1, 0.5), N, L,
+              dimnames = list(NULL, paste0("I", seq_len(L))))
+  d <- data.frame(X, g = rep(c("A", " A "), length.out = N),
+                  check.names = FALSE)
+  fit <- rasch_efrm(d, item_sets = list(all = colnames(X)), groups = "g",
+                    boot_reps = 0)
+  expect_identical(as.character(fit$phi_table$group), "A")
+  expect_identical(unique(as.character(fit$factors$g)), "A")
+  # With only one set there is no estimated set link to omit, so the
+  # supported stage-one threshold covariance remains available.
+  expect_true(any(is.finite(fit$thresholds_arbitrary$se)))
+  expect_identical(fit$unit_cov$method, "stage-one")
+
+  set_map <- stats::setNames(rep(" core ", L), colnames(X))
+  fit_map <- rasch_efrm(d, item_sets = set_map, groups = "g", boot_reps = 0)
+  expect_identical(as.character(fit_map$alpha_table$set), "core")
+
+  bad_sets <- list(core = colnames(X)[1:3],
+                   " core " = colnames(X)[4:6])
+  expect_error(rasch_efrm(d, item_sets = bad_sets, groups = "g",
+                          boot_reps = 0),
+               "after trimming")
 })
 
 test_that("one-cell EFRM keeps classical summaries but not a heterogeneous-unit score table", {
@@ -248,6 +478,18 @@ test_that("the weighted score, not the raw score, drives person estimates", {
   dup <- key[duplicated(key) & !is.na(p$theta)][1]
   who <- which(key == dup)
   expect_lt(diff(range(p$theta[who])), 1e-12)
+})
+
+test_that("EFRM extreme status follows the response pattern", {
+  X <- rbind(non_extreme = c(1L, 0L, 0L),
+             minimum = c(0L, 0L, 0L),
+             maximum = c(1L, 1L, 1L))
+  z <- .efrm_person_estimates(
+    X, list(0, 0, 0), disc = c(1e-14, 1, 1))
+  expect_lt(z$weighted_score[1L], 1e-12)
+  expect_false(z$extreme[1L])
+  expect_true(z$extreme[2L])
+  expect_true(z$extreme[3L])
 })
 
 test_that("the semiparametric set link beats the naive SD ratio", {
@@ -379,6 +621,30 @@ test_that("EFRM standard error methods are coherent", {
                    se_method = "bootstrap", boot_reps = 50)
   expect_identical(fb$se_method, "bootstrap")
   expect_gte(fb$boot_reps_used, 30)
+  expect_identical(fb$full_boot_reps_requested, 50L)
+  expect_identical(fb$full_boot_reps_attempted, 50L)
+  expect_identical(fb$full_boot_reps_used, fb$boot_reps_used)
+  expect_identical(fb$full_boot_reps_failed, fb$boot_reps_failed)
+  expect_identical(fb$unit_cov$method, "bootstrap")
+  expect_equal(sqrt(diag(fb$unit_cov$cov_log_phi)),
+               fb$phi_table$se_log_phi, tolerance = 1e-12)
+  expect_equal(sqrt(diag(fb$unit_cov$cov_log_alpha)),
+               fb$alpha_table$se_log_alpha, tolerance = 1e-12)
+  K <- nrow(fb$unit_cov$cov_dtilde)
+  G <- nrow(fb$unit_cov$cov_log_phi)
+  expect_equal(fb$unit_cov$cov_joint[seq_len(K), seq_len(K), drop = FALSE],
+               fb$unit_cov$cov_dtilde, tolerance = 1e-12)
+  expect_equal(
+    fb$unit_cov$cov_joint[K + seq_len(G), K + seq_len(G), drop = FALSE],
+    fb$unit_cov$cov_log_phi, tolerance = 1e-12)
+  fr <- fb$frames[1L, ]
+  ia <- match(fr$set, fb$alpha_table$set)
+  ig <- match(fr$group, fb$phi_table$group)
+  expect_equal(fr$se_log_rho^2,
+               fb$unit_cov$cov_log_alpha[ia, ia] +
+                 fb$unit_cov$cov_log_phi[ig, ig] +
+                 2 * fb$unit_cov$cov_log_alpha_phi[ia, ig],
+               tolerance = 1e-10)
   # the two methods agree on scale (well within a factor of two)
   ratio <- median(fit$thresholds_arbitrary$se / fb$thresholds_arbitrary$se)
   expect_gt(ratio, 0.5); expect_lt(ratio, 2)
@@ -423,6 +689,19 @@ test_that("unit Wald tests accompany the equal-unit comparison", {
   expect_true(all(ut2$p < 0.01))
 })
 
+test_that("EFRM omnibus families are retained when covariance is unavailable", {
+  full <- .efrm_wald_zero(c(-0.2, 0.2), diag(c(0.04, 0.04)),
+                          "group units")
+  expect_equal(full$df, 2L)
+  expect_true(is.finite(full$p))
+
+  V <- diag(c(0.04, 0.04)); V[2, 2] <- NA_real_
+  unavailable <- .efrm_wald_zero(c(-0.2, 0.2), V, "group units")
+  expect_identical(unavailable$term, "group units")
+  expect_true(is.na(unavailable$df))
+  expect_true(is.na(unavailable$p))
+})
+
 test_that("the joint stage-1 covariance is coherent and its draws honest", {
   d <- simulate_efrm(150, 6, n_sets = 2, n_groups = 2, set_unit_ratio = 1.2,
                      seed = 77)
@@ -464,13 +743,71 @@ test_that("the joint stage-1 covariance is coherent and its draws honest", {
   expect_lt(max(abs(rowSums(V[, K + seq_len(G), drop = FALSE]))), 1e-8)
 })
 
+test_that("an unusable alpha-phi cross-covariance is explicitly withheld", {
+  set.seed(902)
+  n <- 160L
+  z <- rnorm(n)
+  u <- cbind(A = z + rnorm(n, sd = 0.2),
+             B = 1.25 * z + rnorm(n, sd = 0.2))
+  w <- matrix(0.04, n, 2L)
+  g <- matrix(1, n, 2L)
+  # The set link remains usable in every draw, while the accompanying group
+  # units are deliberately unavailable. This isolates the cross-covariance
+  # guard from failure of the alpha covariance itself.
+  regen <- function()
+    list(u = u, w = w, g = g,
+         log_phi = c(A = NA_real_, B = NA_real_))
+  expect_warning(
+    link <- .efrm_link_sets(u, w, g, c("A", "B"), min_link_persons = 20L,
+                            boot_reps = 30L, regen = regen, workers = 1L),
+    "affected frame-unit standard errors are NA")
+  expect_equal(link$boot_reps_used, 30L)
+  expect_true(link$cross_cov_withheld)
+  expect_null(link$cov_alpha_phi)
+
+  expect_warning(
+    no_regen <- .efrm_link_sets(
+      u, w, g, c("A", "B"), min_link_persons = 20L,
+      boot_reps = 30L, regen = NULL, workers = 1L),
+    "calibration redraws were unavailable")
+  expect_true(no_regen$cross_cov_withheld)
+  expect_null(no_regen$cov_alpha_phi)
+
+  # Pin the public consequence separately. Supply a usable marginal alpha
+  # covariance but mark its alpha-phi cross-covariance as withheld; the fit
+  # must not turn that unknown term into zero when it constructs frame SEs.
+  d <- simulate_efrm(n_per_group = 80, items_per_set = 5, n_sets = 2,
+                     n_groups = 2, seed = 36)
+  tr <- attr(d, "truth")
+  real_link <- .efrm_link_sets
+  fit <- with_mocked_bindings(
+    rasch_efrm(d, item_sets = tr$item_sets, groups = "group", boot_reps = 0),
+    .efrm_link_sets = function(...) {
+      out <- real_link(...)
+      S <- length(out$alpha)
+      out$se_log_alpha[] <- 0.1
+      out$cov_link <- diag(0.01, 2L * S)
+      out$cross_cov_withheld <- TRUE
+      out$cov_alpha_phi <- NULL
+      out
+    },
+    .package = "rasch"
+  )
+  expect_true(all(is.finite(fit$alpha_table$se_log_alpha)))
+  expect_true(all(is.na(fit$frames$se_log_rho)))
+})
+
 test_that("rasch.efrm_link_draws is validated and blockdiag is simulation-only", {
   d <- simulate_efrm(300, 8, n_sets = 2, n_groups = 2, seed = 78)
   old <- options(rasch.efrm_link_draws = -3)
   on.exit(options(old), add = TRUE)
   expect_error(rasch_efrm(d, item_sets = attr(d, "truth")$item_sets,
                           groups = "group", boot_reps = 40),
-               "positive whole number")
+               "whole number")
+  options(rasch.efrm_link_draws = 1)
+  expect_error(rasch_efrm(d, item_sets = attr(d, "truth")$item_sets,
+                          groups = "group", boot_reps = 40),
+               "between 30")
   options(rasch.efrm_link_draws = NULL, rasch.efrm_link_blockdiag = TRUE)
   fit_bd <- rasch_efrm(d, item_sets = attr(d, "truth")$item_sets,
                        groups = "group", boot_reps = 60)
@@ -490,7 +827,7 @@ test_that("frame_invariance tests the invariance the model assumes", {
   expect_equal(inv$summary$n_location, 0L)
   expect_true(is.na(inv$summary$n_discrimination))
   expect_lt(inv$summary$ratio, 1.5)
-  expect_output(print(inv), "No item's location differs")
+  expect_output(print(inv), "No available item-location comparison differs")
   inv_print <- inv
   inv_print$excluded <- data.frame(
     set = "S1", frame_1 = "A", frame_2 = "B", item = c("I01", "I02"),
@@ -549,6 +886,13 @@ test_that("conditional frame invariance reports discrimination descriptively", {
   expect_true(all(c("infit_1", "infit_2", "infit_z", "p_adj",
                     "disc_1", "disc_2", "disc_ratio") %in%
                     names(inv$discrimination)))
+  expect_identical(inv$boot_reps, 0L)
+  expect_identical(inv$boot_reps_used, 0L)
+  expect_no_error(.validate_frame_invariance(inv, f))
+  changed <- inv
+  changed$locations$difference[1] <- changed$locations$difference[1] + 1
+  expect_error(.validate_frame_invariance(changed, f),
+               "frame_invariance")
   expect_false("statistic" %in% names(inv$discrimination))
   expect_true(all(is.na(inv$discrimination$p)))
   expect_true(all(is.na(inv$discrimination$p_adj)))
@@ -627,7 +971,7 @@ test_that("EFRM reports bootstrap progress and supports cancellation", {
   tr <- attr(d, "truth")
   seen <- list()
   f <- rasch_efrm(d, item_sets = tr$item_sets, groups = "group", id = "id",
-                  boot_reps = 30,
+                  boot_reps = 40,
                   seed = 914,
                   progress = function(stage, current, total)
                     seen[[length(seen) + 1L]] <<- c(stage, current, total))
@@ -636,7 +980,7 @@ test_that("EFRM reports bootstrap progress and supports cancellation", {
   expect_true(all(c("conditional calibration", "linking bootstrap",
                     "finalising") %in% stages))
   link <- seen[stages == "linking bootstrap"]
-  expect_identical(as.integer(tail(link, 1L)[[1L]][2:3]), c(30L, 30L))
+  expect_identical(as.integer(tail(link, 1L)[[1L]][2:3]), c(40L, 40L))
 
   completed <- 0L
   expect_condition(
@@ -658,9 +1002,9 @@ test_that("parallel EFRM bootstraps are seed-identical to serial fits", {
   # PSOCK workers must load the same installed namespace. pkgload source-tree
   # sessions deliberately skip this integration test; R CMD check and binary
   # package tests exercise it against the installed package.
-  skip_if_not(file.exists(file.path(system.file(package = "rasch"),
-                                    "DESCRIPTION")),
-              "parallel integration test needs an installed package")
+  skip_if_not(rasch:::.rasch_namespace_is_installed(),
+              "parallel integration test needs an installed package namespace")
+  expect_true(rasch:::.rasch_namespace_is_installed())
   probe <- try(parallel::makePSOCKcluster(2L), silent = TRUE)
   skip_if(inherits(probe, "try-error"), "local socket clusters unavailable")
   parallel::stopCluster(probe)
@@ -669,9 +1013,9 @@ test_that("parallel EFRM bootstraps are seed-identical to serial fits", {
                      n_groups = 2, seed = 915)
   tr <- attr(d, "truth")
   serial <- rasch_efrm(d, item_sets = tr$item_sets, groups = "group", id = "id",
-                       boot_reps = 30, workers = 1, seed = 916)
+                       boot_reps = 40, workers = 1, seed = 916)
   parallel <- rasch_efrm(d, item_sets = tr$item_sets, groups = "group", id = "id",
-                         boot_reps = 30, workers = 2, seed = 916)
+                         boot_reps = 40, workers = 2, seed = 916)
 
   expect_identical(parallel$alpha_table, serial$alpha_table)
   expect_identical(parallel$set_table, serial$set_table)
@@ -687,6 +1031,10 @@ test_that("EFRM defaults to four workers subject to system limits", {
                          rasch.efrm.max_workers = NULL)
   on.exit(options(old_workers), add = TRUE)
   expect_identical(rasch:::.efrm_available_workers(), 1L)
+  options(rasch.max_workers = NULL)
+  available <- rasch:::.efrm_available_workers()
+  options(rasch.max_workers = factor("1"))
+  expect_identical(rasch:::.efrm_available_workers(), available)
 })
 
 test_that("an EFRM bootstrap seed does not take over the caller's RNG", {
@@ -696,6 +1044,15 @@ test_that("an EFRM bootstrap seed does not take over the caller's RNG", {
   set.seed(918)
   before <- .Random.seed
   rasch_efrm(d, item_sets = tr$item_sets, groups = "group", id = "id",
-             boot_reps = 30, seed = 919)
+             boot_reps = 40, seed = 919)
   expect_identical(.Random.seed, before)
+})
+
+test_that("EFRM sizes the full bootstrap to its largest covariance block", {
+  d <- simulate_efrm(n_per_group = 40, items_per_set = 6, n_sets = 2,
+                     n_groups = 2, n_categories = 4, seed = 920)
+  expect_error(
+    rasch_efrm(d, item_sets = attr(d, "truth")$item_sets, groups = "group",
+               se_method = "bootstrap", boot_reps = 30, workers = 1),
+    "at least 36 replicates")
 })

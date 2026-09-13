@@ -13,7 +13,10 @@ combine_items(fit, groups, model = "PCM")
 combine; a single vector is also accepted.}
 
 \item{model}{Model for the re-analysis; defaults to \code{"PCM"}, which is
-almost always required because subtests change the maximum scores.}
+almost always required because subtests change the maximum scores.
+Explanatory fits retain their predictor restrictions on unchanged items
+and freely estimate the new superitems. They require \code{"PCM"}; an
+RSM restriction cannot be added through this argument.}
 }
 \value{
 A new \code{\link{rasch}} fit on the combined structure, with the
@@ -21,12 +24,19 @@ A new \code{\link{rasch}} fit on the combined structure, with the
   recalculated. Fit grouping, external anchors on unchanged items, keyed
   scoring, PCM constraints and optimisation controls are retained.
   Anchored items cannot be combined because the resulting superitem has no
-  corresponding external anchor.
+  corresponding external anchor. A group-specific copy produced by
+  \code{split_items()} cannot be combined: form the subtest before applying
+  a DIF split. Existing split-item provenance is retained for items not
+  included in a new subtest.
 }
 \description{
 Replaces each nominated item group by a polytomous super-item whose score is
 the sum of its members, then refits the model. The function is commonly used
 to examine item groups identified by \code{\link{residual_correlations}}.
+Every total from zero to the sum of the component maxima must be observed;
+otherwise the refit is refused rather than renumbering the superitem score.
+The refit is also refused if calibration merges an observed category that
+lacks conditional information, or changes a retained item's scoring.
 }
 \examples{
 set.seed(1); Np <- 500; L <- 8

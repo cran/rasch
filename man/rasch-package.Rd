@@ -31,13 +31,14 @@ examine whether comparisons remain invariant across persons, items, groups,
 occasions, raters, and other parts of the measurement design.
 
 Use \code{\link{rasch}} for the dichotomous, partial credit, and rating
-scale models; \code{\link{rasch_explanatory}} for the linear logistic test
-and linear partial credit models; \code{\link{rasch_mfrm}} for additive item, rater, and other
-facet effects; and \code{\link{rasch_efrm}} when the unit varies across
-linked frames. \code{\link{btl}} fits comparative judgement models for
-dichotomous and polytomous paired comparisons;
+scale models; \code{\link{rasch_mfrm}} for additive item, rater, and other
+facet effects; \code{\link{rasch_efrm}} when the unit varies across linked
+frames; and \code{\link{rasch_explanatory}} for the linear logistic test
+and linear partial credit models. \code{\link{btl}} fits comparative
+judgement models for dichotomous and polytomous paired comparisons;
+\code{\link{btl_efrm}} fits the linked-frame extension; and
 \code{\link{btl_explanatory}} constrains object locations by observed
-characteristics; and \code{\link{btl_efrm}} fits the linked-frame extension.
+characteristics.
 }
 
 \section{Graphical interface}{
@@ -45,6 +46,12 @@ characteristics; and \code{\link{btl_efrm}} fits the linked-frame extension.
 \code{\link{run_app}} launches the package's Shiny application. It supports
 data import, model fitting, diagnostics, plots, saved analysis projects and
 reports. The corresponding R code is shown for each result.
+}
+
+\section{Reproducible simulations}{
+
+Simulators and bootstrap procedures accept a random seed. See
+\code{\link{rasch_rng}} for random-number generator support.
 }
 
 \references{
@@ -94,7 +101,12 @@ Useful links:
 
 }
 \author{
-\strong{Maintainer}: Josh McGrane \email{drjoshmcgrane@gmail.com}
+\strong{Maintainer}: Joshua A. McGrane \email{drjoshmcgrane@gmail.com}
+
+Authors:
+\itemize{
+  \item Joshua A. McGrane \email{drjoshmcgrane@gmail.com}
+}
 
 }
 \keyword{internal}

@@ -4,7 +4,20 @@
 \alias{report_html}
 \title{Write a self-contained HTML report of a Rasch analysis}
 \usage{
-report_html(fit, file, title = "Rasch measurement analysis", dpi = 150)
+report_html(
+  fit,
+  file,
+  title = "Rasch measurement analysis",
+  dpi = 150,
+  dif = NULL,
+  bootstrap = NULL,
+  dif_bootstrap = NULL,
+  dimensionality = NULL,
+  invariance = NULL,
+  subtest = NULL,
+  tailored = NULL,
+  person_weights = NULL
+)
 }
 \arguments{
 \item{fit}{A fitted object from \code{\link{rasch}}.}
@@ -14,19 +27,48 @@ report_html(fit, file, title = "Rasch measurement analysis", dpi = 150)
 \item{title}{Report title.}
 
 \item{dpi}{Resolution of the embedded plots.}
+
+\item{dif, bootstrap}{Optional computed \code{\link{dif_anova}} and
+\code{\link{fit_bootstrap}} results from this fit, exported as run; the DIF table is
+otherwise recomputed at defaults when the fit carries person factors.}
+
+\item{dif_bootstrap}{Optional \code{\link{dif_bootstrap}} sensitivity
+analysis from this fit and DIF specification.}
+
+\item{dimensionality}{Optional computed \code{\link{plot_scree}} result
+from this fit. Supplying it keeps the table and figure identical to the
+analysis already run.}
+
+\item{invariance}{Optional computed \code{\link{frame_invariance}} result
+from an EFRM fit.}
+
+\item{subtest}{Optional computed \code{\link{dimensionality_test}} result
+from this fit. Supplying it keeps the item split and bootstrap calibration
+used in the analysis.}
+
+\item{tailored}{Optional computed \code{\link{tailored_analysis}} result
+from this ordinary dichotomous fit.}
+
+\item{person_weights}{Optional table returned by
+\code{\link{weighted_person_estimates}}. An explicit table takes
+precedence over a compatible result retained by the application.}
 }
 \value{
 Invisibly, \code{file}.
 }
 \description{
 Writes one HTML file containing the summary statistics, diagnostic tables,
-and test-level plots. Images and styles are embedded in the file.
+and test-level plots. Images and styles are embedded in the file. Computed
+tailored item shifts and externally weighted secondary person measures can
+be included with the fitted-model results.
+For keyed fits with repeated person IDs, the report explains why distractor
+analysis is unavailable; the other model outputs remain available.
 }
 \examples{
 set.seed(1)
-d <- seq(-2, 2, length.out = 6)
-X <- matrix(rbinom(300 * 6, 1, plogis(outer(rnorm(300), d, "-"))), 300, 6)
-colnames(X) <- paste0("I", 1:6)
+d <- seq(-1.5, 1.5, length.out = 4)
+X <- matrix(rbinom(80 * 4, 1, plogis(outer(rnorm(80), d, "-"))), 80, 4)
+colnames(X) <- paste0("I", 1:4)
 out <- file.path(tempdir(), "report.html")
-report_html(rasch(X), out)
+report_html(rasch(X), out, dpi = 96)
 }

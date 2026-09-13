@@ -9,20 +9,27 @@ resolve_dif(
   factors = NULL,
   alpha = 0.05,
   p_adjust = "holm",
+  min_n = 20L,
   min_anchors = NULL,
-  max_splits = NULL
+  max_splits = NULL,
+  effects = c("main", "factorial")
 )
 }
 \arguments{
-\item{fit}{A fitted object from \code{\link{rasch}} carrying person
-factors.}
+\item{fit}{A fitted object from \code{\link{rasch}}.}
 
 \item{factors}{Person factors to test, as in \code{\link{dif_anova}};
 defaults to every nominated factor.}
 
 \item{alpha}{Significance level for the adjusted probabilities.}
 
-\item{p_adjust}{Multiplicity adjustment across items each round.}
+\item{p_adjust}{Multiplicity adjustment for the DIF tests in each round.}
+
+\item{min_n}{Minimum distinct responders required in every item-by-factor
+cell before an automatic split is allowed. Repeated response rows from
+one person count once within a cell. The omnibus DIF test determines
+whether a split is needed; pairwise follow-ups describe where the
+difference lies but are not a second significance gate.}
 
 \item{min_anchors}{Minimum number of original items to leave unsplit as the
 internal reference set. The procedure stops before this set becomes
@@ -31,20 +38,36 @@ smaller; pervasive DIF is not artificial DIF. Default
 
 \item{max_splits}{Hard cap on the number of splits. Default: the number
 of items.}
+
+\item{effects}{\code{"main"} fits the factors additively;
+\code{"factorial"} also tests their interactions. The same model is
+used at every round and in the final DIF assessment.}
 }
 \value{
 A list of class \code{"rasch_resolve_dif"}: the final resolved
-  \code{fit}, the \code{splits} performed (order, item, factor, partial
-  eta-squared, source item, DIF magnitude in logits), the \code{stopped}
-  reason, and the residual \code{dif} table for the final fit.
+  \code{fit}, the \code{splits} performed (\code{order}, \code{item},
+  \code{factor}, \code{base_item}, \code{eta2}, \code{magnitude} in logits), the \code{stopped}
+  reason, the residual \code{dif} table, and the number of distinct source
+  items that still show DIF in the final fit. \code{n_untested} counts the
+  uniform and non-uniform hypotheses the final assessment could not estimate although the
+  design could answer them; those terms are reported as neither DIF nor no
+  DIF, so the remaining-DIF count is a lower bound whenever
+  \code{n_untested} is positive. A split copy answered in one level of its
+  splitting factor only is not counted: its term is structurally absent,
+  not lost. \code{n_remaining_dif} is \code{NA} when no hypothesis was
+  estimable. \code{n_nonuniform} counts significant non-uniform item-factor
+  findings and is \code{NA} if any answerable non-uniform hypothesis is
+  unavailable, or no hypothesis was estimable. \code{n_untested} is always
+  a count. \code{effects} records the factor model used.
 }
 \description{
 Splits items with uniform DIF one at a time, beginning with the largest
 estimated effect,
 and refits after each split. This order addresses the artificial DIF that a
 large departure can induce in otherwise invariant items (Andrich and
-Hagquist 2012, 2015). Each split gives the item a separate location and
-threshold structure in every factor cell. A location split does not model a
+Hagquist 2012, 2015). Each split gives the item a separate location in every
+factor cell. A PCM also estimates the split copies' thresholds separately;
+an RSM retains its common rating-scale threshold structure. A location split does not model a
 group-specific discrimination, so items with non-uniform DIF are left for
 review rather than being made untestable by a split. The procedure stops
 when no resolvable uniform DIF remains or the remaining unsplit reference

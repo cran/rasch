@@ -36,6 +36,12 @@
 #' @export
 guttman_table <- function(fit) {
   if (!inherits(fit, "rasch")) stop("guttman_table needs a rasch fit")
+  if (!isTRUE(fit$est$converged))
+    stop("the fitted calibration did not converge; the location-ordered scalogram is unavailable",
+         call. = FALSE)
+  if (!.efrm_link_converged(fit))
+    stop("the fitted set-unit link did not converge; the location-ordered scalogram is unavailable",
+         call. = FALSE)
   structural <- inherits(fit, c("rasch_efrm", "rasch_mfrm"))
   if (!.classical_design_applicable(fit))
     stop("the whole-item scalogram is not defined when an item is ",
@@ -99,10 +105,7 @@ guttman_table <- function(fit) {
 #' plot_guttman(rasch(X))
 #' @export
 plot_guttman <- function(fit, max_persons = 80) {
-  if (length(max_persons) != 1L || !is.finite(max_persons) ||
-      max_persons < 1L || max_persons != floor(max_persons))
-    stop("max_persons must be one positive whole number")
-  max_persons <- as.integer(max_persons)
+  max_persons <- .check_whole(max_persons, "max_persons", 1)
   g <- guttman_table(fit); G <- g$matrix; m <- max(fit$m)
   N <- nrow(G)
   if (N > max_persons) G <- G[round(seq(1, N, length.out = max_persons)), , drop = FALSE]

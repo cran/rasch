@@ -13,7 +13,7 @@ plot_btl_icc(fit, object, group = NULL, grid = NULL, min_n = 10)
 
 \item{group}{Optional judge grouping for a DIF overlay: either one value
 per comparison row of \code{fit$comparisons} or a vector named by
-judge. Observed means are then drawn separately per group, as
+every judge in the fit. Observed means are then drawn separately per group, as
 \code{\link{plot_icc}} draws person groups.}
 
 \item{grid}{Opponent-location grid, in logits.}
@@ -32,6 +32,9 @@ Plots the expected response for one object against opponent location, with
 the observed mean response against each sufficiently observed opponent.
 For dichotomous fits the curve is the win probability; for ordered fits it
 is the expected response.
+With fitted position or history effects, model values are weighted means
+of the fitted expectations for each observed opponent, joined in location
+order. Judge-group overlays use each group's own comparison context.
 }
 \examples{
 set.seed(1)

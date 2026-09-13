@@ -4,21 +4,41 @@
 \alias{btl_dimensionality}
 \title{Experimental residual dimensionality of paired comparisons}
 \usage{
-btl_dimensionality(fit, reps = 200L)
+btl_dimensionality(
+  fit,
+  reps = 200L,
+  seed = NULL,
+  independent_comparisons = NULL
+)
 }
 \arguments{
 \item{fit}{A paired-comparison fit from \code{\link{btl}}.}
 
-\item{reps}{Model-simulated replicates for the noise reference.}
+\item{reps}{Model-simulated replicates for the noise reference; at least 20.
+Larger values give a more stable upper-tail reference.}
+
+\item{seed}{Optional non-negative whole-number seed. The caller's random-
+number state is restored when the calculation finishes; see
+\code{\link{rasch_rng}} for generator support.}
+
+\item{independent_comparisons}{Logical or \code{NULL}. Declare whether
+conditionally independent comparison outcomes may be assumed for the
+simulated reference. The default \code{NULL} assumes independence only
+for an unclustered ordinary BTL fit. \code{FALSE} withholds inference;
+\code{TRUE} explicitly enables the reference, subject to design guards.}
 }
 \value{
 A list of class \code{"rasch_btl_dim"}: \code{bimensions} (per
-  bimension: strength and share of residual size; the reference mean, 95th
-  percentile, and the clears-the-reference flag are reported for the
+  bimension: strength and share of residual size; the reference mean, 5%
+  upper critical value, and the clears-the-reference flag are reported for the
   leading bimension and \code{NA} for the rest);
   \code{coords} (each object's position in the leading bimension plane, for
   the residual map); \code{leading_structured} (whether bimension 1 clears
-  its reference); \code{residual_matrix}; and \code{notes}.
+  its reference); \code{reference} (the simulated mean, finite-simulation
+  5% critical value and upper-tail probability, calculated as one plus the
+  exceedance count divided by one plus \code{reps}, together with the
+  effective \code{independent_comparisons} assumption); \code{residual_matrix}; and
+  \code{notes}. \code{residual_method} identifies the residual definition.
 }
 \description{
 Decomposes the skew-symmetric matrix of observed-minus-expected pair
@@ -30,15 +50,32 @@ model using the observed comparison counts.
 \details{
 This is an experimental diagnostic. The reference is conditional on the
 fitted point estimates because the model is not re-estimated in each
-replicate. Ordered-response fits use the same points-proportion residual in
-the data and simulations. Fits with exposure or carry-over effects simulate
-those effects through each judge's observed sequence. The fitted model must
+replicate. Observed and fitted expected points are pooled over each object
+pair before their proportions are compared on the logit scale. A half-point
+correction is applied to both totals. This retains category thresholds,
+frame units and fitted position or history effects in the expectation.
+The same calculation is used in the simulations; exposure and carry-over
+expectations follow each draw's generated history. The fitted model must
 have converged.
 
-A categorical result is withheld if any object pair is unobserved. It is
-also withheld when every judge receives essentially the same comparison
-sequence and an order effect is fitted, because order and residual structure
-are then confounded.
+This reference assumes conditionally independent comparison outcomes given
+the fitted probabilities and any modeled history. It is not cluster-robust:
+clustered calibration standard errors do not make this simulated reference
+valid under general within-judge dependence. Judge-clustered and frame fits
+therefore return a descriptive decomposition by default. Explicitly set
+\code{independent_comparisons = TRUE} to request the model-conditional
+independent-comparison reference as a sensitivity analysis.
+
+Inference is withheld if any object pair is unobserved, or if an
+ordered analysis contains count-weighted rows whose within-row sequence is
+unavailable. It is also withheld when every judge receives essentially the
+same comparison sequence and an order effect is fitted, because order and
+residual structure are then confounded. The result is also withheld when
+no object pair has an observed position for more than one judge, because
+across-judge order variation cannot then be assessed. In these cases the
+observed decomposition remains available, but probabilities, critical
+values and the reference band are omitted. Any completed simulation draws
+are retained for descriptive inspection, not as an inferential reference.
 }
 \examples{
 set.seed(1); objs <- LETTERS[1:6]; beta <- setNames(seq(-1.5, 1.5, len = 6), objs)

@@ -38,15 +38,19 @@ marginal comparisons.}
 \item{id}{Person identifiers, specified as for
 \code{\link{dif_contrasts}}.}
 
-\item{p_adjust}{Familywise adjustment over this post-hoc family; default
-\code{"holm"}.}
+\item{p_adjust}{Adjustment over this post-hoc family. The default
+\code{"holm"} controls familywise error; use \code{"BH"} only for
+false-discovery-rate screening. \code{"none"} leaves probabilities
+unadjusted.}
 
 \item{alpha}{Significance level for adjusted probabilities.}
 
 \item{flag_logits}{Absolute logit magnitude flagged as practically
 important.}
 
-\item{min_n}{Minimum responders required in a resolved design cell.}
+\item{min_n}{Minimum distinct responders required in a resolved design
+cell. When identifiers repeat, response rows from one person count once
+within each cell.}
 }
 \value{
 An object of class \code{"rasch_dif_posthoc"}, extending the
@@ -74,7 +78,9 @@ Standard errors use the full covariance of the resolved locations.
 This is the follow-up to a significant DIF term with more than two levels.
 It reports effects in Rasch logits, adjusts the chosen family of comparisons,
 and uses person-level scores with the same equal-cell marginal weights in
-repeated-measures designs.
+repeated-measures designs. A planned comparison that cannot be estimated
+because its levels have no common nuisance-factor cell remains in the
+multiplicity count, although it is omitted from the result table.
 }
 \examples{
 set.seed(1); n <- 800

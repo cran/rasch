@@ -11,7 +11,6 @@ rasch(
   factors = NULL,
   items = NULL,
   n_groups = NULL,
-  adjust_N = NA,
   anchors = NULL,
   na_codes = -1,
   key = NULL,
@@ -29,15 +28,22 @@ described above.}
 \item{model}{Either \code{"PCM"} (partial credit) or \code{"RSM"} (rating
 scale).}
 
-\item{id}{Optional name of an ID column in \code{data}, or a vector of IDs;
-carried through to the person estimates.}
+\item{id}{Optional name of an ID column in \code{data}, or a vector of IDs.
+Repeated values cluster the item-parameter sandwich covariance and define
+the person unit in repeated-measures DIF. The ordinary item-fit reference
+distributions are row-based, so their probabilities are withheld when an
+ID occurs on more than one response row. The support conditions described
+above then apply to person clusters rather than response rows.}
 
 \item{factors}{Optional character vector of person-factor column names in
 \code{data} (for DIF analysis), a data frame of factors, or one grouping
 vector with one entry per data row.}
 
-\item{items}{Optional character vector naming the item columns; by default
-every column not named in \code{id} or \code{factors}.}
+\item{items}{Optional item column names or numeric column indices. By
+default, columns named in \code{id} or \code{factors} are excluded.
+A separate factor data frame may share item names when \code{items} is
+explicit. Without it, matching names exclude columns whose values agree;
+conflicting values are refused.}
 
 \item{n_groups}{Number of class intervals for the item-trait chi-square
 and ANOVA item fit. The default \code{NULL} applies the rule of Andrich
@@ -46,19 +52,25 @@ many intervals of at least 50 non-extreme persons as the sample allows,
 at most 10, at least 2. The resolved value is stored in
 \code{fit$n_groups}.}
 
-\item{adjust_N}{Optional reference sample size used to rescale the
-item-trait chi-squares. See Details.}
-
 \item{anchors}{Optional anchor table for equating: a data frame with
-columns \code{item}, \code{k}, and \code{tau}; see \code{\link{pcml}}.
-Anchors determine the scale origin.}
+columns \code{item}, \code{k}, and \code{tau}, and optionally
+\code{average = TRUE} for average item anchoring; see
+\code{\link{pcml}}. Column names must be unique. Anchors determine the
+scale origin. Anchor values are treated as fixed, so their uncertainty
+is not included in the fitted standard errors.}
 
-\item{na_codes}{Values to read as missing. Defaults to \code{-1}, the
-conventional missing-response code; any negative score is also treated as
-missing, since valid category scores start at zero.}
+\item{na_codes}{Numeric or character values to read as missing. They are
+matched before scores are converted to numbers, including numerically
+equivalent labels (for example, \code{"09"} matches a score of 9).
+Defaults to \code{-1}, the conventional missing-response code; any
+negative score is also treated as missing, since valid category scores
+start at zero. For keyed items, codes apply to raw answer options, not
+to the scores assigned by the key. Structural refits use the prepared
+scores and do not apply the original raw codes again.}
 
 \item{key}{Optional multiple-choice key: a named item-to-option vector, an
-item/key table, or an item/option/score table. See Details.}
+item/key table, or an item/option/score table. Table column names must be
+unique. See Details.}
 
 \item{pc_components}{\code{NULL} (the default) estimates all PCM thresholds
 freely. Values from 1 to 4 use the principal-components form in
@@ -76,7 +88,13 @@ An object of class \code{"rasch"}. Its principal components are
   and estimation details. The component \code{summary_stats} contains the
   distribution summaries, fit-location correlations, and the cell
   degrees-of-freedom factor. The item summary carries a \code{disc}
-  column described below.
+  column described below. \code{repeated_ids} records whether a person
+  contributes more than one informative calibration row;
+  \code{repeated_residual_ids} records repetition among rows contributing
+  fitted residuals, which governs the row-based fit references. If estimation
+  does not converge, locations and
+  residual patterns are retained for diagnosis, but standard errors,
+  separation indices and inferential probabilities are \code{NA}.
 }
 \description{
 Fits the partial credit model (PCM) or rating scale model (RSM) by pairwise
@@ -100,12 +118,21 @@ item-pair graph must identify a common scale. This covers planned linked
 designs and ignorable missingness; informative missingness can still bias
 the estimates.
 
+Item-parameter uncertainty uses the empirical Godambe sandwich over
+independent persons, or over person clusters when IDs repeat. It is
+withheld unless at least 10 contributing units, at least 8 effective units,
+more effective units than fitted parameters, and a full-rank score
+covariance support the fitted directions. Effective support reflects the
+number of informative conditional item pairs contributed by each unit;
+rows without one do not count. Point estimates and exact anchors remain
+available when uncertainty is withheld.
+
 The fit residual is the log-of-mean-square statistic described by Andrich
-and Marais (2019, ch. 23). It is approximately standard normal under fit;
-positive values indicate under-discrimination and negative values indicate
-over-discrimination. The item-trait chi-square and class-interval F tests
-are large-sample diagnostic approximations and should be considered with
-the residual statistics, effect sizes, and item content.
+and Marais (2019, ch. 23). Positive values indicate under-discrimination and
+negative values indicate over-discrimination. Its standard-normal reading,
+the item-trait chi-square and the class-interval F test are asymptotic
+approximations. For ordinary Rasch, PCM and RSM fits,
+\code{\link{fit_bootstrap}} supplies calibrated probabilities.
 
 Multiple-choice responses may be scored from a named item-to-key vector,
 an item/key table, or an item/option/score table. A slash separates
@@ -113,11 +140,6 @@ alternative correct options. The third form assigns integer category
 scores to nominated options and fits the resulting item as polytomous;
 unlisted options score zero. Raw responses are retained in \code{fit$mc}
 for distractor analysis.
-
-If \code{adjust_N} is supplied, each item-trait chi-square is multiplied by
-the reference sample size divided by the number of classified persons.
-The scaling is global: an item answered by a subset retains its
-proportionally smaller share of the reference sample.
 }
 \section{Estimated item discrimination}{
 
@@ -133,14 +155,19 @@ and no sampling standard error or hypothesis test is attached to it.
 
 \section{Item-fit probabilities}{
 
-The item-trait chi-square supplies the principal inferential test of
-invariance over class intervals. The class-interval ANOVA is a conventional
-residual diagnostic whose F reference is approximate. Its probability can
-be anti-conservative in short tests because each response contributes
-appreciably to the person grouping used to test that item. The same issue
-can affect the item-trait probability when fewer than about ten responses
-locate each person. In short administrations, read the statistics with the
-characteristic curve and residual fit rather than as stand-alone decisions.
+The item-trait chi-square assesses invariance over class intervals, but its
+asymptotic reference treats the estimated person locations used to form
+those intervals as known. Its calibration therefore changes with sample
+size and test length. The class-interval ANOVA and standardised residual
+readings are approximate for the same reason. The item table retains their
+raw and Holm-adjusted probabilities as descriptive diagnostics. Each
+adjustment retains the full item family when one probability is
+unavailable.
+\code{\link{fit_bootstrap}} re-estimates every replicate and should be used
+for item-level inference where it is available. With repeated IDs, the
+ordinary asymptotic probabilities are withheld and \code{fit_bootstrap()}
+is unavailable because neither reference models within-person dependence;
+the residuals and fit statistics remain descriptive.
 }
 
 \examples{

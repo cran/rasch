@@ -27,30 +27,36 @@ btl_explanatory(
 \item{data}{A data frame with one comparison per row.}
 
 \item{predictors}{Data frame with one row per object, an \code{object}
-column, and the predictors named in \code{formula}.}
+column, and the predictors named in \code{formula}. Column names must be
+unique.}
 
 \item{formula}{One-sided explanatory formula, including selected
-interactions if required.}
+interactions if required. Formula offsets (\code{offset()}) are not supported.}
 
 \item{object_a, object_b}{Names of the columns holding the two objects
-compared.}
+compared. Columns used for the comparison roles must be distinct.}
 
 \item{winner}{Name of the column holding the winner of each row: its
 value must equal one of the two objects. \code{"tie"} and \code{"draw"}
-mark ties. Ignored when \code{response} is supplied.}
+mark ties. Do not supply both \code{winner} and \code{response}.}
 
 \item{response}{Optional ordered response favouring \code{object_a} over
 \code{object_b}: an ordered factor from least to greatest preference for
 \code{object_a}, or integer scores \code{0..m}.}
 
 \item{margin}{Optional ordered margin-of-victory column, combined with
-\code{winner} to construct an orientation-invariant response.}
+\code{winner} to construct an orientation-invariant response. Use an
+ordered factor (levels from the smallest to largest margin) or a positive
+numeric magnitude. Margins on ties and rows excluded from the analysis
+are ignored.}
 
 \item{judge}{Optional name of a judge column; enables the judge fit
 table and clusters the sandwich standard errors by judge.}
 
 \item{count}{Optional name of a column of replication counts (a row
-standing for several identical comparisons).}
+standing for several identical comparisons). Counts greater than one
+cannot be combined with \code{order}, because a compressed row does not
+retain the sequence of the comparisons it represents.}
 
 \item{order}{Optional column giving each judge's comparison sequence;
 requires \code{judge}. See Details. Incompatible with
@@ -61,8 +67,9 @@ treating \code{object_a} as the first object in each comparison.}
 
 \item{ties}{How to treat ties in the dichotomous analysis:
 \code{"drop"} (default, removed with a note), \code{"half"} (half a
-win each way, a common pragmatic device -- flagged in the notes
-because the halves are not independent Bernoulli trials), or
+win each way, a common pragmatic device; the two halves remain one
+sampling unit in the sandwich because they are not independent
+Bernoulli trials), or
 \code{"error"}. With polytomous responses, code ties as a middle
 category instead.}
 
@@ -89,8 +96,12 @@ The scale origin is fixed at mean object location zero. Numeric predictors
 are continuous, unordered factors are categorical, and ordered factors use
 successive contrasts between adjacent levels. Character predictors are
 converted to unordered factors. Selected
-interactions may be included in \code{formula}. A free calibration is
-retained for \code{explanatory_test()}. Standard errors use the same
+interactions may be included in \code{formula}.
+Design columns are centred and rescaled internally for numerical stability; reported
+coefficients and standard errors use the supplied predictor units.
+Coincident coefficient labels receive numeric suffixes; this does not
+change the predictor design.
+A free calibration is retained for \code{explanatory_test()}. Standard errors use the same
 sandwich covariance as \code{btl()}; when judges are identified, coefficient
 tests use the judge-clustered covariance and a \eqn{t} reference with
 judge-cluster degrees of freedom. Holm adjustment covers the coefficient

@@ -1,6 +1,6 @@
 ---
 title: "DIF with several person factors and repeated measures"
-author: "Josh McGrane"
+author: "Joshua A. McGrane"
 output: rmarkdown::html_vignette
 vignette: >
   %\VignetteIndexEntry{DIF with several person factors and repeated measures}
@@ -64,6 +64,10 @@ dat <- data.frame(
   group = rep(group, 2),
   occasion = rep(c("T1", "T2"), each = N)
 )
+
+# the same three persons at each occasion: the identifier repeats down the
+# rows, which is what makes the design repeated measures
+dat[c(1:3, N + 1:3), c("pid", "I01", "I02", "I03", "group", "occasion")]
 ```
 
 ## Fit once and test both factors
@@ -77,6 +81,13 @@ a Greenhouse--Geisser correction when a factor has more than two levels.
 This mixed-design analysis extends the single-factor residual analysis of
 variance described by Andrich and Marais (2019). Its F references are
 large-sample approximations.
+
+With incomplete panels, between-person tests fit the occasion and person
+factors jointly, giving each person total weight one. They use person-cluster
+CR3 covariance for both uniform and non-uniform terms, including uncertainty
+in the occasion adjustment. This avoids confusing unequal occasion coverage
+with differences in the composition of the person groups. Within-person
+contrasts still require complete panels.
 
 ```{r analysis}
 fit <- rasch(dat, id = "pid", factors = c("group", "occasion"),
@@ -94,6 +105,39 @@ effect is significant on its own, but the `superseded` flag records that the
 interaction absorbs it, and the follow-ups report the interaction rather than
 its components. Read adjusted probabilities with effect sizes before changing
 an item.
+
+`dif_bootstrap()` repeats this design under the fitted invariant model. Ordinary
+and explanatory Rasch models and Multiple Ratings condition on each person's
+score. Extended Frames conditions within each item set, where the frame unit is
+common. Comparative Judgement instead draws outcomes from its fitted model
+while retaining judges and the comparison design. Every replicate repeats the
+calibration and the full DIF family. The result is a sensitivity analysis; the
+adjusted residual ANOVA remains primary. Its familywise probabilities describe
+the fitted global invariant null, not otherwise invariant items when another
+item has DIF.
+
+```{r bootstrap-sensitivity, eval = FALSE}
+db <- dif_bootstrap(fit, da, B = 999, workers = 4, seed = 2026)
+db$summary[, c("item", "term", "p_uniform_boot_adj",
+               "p_nonuniform_boot_adj")]
+```
+
+In a four-occasion validation study, familywise error under the balanced
+Rasch null was 6.9% for the primary analysis and 4.9% for the bootstrap over
+350 datasets. For uniform occasion DIF the bootstrap was
+slightly less powerful than the primary analysis. Adjusted non-uniform power
+was weak for both procedures in this seven-item, 180-person design. The
+bootstrap therefore remains a sensitivity analysis rather than the default
+test.
+
+The earlier panel-loss results used the superseded marginal adjustment.
+For the current joint adjustment, a known-residual study with correlated
+person factors and unequal panels gave uniform and non-uniform null rejection
+rates of 5.7% and 5.3% over 3,000 replicates (Monte Carlo SEs 0.42 and 0.41
+percentage points). A separate end-to-end Rasch check gave 3.0% over 200
+datasets for a null group effect on an item carrying DIF for another factor.
+These checks assess the primary tests, not the full bootstrap family's error
+rate under every incomplete-panel design.
 
 ## Quantify the departure
 
@@ -125,10 +169,10 @@ contrast scores with the same design-cell weights as the resolved estimate.
 Other fitted factors are averaged equally over their complete cells, including
 when their sample sizes differ, and the independent between-person cells use a
 Welch--Satterthwaite reference. The resolved logit difference remains the
-magnitude, but its row-independent calibration covariance is not a
-repeated-measures standard error; the package therefore withholds the logit SE
-and interval in this case. The fitted person identifier is used unless `id` is
-supplied explicitly.
+magnitude. Its standard error uses the person-clustered calibration covariance,
+whereas `dif_contrasts()` tests a nominated within-person comparison directly
+from person-level contrasts. The fitted person identifier is used unless `id`
+is supplied explicitly.
 
 For a many-facet fit, follow-ups may name the underlying item; its virtual
 facet cells are pooled with common weights so facet severity cancels from the

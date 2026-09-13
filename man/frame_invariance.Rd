@@ -22,12 +22,17 @@ frame_invariance(
 adjusted probabilities are returned.}
 
 \item{se_method}{\code{"conditional"} treats the estimated frame units as
-fixed; \code{"bootstrap"} refits the complete analysis to person
-resamples within frame.}
+fixed; \code{"bootstrap"} refits the complete analysis to whole-person
+resamples within group, preserving each person's item-set response
+pattern. As in \code{\link{rasch_efrm}}, one response row is required per
+person.}
 
-\item{boot_reps}{Number of bootstrap replicates. At least 30 are required.}
+\item{boot_reps}{Number of bootstrap replicates. At least 30 are required.
+At least 90 per cent, and no fewer than 30, must yield the complete set
+of comparisons.}
 
-\item{seed}{Optional bootstrap seed.}
+\item{seed}{Optional bootstrap seed. See \code{\link{rasch_rng}} for
+generator support.}
 }
 \value{
 An object of class \code{"rasch_frame_invariance"}. The
@@ -35,9 +40,15 @@ An object of class \code{"rasch_frame_invariance"}. The
   item comparisons; \code{summary} contains set-level RMSD and RMSE
   summaries. Under the conditional method, discrimination \code{p},
   \code{p_adj}, and \code{flagged} are \code{NA}. \code{excluded} lists
-  items whose observed category structures differed between calibrations
-  or whose separate-frame estimate was weakly determined.
-  The remaining components record the multiplicity and uncertainty settings.
+  items dropped or rescored by a separate calibration, whose observed
+  category structures differed between calibrations, or whose
+  separate-frame estimate was weakly determined.
+  The remaining components record the multiplicity and uncertainty settings,
+  including the algorithm identifier, declared comparison-family size
+  \code{family_n}, and the requested, usable, non-converged and
+  other-failure bootstrap counts.
+  \code{bootstrap_stratified} records whether persons were resampled within
+  group rather than globally.
 }
 \description{
 Calibrates each frame separately and compares the locations and
@@ -63,17 +74,26 @@ divided by \eqn{\sqrt{2}}, together with fitted slopes and their ratio.
 These quantities are descriptive under the conditional method; it does not
 report discrimination probabilities.
 
-With \code{se_method = "bootstrap"}, persons are resampled within frame
-and the EFRM and separate frame calibrations are refitted. Location tests
-then use the empirical covariance of the centred differences. The
-discrimination test uses the bootstrap standard error of the log slope
-ratio. This includes uncertainty in the fitted frame units but is more
+With \code{se_method = "bootstrap"}, whole persons are resampled within
+their observed group, retaining each sampled person's item-set response
+pattern, and the EFRM and separate frame calibrations are refitted.
+A replicate is usable only when it retains the observed set of item
+comparisons, so every centred difference has the same frame origin.
+Location tests then use the empirical covariance of the centred
+differences. The discrimination test uses the bootstrap standard error of
+the log slope ratio. Both are standard deviations over the usable
+replicates, so their statistics are referred to \eqn{t(B-1)} rather than
+the normal, where \eqn{B} is the number of usable replicates. This
+includes uncertainty in the fitted frame units but is more
 computationally demanding.
 
 Raw and Holm-adjusted probabilities are reported. With conditional
 uncertainty, Holm adjustment covers the location comparisons. With
 bootstrap uncertainty, it covers the combined family of location and
-discrimination comparisons.
+discrimination comparisons. An unavailable comparison remains in the
+applicable family. A discrimination probability is unavailable when
+either separate-frame slope is on its imposed estimation boundary; the
+ratio remains descriptive and the comparison remains in the Holm family.
 The summary gives the root mean squared location difference and root mean
 squared standard error for each set and frame pair. Items from different
 sets cannot be compared because the sets partition the items.
@@ -82,9 +102,12 @@ items. Concentrated DIF can therefore produce non-zero centred contrasts
 for items that were not themselves shifted. The table identifies the
 pattern of relative departures; item content or external anchors are needed
 to determine which items provide the defensible reference.
-A compared set-by-frame cell must contain at least 50 persons with two or
-more responses. Items with weakly determined standard errors in either
-separate calibration are listed in \code{excluded} rather than tested.
+A compared set-by-frame cell must contain at least 50 distinct persons
+contributing an informative item pair. A pair is informative unless both
+responses are zero or both are at their item maxima, using the retained
+items and recoded categories of that frame's separate calibration.
+Items with weakly determined standard errors in either separate calibration
+are listed in \code{excluded} rather than tested.
 
 A flagged item may be resolved with \code{\link{resolve_frames}} when it
 remains useful within frames, or removed with \code{\link{drop_items}}

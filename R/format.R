@@ -22,10 +22,10 @@
   x <- as.data.frame(x, check.names = FALSE, stringsAsFactors = FALSE)
   if (!ncol(x)) stop("at least one factor is needed")
   parts <- lapply(x, function(v) {
-    z <- as.character(v)
+    z <- .role_text_values(v)
     ifelse(is.na(z), "N;", paste0("S", nchar(z, type = "bytes"), ":", z, ";"))
   })
-  do.call(paste0, parts)
+  do.call(paste0, unname(parts))
 }
 
 .factor_cells <- function(x, sep = ":") {
@@ -34,13 +34,28 @@
   fs <- lapply(x, function(v) {
     if (is.factor(v)) droplevels(v) else factor(v)
   })
-  code <- rep(1, nrow(x)); mult <- 1
-  for (f in fs) {
-    code <- code + (as.integer(f) - 1) * mult
-    mult <- mult * max(nlevels(f), 1)
+  sizes <- vapply(fs, function(f) max(nlevels(f), 1L), 1L)
+  if (sum(log2(sizes)) >= 53) {
+    # Doubles cannot distinguish every integer in a larger Cartesian product.
+    # Keep exact tuples of integer factor codes, with the same first-factor-
+    # fastest ordering as the ordinary path below.
+    parts <- unname(lapply(fs, as.integer))
+    keys <- do.call(paste, c(parts, list(sep = ":")))
+    complete <- Reduce(`&`, lapply(parts, function(z) !is.na(z)))
+    ord <- do.call(order, rev(parts))
+    first <- ord[complete[ord] & !duplicated(keys[ord])]
+    present <- seq_along(first)
+    code <- match(keys, keys[first])
+    code[!complete] <- NA_integer_
+  } else {
+    code <- rep(1, nrow(x)); mult <- 1
+    for (f in fs) {
+      code <- code + (as.integer(f) - 1) * mult
+      mult <- mult * max(nlevels(f), 1)
+    }
+    present <- sort(unique(code[!is.na(code)]))
+    first <- match(present, code)
   }
-  present <- sort(unique(code[!is.na(code)]))
-  first <- match(present, code)
   labels <- vapply(first, function(i)
     paste(vapply(fs, function(f) as.character(f[i]), ""), collapse = sep), "")
   clash <- duplicated(labels) | duplicated(labels, fromLast = TRUE)
@@ -52,15 +67,108 @@
   factor(code, levels = present, labels = labels)
 }
 
+# A column-selecting argument must resolve to exactly one existing column
+# before it is dereferenced: an empty or multiple name otherwise fails with
+# a base subscript error that names neither the argument nor the problem.
+.check_reshape_column <- function(data, x, name) {
+  # Callers dereference the supplied selector directly. A numeric value
+  # would select a position, not the name validated here.
+  if (!is.character(x) || !is.null(dim(x)) || !is.null(oldClass(x)) ||
+      length(x) != 1L || is.na(x))
+    stop("`", name, "` must name exactly one column using a character string",
+         call. = FALSE)
+  if (!x %in% names(data)) stop("column not found: ", x, call. = FALSE)
+  invisible(x)
+}
+
 .check_column_names <- function(x) {
-  if (!is.data.frame(x)) return(invisible(NULL))
+  # Named lists are accepted as table-like banks in a few public APIs. Check
+  # their names before as.data.frame() repairs duplicates (for example, two
+  # `location` components become `location` and `location.1`).
+  if (!is.data.frame(x) && !is.list(x)) return(invisible(NULL))
   nm <- names(x)
-  if (anyNA(nm) || any(!nzchar(nm)))
-    stop("data column names must be non-missing and non-empty")
+  if (anyNA(nm) || any(!nzchar(trimws(nm))))
+    stop("data column names must be non-missing and non-empty (not whitespace-only)")
   if (anyDuplicated(nm))
     stop("data column names must be unique: ",
          paste(unique(nm[duplicated(nm)]), collapse = ", "))
   invisible(NULL)
+}
+
+# Character role arguments have two documented forms: column names or one
+# value per response row. Resolve the column-name form by content, not by
+# length. In particular, a data set with N columns and N rows may validly
+# nominate all N column names. Repeated labels of length N remain values,
+# even when those labels happen to coincide with data-column names.
+.role_columns <- function(x, data_names, n) {
+  if (!is.data.frame(x) && !is.null(dim(x)))
+    stop("role arguments must be ordinary vectors or data frames, not matrices or arrays",
+         call. = FALSE)
+  if (!is.character(x) || !length(x)) return(FALSE)
+  exact_names <- !anyNA(x) && !anyDuplicated(x) &&
+    all(nzchar(x)) && all(x %in% data_names)
+  exact_names || length(x) != n
+}
+
+# Compare an externally supplied role column with a same-named data column.
+# Classes are deliberately ignored (factor versus character is harmless),
+# but missingness and displayed values must agree row for row.
+.same_role_values <- function(x, y) {
+  if (length(x) != length(y)) return(FALSE)
+  xc <- .role_text_values(x); yc <- .role_text_values(y)
+  identical(is.na(xc), is.na(yc)) &&
+    identical(xc[!is.na(xc)], yc[!is.na(yc)])
+}
+
+# Convert an external identifier or categorical role without turning numeric
+# NaN into the literal level "NaN". Base as.character() preserves ordinary NA
+# but not NaN, which can otherwise create a fictitious shared person, judge,
+# panel, item or object.
+.role_text_values <- function(x) {
+  missing <- is.na(x)
+  out <- trimws(as.character(x))
+  out[missing | is.na(out)] <- NA_character_
+  out
+}
+
+# Store a categorical model role in the same canonical form used to compare
+# and analyse it. Numeric and date identifiers retain their original type;
+# text is trimmed, blank text becomes missing, and factor levels that differ
+# only by padding are merged rather than becoming different downstream groups.
+.canonical_role_column <- function(x) {
+  if (!is.character(x) && !is.factor(x)) return(x)
+  z <- .role_text_values(x)
+  z[!is.na(z) & !nzchar(z)] <- NA_character_
+  if (!is.factor(x)) return(z)
+  lev <- unique(.role_text_values(levels(x)))
+  lev <- lev[!is.na(lev) & nzchar(lev)]
+  factor(z, levels = lev, ordered = is.ordered(x))
+}
+
+# Numeric fields in an external calibration bank may arrive as plain numeric
+# vectors, character columns, or factors whose labels are numeric. Factors
+# must be read through their labels; other classes (Date, logical, complex,
+# and so on) are not calibration values. Failed conversion is an input error,
+# not a missing standard error.
+.bank_numeric <- function(x, field) {
+  if (is.factor(x)) {
+    raw <- as.character(x)
+  } else if (is.character(x)) {
+    raw <- x
+  } else if (is.numeric(x) && !is.complex(x) && is.null(dim(x)) &&
+             is.null(oldClass(x))) {
+    return(as.numeric(x))
+  } else {
+    stop("bank `", field, "` must contain plain numeric values, numeric ",
+         "text, or factor labels; a ", paste(class(x), collapse = "/"),
+         " column is not a calibration field", call. = FALSE)
+  }
+  out <- suppressWarnings(as.numeric(raw))
+  bad <- !is.na(raw) & is.na(out)
+  if (any(bad))
+    stop("bank `", field, "` contains a non-numeric value (e.g. '",
+         raw[bad][1L], "')", call. = FALSE)
+  out
 }
 
 # obs_p and est_p are observed and expected category PROPORTIONS, not
@@ -104,6 +212,15 @@
 
 #' @export
 print.rasch_table <- function(x, ..., digits = 3, n = getOption("rasch.print_rows", 50L)) {
+  if (length(digits) != 1L || !is.numeric(digits) || is.complex(digits) ||
+      !is.null(dim(digits)) || !is.null(oldClass(digits)) ||
+      !is.finite(digits) ||
+      digits != floor(digits) || digits < 0L || digits > 15L)
+    stop("`digits` must be one whole number between 0 and 15", call. = FALSE)
+  if (length(n) != 1L || !is.numeric(n) || is.complex(n) ||
+      !is.null(dim(n)) || !is.null(oldClass(n)) || is.na(n) || n < 0 ||
+      (!is.infinite(n) && (!is.finite(n) || n != floor(n))) || n == -Inf)
+    stop("`n` must be one non-negative whole number or Inf", call. = FALSE)
   d <- as.data.frame(x)
   if (!nrow(d)) {
     cat("<empty table>\n")

@@ -34,11 +34,55 @@ test_that("the auto family follows the factor structure and finds planted DIF", 
   # are rounded to 2 dp for display, hence the loose tolerance)
   expect_true(all(abs(vapply(strsplit(dc$family$cells, ", "), function(cc)
     sum(abs(as.numeric(sub("^.* ", "", cc)))), 0) - 2) < 0.05))
-  # z-statistics equal estimate/se in the independent-rows case
+  # The independent-row calibration uses the limiting normal reference.
   expect_equal(t$statistic, t$estimate / t$se, tolerance = 1e-10)
+  expect_true(all(is.infinite(t$df)))
+  expect_equal(t$p, 2 * stats::pt(-abs(t$statistic), df = t$df))
+  expect_equal(t$lower,
+               t$estimate - stats::qt(0.975, df = t$df) * t$se)
+})
+
+test_that("planned DIF contrasts withhold Wald inference from invalid covariance", {
+  set.seed(142)
+  n <- 500
+  X <- matrix(rbinom(n * 6, 1, .5), n, 6,
+              dimnames = list(NULL, paste0("I", 1:6)))
+  grp <- factor(rep(c("a", "b"), each = n / 2))
+  fit <- rasch(data.frame(X, grp = grp), factors = "grp")
+  bad_refit <- split_items(fit, "I2", by = fit$factors$grp)
+  split_rows <- grep("^I2 \\(", bad_refit$items$item)
+  split_ids <- bad_refit$thresholds$id[
+    bad_refit$thresholds$item %in% split_rows]
+  bad_refit$est$cov_tau[split_ids[1], split_ids[1]] <- -1e6
+
+  guarded <- testthat::with_mocked_bindings(
+    dif_contrasts(fit, items = "I2"),
+    .rasch_refit = function(...) bad_refit,
+    .package = "rasch")
+  expect_true(all(is.finite(guarded$table$estimate)))
+  expect_true(all(is.na(guarded$table$se)))
+  expect_true(all(is.na(guarded$table$p)))
+  expect_false(any(guarded$table$significant))
+  expect_true(any(grepl("not positive semidefinite", guarded$notes)))
+
+  supported_refit <- split_items(fit, "I2", by = fit$factors$grp)
+  supported_refit$est$cluster_support <- list(
+    repeated = FALSE, n = 16L, effective = 16)
+  supported_refit$est$cluster_inference <- FALSE
+  unsupported <- testthat::with_mocked_bindings(
+    dif_contrasts(fit, items = "I2"),
+    .rasch_refit = function(...) supported_refit,
+    .package = "rasch")
+  expect_true(all(is.finite(unsupported$table$estimate)))
+  expect_true(all(is.na(unsupported$table$se)))
+  expect_true(all(is.na(unsupported$table$df)))
+  expect_true(all(is.na(unsupported$table$p)))
+  expect_match(paste(unsupported$notes, collapse = " "),
+               "independent-person support")
 })
 
 test_that("stacked designs use person-level scores and detect drift over time", {
+  skip_on_cran()
   set.seed(9); n <- 400
   d <- seq(-1.5, 1.5, length.out = 8)
   th <- rnorm(n)
@@ -71,13 +115,12 @@ test_that("stacked designs use person-level scores and detect drift over time", 
   expect_false(t$significant[t$item == "I4" & t$contrast == "gender: m - f"])
   expect_false(t$significant[t$item == "I4" &
                              t$contrast == "time(2 - 1) x gender(m - f)"])
-  # The resolved point size remains available, but its row-independent
-  # calibration covariance is not a repeated-person sampling covariance.
+  # The resolved magnitude uses the person-clustered calibration covariance.
   ds <- dif_size(fit, "I4", by = "time")
   expect_true(any(abs(ds$pairs$difference) > 0.3))
-  expect_true(all(is.na(ds$levels$se)))
-  expect_true(all(is.na(ds$pairs$se)) && all(is.na(ds$pairs$significant)))
-  expect_match(paste(ds$notes, collapse = " "), "sampling SEs")
+  expect_true(all(is.finite(ds$levels$se)))
+  expect_true(all(is.finite(ds$pairs$se)))
+  expect_type(ds$pairs$significant, "logical")
   # the fitted identifier is used automatically when it is not repeated in
   # the call
   auto <- dif_contrasts(fit, items = "I4", within = "time")
@@ -86,6 +129,34 @@ test_that("stacked designs use person-level scores and detect drift over time", 
   expect_equal(auto$table$df[auto$table$contrast == "time: 2 - 1"], w4$df)
   expect_error(dif_contrasts(fit, items = "I4", within = "time",
                              id = seq_len(10)), "one value per")
+})
+
+test_that("planned contrasts validate the declared within-person structure", {
+  set.seed(901)
+  n <- 80L
+  X <- matrix(rbinom(n * 5L, 1L, 0.5), n, 5L,
+              dimnames = list(NULL, paste0("I", 1:5)))
+  between <- factor(rep(c("A", "B"), each = n / 2L))
+  ordinary <- rasch(data.frame(X, group = between), factors = "group")
+  expect_error(
+    dif_contrasts(ordinary, items = "I1", within = "group"),
+    "need repeated person ids")
+  expect_error(
+    dif_posthoc(ordinary, "I1", "group", within = "group"),
+    "need repeated person ids")
+
+  id <- rep(sprintf("P%03d", seq_len(n)), 2L)
+  occasion <- factor(rep(c("T1", "T2"), each = n))
+  group <- rep(between, 2L)
+  stacked <- rasch(
+    data.frame(rbind(X, X), occasion = occasion, group = group),
+    id = id, factors = c("occasion", "group"))
+  expect_error(
+    dif_contrasts(stacked, items = "I1", within = "group"),
+    "declared within-subject never vary")
+  expect_error(
+    dif_contrasts(stacked, items = "I1", within = character(0)),
+    "vary within persons but are not declared")
 })
 
 test_that("within-person follow-ups marginalise nuisance cells consistently", {
@@ -171,6 +242,11 @@ test_that("custom cell-weight contrasts are accepted and normalised", {
   expect_error(dif_contrasts(fit, items = "I2",
                              contrasts = list(bad = c(x = 1, y = -1))),
                "design cells")
+  shaped <- matrix(c(-1, -1, 2), 1L)
+  names(shaped) <- c("a", "b", "c")
+  expect_error(dif_contrasts(fit, items = "I2",
+                             contrasts = list(bad = shaped)),
+               "plain vector")
 })
 
 test_that("DIF post-hocs give marginal pairs and pure interaction magnitudes", {
@@ -204,4 +280,61 @@ test_that("DIF post-hocs give marginal pairs and pure interaction magnitudes", {
   row <- intr$table[intr$table$contrast == "c - a x z - x", ]
   expect_equal(row$estimate, manual, tolerance = 1e-8)
   expect_gt(abs(row$estimate), 0.6)
+})
+
+test_that("an item whose split refit is refused withholds only its own rows", {
+  # In group b, item I3 scores 0 only inside all-zero patterns, so its
+  # split copy loses that category during calibration and split_items
+  # refuses. The refusal must not abort the other items' contrasts.
+  set.seed(11); n <- 200; L <- 6
+  d <- seq(-1.5, 1.5, length.out = L); th <- rnorm(n)
+  X <- matrix(rbinom(n * L, 1, plogis(outer(th, d, "-"))), n, L)
+  colnames(X) <- paste0("I", seq_len(L))
+  g <- rep(c("a", "b"), each = n / 2); b <- g == "b"
+  X[b, "I3"] <- 1L
+  X[which(b)[1:6], ] <- 0L
+  fit <- rasch(data.frame(X, grp = g, check.names = FALSE), factors = "grp")
+  expect_error(split_items(fit, "I3", by = "grp"),
+               "cannot preserve the fitted score structure")
+
+  dc <- dif_contrasts(fit)
+  tab <- dc$table
+  expect_equal(nrow(tab), L)
+  refused <- tab$item == "I3"
+  expect_true(all(is.na(unlist(tab[refused,
+    c("estimate", "se", "statistic", "p", "p_adj")]))))
+  expect_true(all(is.finite(tab$estimate[!refused])))
+  expect_true(all(is.finite(tab$p[!refused])))
+  expect_match(paste(dc$notes, collapse = " "),
+               "I3: resolved contrasts withheld because the split refit is")
+  # the withheld item keeps its place in the multiplicity family
+  expect_equal(dc$family_n, L)
+  expect_equal(tab$p_adj[!refused],
+               p.adjust(tab$p[!refused], "holm", n = L))
+})
+
+test_that("a refused split refit is not reported as a category mismatch", {
+  # An anchored item cannot be split, but both groups answer it on the same
+  # 0:1 structure. The withholding note must give the refusal's own reason
+  # and must not also blame the response categories.
+  set.seed(7); n <- 300L; L <- 6L
+  d <- seq(-1.5, 1.5, length.out = L); th <- rnorm(n)
+  X <- matrix(rbinom(n * L, 1, plogis(outer(th, d, "-"))), n, L)
+  colnames(X) <- c("A1", "A2", paste0("I", 3:L))
+  df <- data.frame(X, grp = rep(c("a", "b"), each = n / 2),
+                   check.names = FALSE)
+  f0 <- rasch(df, factors = "grp")
+  th0 <- f0$thresholds
+  th0$item <- f0$items$item[th0$item]
+  fit <- rasch(df, factors = "grp",
+               anchors = th0[th0$item %in% c("A1", "A2"), c("item", "k", "tau")])
+
+  dc <- dif_contrasts(fit)
+  notes <- paste(dc$notes, collapse = " ")
+  expect_match(notes, "A1: resolved contrasts withheld because the split refit")
+  expect_match(notes, "an anchored item cannot be split")
+  expect_false(grepl("response-category", notes))
+  anchored <- dc$table$item %in% c("A1", "A2")
+  expect_true(all(is.na(dc$table$estimate[anchored])))
+  expect_true(all(is.finite(dc$table$estimate[!anchored])))
 })

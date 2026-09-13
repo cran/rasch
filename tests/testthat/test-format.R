@@ -24,6 +24,18 @@ test_that("results tables print without scientific notation", {
   expect_false(inherits(.tag_tables(keep), "rasch_table"))
 })
 
+test_that("table printing validates display controls", {
+  x <- .tag_tables(data.frame(p = 0.25))
+  expect_error(print(x, digits = c(2, 3)), "digits")
+  expect_error(print(x, digits = -1), "digits")
+  expect_error(print(x, digits = matrix(2)), "digits")
+  expect_error(print(x, n = NA_real_), "`n`")
+  expect_error(print(x, n = 1.5), "`n`")
+  expect_error(print(x, n = matrix(2)), "`n`")
+  expect_output(print(x, n = Inf), "0.250")
+  expect_output(print(x, n = 0), "more row")
+})
+
 test_that("observed and expected proportions are not read as probabilities", {
   # obs_p and est_p are category proportions: a category nobody chose has an
   # observed proportion of exactly zero, which "< 0.001" would misreport
@@ -65,6 +77,7 @@ test_that("a saved table carries plain decimals rather than exponents", {
 })
 
 test_that("a deliberate refusal is signalled apart from a fault", {
+  skip_on_cran()
   # the application showed considered refusals in the same red as a crash,
   # because a caller had no way to tell them apart
   d <- simulate_efrm(n_per_group = 200, items_per_set = 5, n_sets = 2,
@@ -102,6 +115,35 @@ test_that("the ETS categories follow the published rule on the logit scale", {
   # large but not significantly beyond the A ceiling is B, not C
   expect_equal(.ets_category(c_cut + 0.01, 0.5, 0.01), "B+")
   expect_true(is.na(.ets_category(NA_real_, NA_real_, NA_real_)))
+  expect_true(is.na(.ets_category(Inf, small, 0.01)))
+  expect_true(is.na(.ets_category(1, Inf, 0.01)))
+  expect_true(is.na(.ets_p_beyond(1, Inf)))
+})
+
+test_that("ETS classifications do not replace unavailable tests with A or B", {
+  expect_true(all(is.na(.ets_category(c(.2, .8, -.8), .1,
+                                      c(NA_real_, NaN, Inf)))))
+  expect_true(all(is.na(.ets_category(.8, c(0, -1), .01))))
+  expect_true(all(is.na(.ets_category(c(.8, -.8), .1, .01,
+                                      p_beyond = NA_real_))))
+  # The interval-null test cannot affect these already determined classes.
+  expect_identical(.ets_category(c(.2, .5, .8), .1, c(.01, .01, .2),
+                                p_beyond = NA_real_), c("A", "B+", "A"))
+
+  d <- simulate_rasch(300, 6, n_groups = 2, seed = 922817)
+  fit <- rasch(d, id = "id", factors = "group")
+  original <- split_items
+  testthat::local_mocked_bindings(split_items = function(...) {
+    out <- original(...)
+    # A degenerate resolved covariance must not imply negligible DIF.
+    out$est$cov_tau[,] <- 0
+    out
+  }, .package = "rasch")
+  size <- dif_size(fit, fit$items$item[1L], "group")$pairs
+  expect_true(all(is.finite(size$difference)))
+  expect_true(all(size$se == 0))
+  expect_true(all(is.na(size$p_adj)))
+  expect_true(all(is.na(size$ets)))
 })
 
 test_that("dif_size reports an ETS category beside the magnitude", {
@@ -125,6 +167,7 @@ test_that("dif_size reports an ETS category beside the magnitude", {
 })
 
 test_that("a polytomous DIF comparison reports signed area descriptively", {
+  skip_on_cran()
   ta <- c(-1, 0, 1) + 0.4
   tb <- c(-1, 0, 1) - 0.2
   numeric_area <- stats::integrate(function(th)

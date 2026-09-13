@@ -4,7 +4,11 @@
 # the log-of-mean-square fit residual of Andrich & Marais (2019, ch. 23)
 # for items and persons (with its
 # untransformed "natural" form); infit and outfit mean squares with
-# Wilson-Hilferty standardisations; the class-interval ANOVA item-fit F;
+# Wilson-Hilferty standardisations (the mean squares' null variance is
+# about 2/N and the mean square reads as relative ICC slope -- Wu & Adams
+# 2013, JAM 14(4), whose claimed N-independent null for the standardised
+# forms does NOT survive parameter estimation; see fit_bootstrap());
+# the class-interval ANOVA item-fit F;
 # the item-trait interaction chi-square; the person separation index with
 # and without extremes; Cronbach's alpha; targeting; and the test
 # information function.
@@ -108,8 +112,8 @@
   }
   usable <- is.finite(out$p)
   out$p_adj <- out$p_bonf <- rep(NA_real_, nrow(out))
-  out$p_adj[usable] <- p.adjust(out$p[usable], method = "holm")
-  out$p_bonf[usable] <- p.adjust(out$p[usable], method = "bonferroni")
+  out$p_adj[usable] <- p.adjust(out$p[usable], method = "holm", n = L)
+  out$p_bonf[usable] <- p.adjust(out$p[usable], method = "bonferroni", n = L)
   out
 }
 
@@ -151,7 +155,7 @@
   if (is.null(item_extreme)) item_extreme <- rep(FALSE, ncol(X))
   E2 <- .z2_expectation(mo, Z, disc)
   out <- data.frame(infit_ms = rep(NA_real_, N), outfit_ms = NA_real_,
-                    outfit_z = NA_real_)
+                    infit_z = NA_real_, outfit_z = NA_real_)
   for (n in seq_len(N)) {
     ok <- which(!is.na(Z[n, ]) & !item_extreme)
     if (length(ok) < 3) next
@@ -162,7 +166,9 @@
     out$outfit_ms[n] <- outfit
     out$infit_ms[n] <- sum(z2 * V) / sum(e2 * V)
     qo <- sqrt(max(sum(C4 / V^2) / k^2 - 1 / k, 1e-8))
+    qi <- sqrt(max(sum(C4 - V^2) / sum(V)^2, 1e-8))
     out$outfit_z[n] <- .wh(outfit, qo)
+    out$infit_z[n] <- .wh(out$infit_ms[n], qi)
   }
   out
 }
@@ -236,10 +242,11 @@
 # (number of class intervals contributing at least 2 responders to that
 # item) - 1, so items with missing data are tested on the intervals they
 # actually reach.
-.item_trait <- function(X, mo, ci, adjust_N = NA, ci_list = NULL) {
+.item_trait <- function(X, mo, ci, ci_list = NULL) {
   L <- ncol(X)
   chi <- setNames(numeric(L), colnames(X))
   used <- integer(L)
+  invalid <- logical(L)
   for (i in seq_len(L)) {
     ci_i <- if (is.null(ci_list)) ci else ci_list[[i]]
     G <- suppressWarnings(max(ci_i, na.rm = TRUE))
@@ -249,6 +256,11 @@
       if (length(sel) < 2) next
       Obar <- mean(X[sel, i])
       Ebar <- mean(mo$E[sel, i]); Vbar <- mean(mo$V[sel, i])
+      if (!is.finite(Obar) || !is.finite(Ebar) ||
+          !is.finite(Vbar) || Vbar <= 0) {
+        invalid[i] <- TRUE
+        next
+      }
       chi[i] <- chi[i] + length(sel) * (Obar - Ebar)^2 / Vbar
       used[i] <- used[i] + 1L
     }
@@ -256,15 +268,13 @@
   # an item whose responders fall in fewer than two class intervals has no
   # estimable item-by-trait interaction: its chi-square and df are NA, not
   # a manufactured df = 1 with a valid-looking p
-  df_i <- ifelse(used >= 2L, used - 1L, NA_integer_)
+  df_i <- ifelse(used >= 2L & !invalid, used - 1L, NA_integer_)
   chi[is.na(df_i)] <- NA_real_
-  n_used <- sum(!is.na(ci))
-  if (!is.na(adjust_N)) chi <- chi * (adjust_N / n_used)
   p <- pchisq(chi, df_i, lower.tail = FALSE)
   usable <- is.finite(p)
   p_adj <- p_bonf <- rep(NA_real_, length(p))
-  p_adj[usable] <- p.adjust(p[usable], method = "holm")
-  p_bonf[usable] <- p.adjust(p[usable], method = "bonferroni")
+  p_adj[usable] <- p.adjust(p[usable], method = "holm", n = L)
+  p_bonf[usable] <- p.adjust(p[usable], method = "bonferroni", n = L)
   data.frame(item = colnames(X), chisq = chi, df = df_i, p = p,
              p_adj = p_adj, p_bonf = p_bonf)
 }
@@ -272,7 +282,7 @@
 # Correlation that degrades to NA (rather than erroring) when fewer than 3
 # complete pairs are available.
 .safe_cor <- function(x, y) {
-  ok <- !is.na(x) & !is.na(y)
+  ok <- is.finite(x) & is.finite(y)
   if (sum(ok) < 3 || sd(x[ok]) == 0 || sd(y[ok]) == 0) return(NA_real_)
   cor(x[ok], y[ok])
 }
@@ -280,10 +290,12 @@
 # Distribution summary of a fit-statistic column: mean, SD, skewness, and
 # (excess) kurtosis (the summary block of Andrich & Marais 2019, app. C).
 .dist_stats <- function(x) {
-  x <- x[!is.na(x)]
+  x <- x[is.finite(x)]
   if (length(x) < 3) return(list(mean = NA_real_, sd = NA_real_,
                                  skewness = NA_real_, kurtosis = NA_real_))
   m <- mean(x); s <- sd(x); d <- x - m
+  if (!is.finite(s) || s == 0)
+    return(list(mean = m, sd = s, skewness = NA_real_, kurtosis = NA_real_))
   list(mean = m, sd = s,
        skewness = mean(d^3) / (mean(d^2))^1.5,
        kurtosis = mean(d^4) / (mean(d^2))^2 - 3)
@@ -309,7 +321,14 @@
 #'   mean \code{ave}, and the item's total \code{chisq}, \code{df}, and
 #'   \code{p}. Intervals with fewer than 2 responders are shown but carry no
 #'   chi-square contribution (\code{used = FALSE}), matching the item-trait
-#'   computation.
+#'   computation. The same applies when the model variance for an interval
+#'   is unavailable or zero. The probability is \code{NA} when person IDs
+#'   repeat because the asymptotic reference counts response rows rather than
+#'   independent persons; the interval summaries and chi-square remain
+#'   descriptive.
+#' @seealso \code{\link{fit_bootstrap}}, which refers the item's total, and
+#'   every other item fit statistic, to a bootstrap null rather than to its
+#'   asymptotic distribution.
 #' @examples
 #' set.seed(1)
 #' d <- seq(-1.5, 1.5, length.out = 6)
@@ -318,9 +337,22 @@
 #' chisq_detail(rasch(X), "I3")$intervals
 #' @export
 chisq_detail <- function(fit, item) {
+  if (!inherits(fit, "rasch") || inherits(fit, "rasch_btl"))
+    stop("chisq_detail needs a response-data Rasch fit", call. = FALSE)
+  if (!isTRUE(fit$est$converged))
+    stop("the fitted calibration did not converge; item-trait detail is unavailable",
+         call. = FALSE)
+  if (!.efrm_link_converged(fit))
+    stop("the fitted set-unit link did not converge; item-trait detail is unavailable",
+         call. = FALSE)
+  if (length(item) != 1L) stop("`item` must name exactly one item")
   i <- .item_idx(fit, item)
   # per-item interval allocation when the fit carries one (missing data)
   ci <- if (!is.null(fit$ci_item)) fit$ci_item[[i]] else fit$person$class_interval
+  if (all(is.na(ci)))
+    .refuse("item ", fit$items$item[i], " has no persons in any class ",
+            "interval (only extreme or missing responders); the ",
+            "class-interval detail is unavailable")
   th <- fit$person$theta
   x <- fit$X[, i]; E <- fit$moments$E[, i]; V <- fit$moments$V[, i]
   mi <- length(fit$tau_list[[i]])
@@ -340,8 +372,11 @@ chisq_detail <- function(fit, item) {
     iv$theta_max[g] <- max(th[sel]); iv$theta_mean[g] <- mean(th[sel])
     OM <- mean(x[sel]); EV <- mean(E[sel]); Vbar <- mean(V[sel])
     iv$obs_mean[g] <- OM; iv$exp_value[g] <- EV
-    iv$es[g] <- (OM - EV) / sqrt(Vbar)
-    if (length(sel) >= 2) {
+    valid_moment <- is.finite(OM) && is.finite(EV) &&
+      is.finite(Vbar) && Vbar > 0
+    if (valid_moment)
+      iv$es[g] <- (OM - EV) / sqrt(Vbar)
+    if (length(sel) >= 2 && valid_moment) {
       iv$residual[g] <- sqrt(length(sel)) * (OM - EV) / sqrt(Vbar)
       iv$chisq[g] <- iv$residual[g]^2
       iv$used[g] <- TRUE
@@ -359,9 +394,10 @@ chisq_detail <- function(fit, item) {
     }
   }
   it_row <- fit$item_trait[i, ]
+  item_p <- if (.has_repeated_residual_units(fit)) NA_real_ else it_row$p
   list(item = fit$items$item[i], location = fit$items$location[i],
        intervals = iv, categories = cats, ave = mean(x, na.rm = TRUE),
-       chisq = it_row$chisq, df = it_row$df, p = it_row$p)
+       chisq = it_row$chisq, df = it_row$df, p = item_p)
 }
 
 # Person separation index (separation reliability; Andrich 1982), with the
@@ -369,11 +405,14 @@ chisq_detail <- function(fit, item) {
 # Masters 1982): the count of statistically distinguishable performance
 # levels the instrument supports.
 .psi <- function(theta, se, keep = TRUE) {
-  ok <- !is.na(theta) & !is.na(se) & keep
+  ok <- is.finite(theta) & is.finite(se) & se >= 0 & keep %in% TRUE
   if (sum(ok) < 3) return(list(PSI = NA_real_, separation = NA_real_,
                                strata = NA_real_, var_theta = NA_real_,
                                mean_error_var = NA_real_, n = sum(ok)))
   vt <- var(theta[ok]); mse <- mean(se[ok]^2)
+  if (!is.finite(vt) || vt <= 0 || !is.finite(mse))
+    return(list(PSI = NA_real_, separation = NA_real_, strata = NA_real_,
+                var_theta = vt, mean_error_var = mse, n = sum(ok)))
   psi <- max((vt - mse) / vt, 0)
   sep <- if (psi < 1) sqrt(psi / (1 - psi)) else Inf
   strata <- if (is.finite(sep)) (4 * sep + 1) / 3 else Inf
@@ -415,8 +454,10 @@ chisq_detail <- function(fit, item) {
   if (length(recorded)) isTRUE(recorded) && map_ok else map_ok
 }
 
-# Qualitative power-of-test-of-fit assessment, driven by the PSI.
-.fit_power <- function(psi) {
+# Qualitative description of person separation, driven by the PSI. This is not
+# the statistical power of a test of fit, which also depends on sample size,
+# the departure being tested, targeting, category use and the test statistic.
+.separation_quality <- function(psi) {
   if (is.na(psi)) "unknown"
   else if (psi >= 0.9) "excellent"
   else if (psi >= 0.8) "good"
@@ -425,25 +466,92 @@ chisq_detail <- function(fit, item) {
   else "too low"
 }
 
+# Compatibility for fitted objects and downstream code created before the
+# public label was corrected from power of fit to separation quality.
+.fit_power <- .separation_quality
+
 # Targeting summary: how well item thresholds cover the person distribution.
 .targeting <- function(person, thresholds) {
-  ok <- !is.na(person$theta)
+  ok <- is.finite(person$theta)
   th <- person$theta[ok]
-  list(person_mean = mean(th), person_sd = sd(th),
-       person_mean_noext = mean(person$theta[ok & !person$extreme]),
-       item_mean = 0,
-       threshold_range = range(thresholds$tau),
-       prop_below = mean(th < min(thresholds$tau)),
-       prop_above = mean(th > max(thresholds$tau)))
+  tau_ok <- is.finite(thresholds$tau)
+  tau <- thresholds$tau[tau_ok]
+  item_location <- if (length(tau) && "item" %in% names(thresholds))
+    unname(tapply(tau, thresholds$item[tau_ok], mean)) else numeric(0)
+  tr <- if (length(tau)) range(tau) else c(NA_real_, NA_real_)
+  noext <- ok & person$extreme %in% FALSE
+  list(person_mean = if (length(th)) mean(th) else NA_real_,
+       person_sd = if (length(th) > 1L) sd(th) else NA_real_,
+       person_mean_noext = if (any(noext))
+         mean(person$theta[noext]) else NA_real_,
+       item_mean = if (length(item_location)) mean(item_location) else NA_real_,
+       threshold_range = tr,
+       prop_below = if (length(th) && length(tau)) mean(th < tr[1L]) else NA_real_,
+       prop_above = if (length(th) && length(tau)) mean(th > tr[2L]) else NA_real_)
+}
+
+# One list of display names, joined so the joined string names exactly that
+# list. A name may itself contain the separator, so a name that would
+# otherwise read as several is quoted and a quote within a name is escaped:
+# "a+b"+c is two sets, a+b+c is three. Labels are never parsed back into
+# membership; the quoting is what stops two different designs reading alike.
+.label_names <- function(x, sep = "+") {
+  x <- as.character(x)
+  q <- grepl(sep, x, fixed = TRUE) | grepl("\"", x, fixed = TRUE)
+  x[q] <- encodeString(x[q], quote = "\"")
+  paste(x, collapse = sep)
+}
+
+# Display label of one design block, built from the block's own columns, so a
+# block restricted to an item selection never names items outside it.
+.design_label <- function(fit, cols) {
+  vm <- fit$virtual_map
+  if (inherits(fit, "rasch_efrm")) {
+    g <- vm$group[cols[1L]]
+    gcols <- which(vm$group == g)
+    sets_of_col <- vm$set[gcols]
+    psets <- sort(unique(sets_of_col[gcols %in% cols]))
+    # a set is named as a whole only when the block holds every column the
+    # group has in it; otherwise the items themselves are named. The set
+    # clause is unconditional: an administration is which items of which set
+    # a group took, so a one-set frame still names its set, and the group
+    # stays because the label alone identifies the design in
+    # test_information() and in every curve legend.
+    partial <- !all(gcols[sets_of_col %in% psets] %in% cols)
+    paste0("group=", g, ", sets=", .label_names(psets),
+      if (partial) paste0(", items=", .label_names(vm$item[cols])) else "")
+  } else if (inherits(fit, "rasch_mfrm")) {
+    fs <- fit$facet_spec
+    cell <- .factor_keys(vm[, fs, drop = FALSE])
+    cells <- unique(cell)
+    active <- cells[cells %in% cell[cols]]
+    parts <- vapply(active, function(k) {
+      ii <- which(cell == k)
+      jj <- ii[ii %in% cols]
+      paste0(paste(paste0(fs, "=", unlist(vm[ii[1L], fs, drop = FALSE])),
+                   collapse = ", "),
+             if (length(jj) < length(ii))
+               paste0(" [items=", .label_names(vm$item[jj]), "]")
+             else "")
+    }, "")
+    paste(parts, collapse = " + ")
+  } else "test"
 }
 
 # Administrable virtual-item blocks of a fit: one per design a person
 # could actually take. Ordinary fits: the whole test. EFRM: one block per
-# person group AND per item-set administration pattern observed in that
-# group. MFRM: one block per set of facet conditions observed together for
-# a person. Shared by
-# test_information() and the test-level curve plots so they cannot
-# disagree.
+# person group AND exact observed item pattern in that group. MFRM: one
+# block per observed item-by-facet pattern for a person. Every pattern is
+# taken at face value, including where item nonresponse leaves nearly
+# every person a pattern of their own: an item a person left unanswered
+# carries no information about where that person is, so the curve that
+# describes them is the one over the items they answered. Merging their
+# pattern into a fuller one -- let alone into a union of patterns nobody
+# took -- would claim information no response supports and understate
+# their SEM. More designs than a legend can carry is therefore a matter
+# for the curve plots, not a reason to report information as though the
+# unanswered items had been answered. Shared by test_information() and the
+# test-level curve plots so they cannot disagree.
 .design_blocks <- function(fit) {
   L <- length(fit$tau_list)
   blocks <- list(test = seq_len(L))
@@ -453,72 +561,43 @@ chisq_detail <- function(fit, item) {
     # one set, a linking subsample takes several). Summing all the group's
     # sets would describe a form nobody in the majority sub-population
     # ever took, understating their SEM -- so split each group by the
-    # distinct set-administration patterns actually observed
+    # distinct item-administration patterns actually observed
     vm <- fit$virtual_map
     blocks <- list(); labels <- character(0)
     for (g in unique(vm$group)) {
       gcols <- which(vm$group == g)
       grows <- rowSums(!is.na(fit$X[, gcols, drop = FALSE])) > 0
       if (!any(grows)) next
-      sets_of_col <- vm$set[gcols]
-      # per person: which of the group's sets they answered at all
-      gsets <- sort(unique(sets_of_col))
+      # Keep the exact observed items, including partial sets. Set membership
+      # is used only for labels, not to enlarge a person's administration.
       answered <- !is.na(fit$X[grows, gcols, drop = FALSE])
-      present <- vapply(gsets, function(s)
-        rowSums(answered[, sets_of_col == s, drop = FALSE]) > 0L,
-        logical(sum(grows)))
-      if (is.null(dim(present))) present <- matrix(present, ncol = 1L)
-      pat <- .factor_keys(as.data.frame(present, check.names = FALSE))
+      pat <- .factor_keys(as.data.frame(answered, check.names = FALSE))
       for (p in unique(pat)) {
-        first <- match(p, pat)
-        psets <- gsets[present[first, ]]
-        key <- .factor_keys(data.frame(group = g, pattern = p,
-                                       stringsAsFactors = FALSE))
-        blocks[[key]] <- gcols[sets_of_col %in% psets]
-        labels[key] <- paste0("group=", g, if (length(unique(vm$set)) > 1L)
-          paste0(", sets=", paste(psets, collapse = "+")) else "")
+        cols <- gcols[answered[match(p, pat), ]]
+        blocks[[length(blocks) + 1L]] <- cols
+        labels <- c(labels, .design_label(fit, cols))
       }
     }
     # Readable labels are for display only. If literal group or set names make
     # two labels look the same, retain both designs and mark them distinctly.
-    lab <- unname(labels[names(blocks)])
+    lab <- labels
     if (anyDuplicated(lab)) {
       dup <- duplicated(lab) | duplicated(lab, fromLast = TRUE)
       lab[dup] <- paste0(lab[dup], " [design ", seq_along(lab)[dup], "]")
     }
-    names(blocks) <- lab
+    names(blocks) <- make.unique(lab)
   } else if (inherits(fit, "rasch_mfrm")) {
-    vm <- fit$virtual_map
-    fs <- fit$facet_spec
-    cell <- .factor_keys(vm[, fs, drop = FALSE])
-    cells <- unique(cell)
-    cell_lab <- stats::setNames(vapply(cells, function(k) {
-      i <- match(k, cell)
-      paste(paste0(fs, "=", unlist(vm[i, fs, drop = FALSE])),
-            collapse = ", ")
-    }, ""), cells)
     observed <- !is.na(fit$X)
-    present <- vapply(cells, function(k)
-      rowSums(observed[, cell == k, drop = FALSE]) > 0L,
-      logical(nrow(fit$X)))
-    if (is.null(dim(present))) present <- matrix(present, ncol = 1L)
-    pattern <- .factor_keys(as.data.frame(present, check.names = FALSE))
-    blocks <- list()
-    for (p in unique(pattern)) {
-      first <- match(p, pattern)
-      active <- cells[present[first, ]]
-      blocks[[p]] <- which(cell %in% active)
-    }
-    labs <- vapply(unique(pattern), function(p) {
-      first <- match(p, pattern)
-      active <- cells[present[first, ]]
-      paste(unname(cell_lab[active]), collapse = " + ")
-    }, "")
+    observed <- observed[rowSums(observed) > 0L, , drop = FALSE]
+    pat <- .factor_keys(as.data.frame(observed, check.names = FALSE))
+    blocks <- lapply(unique(pat), function(p)
+      which(observed[match(p, pat), ]))
+    labs <- vapply(blocks, function(cols) .design_label(fit, cols), "")
     if (anyDuplicated(labs)) {
       dup <- duplicated(labs) | duplicated(labs, fromLast = TRUE)
       labs[dup] <- paste0(labs[dup], " [design ", seq_along(labs)[dup], "]")
     }
-    names(blocks) <- labs
+    names(blocks) <- make.unique(labs)
   }
   blocks
 }
@@ -527,13 +606,19 @@ chisq_detail <- function(fit, item) {
 #'
 #' Fisher information over a grid of person locations, with the corresponding
 #' standard error of measurement. Ordinary Rasch fits return one whole-test
-#' curve. EFRM fits return one curve per person group and per item-set
+#' curve. EFRM fits return one curve per person group and per item
 #' administration pattern actually observed within that group (in a linking
 #' design, persons who took only the core set get a core-only curve, and the
-#' linking subsample gets the pooled one). MFRM fits return one curve per set
-#' of facet conditions observed together for a person, so ratings that jointly
+#' linking subsample gets the pooled one). MFRM fits return one curve per
+#' observed item-by-facet pattern for a person, so ratings that jointly
 #' inform the same person measure are added and mutually exclusive designs
-#' remain separate.
+#' remain separate. Partly answered sets or facet conditions contribute only
+#' their observed items; a missing response is not treated as an administered
+#' item when defining these patterns. Where item nonresponse leaves nearly
+#' every person a pattern of their own, that is what these fits return:
+#' an unanswered item carries no information about the person who left it,
+#' so no pattern is merged into a fuller one and no curve of theirs is
+#' drawn over a design nobody was administered.
 #'
 #' @details
 #' For an administrable block \eqn{\mathcal A}, the information and standard
@@ -543,9 +628,16 @@ chisq_detail <- function(fit, item) {
 #' \operatorname{SEM}(\theta)=I(\theta)^{-1/2},}
 #' where \eqn{d_i} is the frame unit or discrimination multiplier. For an
 #' ordinary Rasch fit, \eqn{d_i=1}.
+#' Information is returned only for a converged calibration. Comparative
+#' Judgement designs use \code{\link{btl_information}} instead.
 #'
 #' @param fit A fitted object from \code{\link{rasch}}.
 #' @param grid Logit grid over which to evaluate the information.
+#' @param items Optional item selection: item names or indices. Every design
+#'   block is restricted to the named items, so a restricted person-item map
+#'   can carry the information of its own selection. The \code{design} labels
+#'   are those of the restricted blocks, and blocks that differ only outside
+#'   the selection are returned once.
 #' @return A data frame with \code{theta}, \code{info}, and \code{sem}. For
 #'   EFRM and MFRM fits it also contains a \code{design} column identifying
 #'   the administrable frame or facet design.
@@ -560,13 +652,91 @@ chisq_detail <- function(fit, item) {
 #' colnames(X) <- paste0("I", 1:6)
 #' head(test_information(rasch(X)))
 #' @export
-test_information <- function(fit, grid = seq(-6, 6, by = 0.1)) {
+test_information <- function(fit, grid = NULL, items = NULL) {
   if (!inherits(fit, "rasch")) stop("test_information needs a rasch fit")
-  if (!is.numeric(grid) || !length(grid) || any(!is.finite(grid)))
-    stop("grid must contain finite numeric person locations")
+  if (inherits(fit, "rasch_btl"))
+    stop("test_information is for response-data models; use btl_information() for a Comparative Judgement fit")
+  converged <- if (!is.null(fit$est$converged)) fit$est$converged else
+    fit$converged
+  if (!isTRUE(converged))
+    stop("the fitted calibration did not converge; test information is unavailable")
+  if (!.efrm_link_converged(fit))
+    stop("the fitted set-unit link did not converge; test information is unavailable")
+  if (is.null(grid)) {
+    grid <- .default_model_grid(fit, by = 0.1)
+  } else if (!is.numeric(grid) || is.complex(grid) || !length(grid) ||
+             !is.null(dim(grid)) || !is.null(oldClass(grid)) ||
+             any(!is.finite(grid))) {
+    stop("`grid` must contain one or more plain finite numeric locations",
+         call. = FALSE)
+  }
   L <- length(fit$tau_list)
   disc <- if (is.null(fit$disc)) rep(1, L) else fit$disc
+  # an item subset restricts every design block to the named items, so a
+  # restricted person-item map can carry the information of its own
+  # selection rather than the whole instrument's
+  if (!is.null(items) && (!is.atomic(items) || !is.null(dim(items))))
+    stop("`items` must be a vector of item names or indices")
+  keep <- if (is.null(items)) seq_len(L)
+          else if (is.numeric(items) || is.complex(items)) {
+            if (is.complex(items) || any(!is.finite(items)) ||
+                any(items != floor(items)))
+              stop("`items` indices must be whole numbers")
+            if (any(items < 1L) || any(items > L))
+              stop("`items` indices must lie in 1..", L)
+            ki <- as.integer(items)
+            if (anyDuplicated(ki))
+              stop("item indices must not name the same item more than once")
+            ki
+          } else {
+            nm <- as.character(items)
+            if (anyNA(nm) || any(!nzchar(trimws(nm))))
+              stop("`items` must contain non-missing, non-empty item names")
+            # Resolve literal names before treating surrounding whitespace as
+            # selector syntax, so deliberately spaced columns remain usable.
+            direct <- match(nm, fit$items$item)
+            canonical <- nm
+            canonical[is.na(direct)] <-
+              .role_text_values(nm[is.na(direct)])
+            if (anyDuplicated(canonical))
+              stop("item(s) named more than once: ",
+                   paste(unique(canonical[duplicated(canonical)]),
+                         collapse = ", "))
+            nm <- canonical
+            ki <- match(nm, fit$items$item)
+            # an EFRM calibrates virtual item-by-group cells; an underlying
+            # item name selects every cell it appears in
+            if (anyNA(ki) && !is.null(fit$virtual_map)) {
+              vm <- fit$virtual_map
+              ki <- lapply(nm, function(x) {
+                j <- match(x, fit$items$item)
+                if (!is.na(j)) return(j)
+                which(as.character(vm$item) == x)
+              })
+              bad <- vapply(ki, length, 0L) == 0L
+              if (any(bad))
+                stop("item(s) not in the fit: ",
+                     paste(nm[bad], collapse = ", "))
+              ki <- unique(unlist(ki))
+            } else if (anyNA(ki)) {
+              stop("item(s) not in the fit: ",
+                   paste(nm[is.na(ki)], collapse = ", "))
+            }
+            ki
+          }
   blocks <- .design_blocks(fit)
+  blocks <- lapply(blocks, function(ii) intersect(ii, keep))
+  blocks <- blocks[vapply(blocks, length, 0L) > 0L]
+  if (!length(blocks))
+    stop("the item selection leaves no items in any design block")
+  if (!is.null(items)) {
+    # the curve is the selection's, so its label must be too: blocks that
+    # differ only outside the selection are now one design, and a retained
+    # label must name only the items that produced the numbers
+    blocks <- blocks[!duplicated(vapply(blocks, paste, "", collapse = "+"))]
+    names(blocks) <- make.unique(vapply(blocks, function(ii)
+      .design_label(fit, ii), ""))
+  }
   ans <- lapply(seq_along(blocks), function(j) {
     ii <- blocks[[j]]
     info <- vapply(grid, function(th)

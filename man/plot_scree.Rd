@@ -4,35 +4,69 @@
 \alias{plot_scree}
 \title{Scree plot of the residual components with parallel analysis}
 \usage{
-plot_scree(fit, n_components = 10, parallel = TRUE, reps = 50)
+plot_scree(
+  fit,
+  n_components = 10,
+  parallel = TRUE,
+  reps = 50,
+  seed = NULL,
+  result = NULL
+)
 }
 \arguments{
-\item{fit}{A fitted object from \code{\link{rasch}}.}
+\item{fit}{A fitted object from \code{\link{rasch}}. A simulated reference
+requires one response row per person; with repeated identifiers, use
+\code{parallel = FALSE} to display the observed eigenvalues alone.
+Fully anchored scoring fits also require \code{parallel = FALSE}.}
 
-\item{n_components}{Number of leading components to display.}
+\item{n_components}{Number of leading components to display. The familywise
+adjustment covers these components.}
 
-\item{parallel}{Draw the parallel-analysis reference line.}
+\item{parallel}{Draw the parallel-analysis reference band.}
 
-\item{reps}{Model-simulated replicates for the reference.}
+\item{reps}{Model-simulated replicates for the reference; at least 20 when
+\code{parallel = TRUE}. Larger values give a more stable upper-tail
+reference.}
+
+\item{seed}{Optional non-negative whole-number seed. The caller's random-
+number state is restored when the calculation finishes; see
+\code{\link{rasch_rng}} for generator support.}
+
+\item{result}{Optional result returned by an earlier call. Supplying it
+redraws that analysis without repeating the simulations.}
 }
 \value{
-Called for its plotting side effect; invisibly the eigen table.
+Called for its plotting side effect; invisibly the eigen table. With
+  parallel analysis it also contains \code{reference_mean},
+  \code{reference_critical}, \code{parallel_p}, \code{parallel_p_adj},
+  \code{parallel_significant}, and requested, usable, non-converged and
+  other-failure reference counts. The adjustment is
+  recorded in the table's \code{parallel_adjustment} attribute.
 }
 \description{
 Eigenvalues of the residual correlation matrix for the leading components,
-with a model-simulated parallel-analysis reference: responses are simulated
-from the calibrated model (observed missingness kept), the item calibration
-and every person are re-estimated, and the residual eigenvalues recomputed.
+with a model-simulated parallel-analysis reference: response patterns are
+drawn conditional on each person's observed score and missingness pattern,
+the item calibration and every person are re-estimated, and the residual
+eigenvalues recomputed. The plotted reference is a finite-simulation 5%
+familywise upper critical curve, obtained from the maximum standardised
+departure across the displayed components. Each simulated maximum is
+standardised against the other simulated draws so that it is comparable
+with the externally standardised observed value. The returned table also gives
+the reference mean, marginal upper-tail probability and single-step
+adjusted probability.
 Because estimating
 the person locations couples the residuals within a person, this reference
 sits above the classical random-normal one and is calibrated under the
-fitted model (Raiche 2005; Chou & Wang 2010). Observed eigenvalues above
-the reference suggest structure beyond what the model itself produces.
+fitted model (Raiche 2005; Chou & Wang 2010). An observed eigenvalue above
+the critical reference has a familywise-adjusted simulated upper-tail
+probability at or below .05 and suggests structure beyond what the fitted model
+produces.
 }
 \examples{
 set.seed(1)
 d <- seq(-2, 2, length.out = 8)
-X <- matrix(rbinom(500 * 8, 1, plogis(outer(rnorm(500), d, "-"))), 500, 8)
+X <- matrix(rbinom(300 * 8, 1, plogis(outer(rnorm(300), d, "-"))), 300, 8)
 colnames(X) <- paste0("I", 1:8)
 plot_scree(rasch(X), reps = 20)
 }
@@ -45,4 +79,7 @@ Raiche, G. (2005). Critical eigenvalue sizes (variances) in
   response models with principal component analysis on standardized
   residuals. \emph{Educational and Psychological Measurement}, 70(5),
   717-731.
+
+  Westfall, P. H., & Young, S. S. (1993). \emph{Resampling-Based Multiple
+  Testing: Examples and Methods for p-Value Adjustment}. Wiley.
 }

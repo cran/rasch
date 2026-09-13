@@ -13,13 +13,56 @@
   diag(M) - matrix(1, M, 1L) %*% t(a)
 }
 
+# Apply the origin constraint after constructing the model matrix. Subtract a
+# reference entry first, so an arbitrary large column offset is removed before
+# averaging. Do not centre the predictors before model.matrix(): that could
+# change a formula containing interactions without their main effects.
+.explanatory_centre <- function(mm, weights = rep(1 / nrow(mm), nrow(mm))) {
+  relative <- sweep(mm, 2L, mm[1L, ], `-`)
+  out <- sweep(relative, 2L, drop(crossprod(weights, relative)), `-`)
+  if (any(!is.finite(out)))
+    stop("the centred explanatory design is outside the representable range; ",
+         "rescale the predictors", call. = FALSE)
+  out
+}
+
+# model.matrix() can give different design columns the same label: for
+# example factor x's level B and a numeric predictor called xB. Retain the
+# design, but give every coefficient an unambiguous stored name. New fixed
+# departures also avoid names already present in the active model.
+.explanatory_unique_columns <- function(B, previous = character()) {
+  if (ncol(B))
+    colnames(B) <- utils::tail(make.unique(c(previous, colnames(B))), ncol(B))
+  B
+}
+
 .explanatory_ordinal_contrasts <- function(x) {
   k <- nlevels(x)
   if (k < 2L) stop("an ordinal predictor needs at least two observed levels")
   out <- outer(seq_len(k), seq_len(k - 1L), `>`) * 1
-  colnames(out) <- paste0(make.names(levels(x)[-1L]), "_vs_",
-                          make.names(levels(x)[-k]))
+  # make.names() is not one-to-one: levels such as "a b", "a-b" and "a.b"
+  # all collapse to the same token. The adjacent-contrast number is part of
+  # the parameter name so distinct ordered transitions remain distinct even
+  # when their readable labels have the same syntactic form.
+  colnames(out) <- paste0(
+    "adjacent_", seq_len(k - 1L), "_",
+    make.names(levels(x)[-1L]), "_vs_", make.names(levels(x)[-k]))
   out
+}
+
+# Item names are response-column selectors, not labels to canonicalise.
+.explanatory_match_items <- function(x, items) {
+  missing <- is.na(x)
+  x <- as.character(x)
+  x[missing | is.na(x)] <- NA_character_
+  vapply(x, function(nm) {
+    if (is.na(nm) || nm %in% items) return(nm)
+    hit <- items[trimws(items) == trimws(nm)]
+    if (length(hit) > 1L)
+      stop("ambiguous item name: ", nm, "; use the exact response-column name",
+           call. = FALSE)
+    if (length(hit) == 1L) hit else nm
+  }, character(1), USE.NAMES = FALSE)
 }
 
 .explanatory_metadata <- function(predictors, formula, X,
@@ -27,6 +70,7 @@
   level <- match.arg(level)
   if (!is.data.frame(predictors))
     stop("`predictors` must be a data frame")
+  .check_column_names(predictors)
   if (!"item" %in% names(predictors))
     stop("`predictors` needs an `item` column")
   if (!inherits(formula, "formula") || length(formula) != 2L)
@@ -37,7 +81,9 @@
   index <- data.frame(item = items[thr$item],
                       threshold_number = thr$k,
                       stringsAsFactors = FALSE)
-  predictors$item <- as.character(predictors$item)
+  predictors$item <- .explanatory_match_items(predictors$item, items)
+  if (anyNA(predictors$item) || any(!nzchar(trimws(predictors$item))))
+    stop("predictor item names must be non-missing and non-empty")
   unknown <- setdiff(unique(predictors$item), items)
   if (length(unknown))
     stop("predictor item(s) are not present in the fitted response data: ",
@@ -57,9 +103,11 @@
       stop("threshold-level predictors need a `threshold` column")
     kn <- if ("threshold" %in% names(predictors))
       predictors$threshold else predictors$threshold_number
-    kn <- suppressWarnings(as.integer(as.character(kn)))
-    if (anyNA(kn) || any(kn < 1L))
+    kn_num <- suppressWarnings(as.numeric(as.character(kn)))
+    if (anyNA(kn_num) || any(!is.finite(kn_num)) ||
+        any(kn_num != floor(kn_num)) || any(kn_num < 1))
       stop("threshold numbers must be positive integers")
+    kn <- as.integer(kn_num)
     key <- paste(predictors$item, kn, sep = "\r")
     if (anyDuplicated(key))
       stop("threshold-level predictors need one row per item and threshold")
@@ -86,27 +134,36 @@
   for (nm in setdiff(names(meta), reserved)) {
     if (is.character(meta[[nm]]) || is.logical(meta[[nm]]))
       meta[[nm]] <- factor(meta[[nm]])
+    # a level no item carries -- after a subset, a drop, or simply a level
+    # the predictor table declares and never uses -- contributes an
+    # all-zero column and makes an identified design look rank-deficient
+    else if (is.factor(meta[[nm]])) meta[[nm]] <- droplevels(meta[[nm]])
   }
-  model_meta <- meta
-  for (nm in setdiff(names(model_meta), reserved))
-    if (is.ordered(model_meta[[nm]]))
-      contrasts(model_meta[[nm]]) <-
-        .explanatory_ordinal_contrasts(model_meta[[nm]])
-  mf <- tryCatch(stats::model.frame(formula, data = model_meta,
+  mf <- tryCatch(stats::model.frame(formula, data = meta,
                                     na.action = stats::na.fail),
                  error = function(e) stop("cannot construct the explanatory ",
                    "model: ", conditionMessage(e), call. = FALSE))
+  # model.matrix() omits offsets; no fixed contribution is carried through
+  # explanatory estimation or its refits, so accepting one would change the
+  # requested model silently. Inspect terms rather than predictor names.
+  if (length(attr(attr(mf, "terms"), "offset")))
+    stop("formula offsets are not supported by explanatory models; remove offset() terms",
+         call. = FALSE)
+  # Unused metadata must not constrain the requested model.
+  for (nm in setdiff(names(mf), reserved))
+    if (is.ordered(mf[[nm]]))
+      contrasts(mf[[nm]]) <- .explanatory_ordinal_contrasts(mf[[nm]])
   mm <- tryCatch(stats::model.matrix(formula, data = mf),
                  error = function(e) stop("cannot construct the explanatory ",
                    "model matrix: ", conditionMessage(e), call. = FALSE))
   if (!ncol(mm)) stop("the explanatory formula produced no predictors")
   if (any(!is.finite(mm)))
     stop("the explanatory predictors produce non-finite model-matrix values")
+  mm <- .explanatory_unique_columns(mm)
 
   A <- .explanatory_projector(m, thr)
-  B0 <- A %*% mm
-  norms <- sqrt(colSums(B0^2))
-  zero <- norms < 1e-10
+  B0 <- .explanatory_centre(mm, 1 / (length(m) * m[thr$item]))
+  zero <- colSums(B0 != 0) == 0L
   if (any(zero & colnames(mm) != "(Intercept)"))
     stop("predictor(s) have no estimable variation after fixing the scale ",
          "origin: ", paste(colnames(mm)[zero &
@@ -114,7 +171,7 @@
   B <- B0[, !zero, drop = FALSE]
   mm_keep <- mm[, !zero, drop = FALSE]
   if (!ncol(B)) stop("the explanatory formula contains only an intercept")
-  qb <- qr(B, tol = 1e-10)
+  qb <- qr(sweep(B, 2L, .design_column_scale(B), `/`), tol = 1e-10)
   if (qb$rank < ncol(B)) {
     aliased <- colnames(B)[qb$pivot[seq.int(qb$rank + 1L, ncol(B))]]
     stop("the explanatory design is not identified; aliased term(s): ",
@@ -129,7 +186,7 @@
 }
 
 .pcml_design <- function(X, B, parameter_names = colnames(B), maxit = 60,
-                         tol = 1e-8) {
+                         tol = 1e-8, cluster = NULL) {
   X <- as.matrix(X); .check_integer_scores(X, "the score matrix")
   storage.mode(X) <- "integer"
   m <- apply(X, 2L, max, na.rm = TRUE); L <- ncol(X)
@@ -137,43 +194,94 @@
   inames <- colnames(X) %||% paste0("V", seq_len(L))
   if (!is.matrix(B) || nrow(B) != M)
     stop("the explanatory design must have one row per fitted threshold")
-  if (!ncol(B) || qr(B, tol = 1e-10)$rank < ncol(B))
+  if (!ncol(B))
+    stop("the explanatory design matrix is not full column rank")
+  bs <- .design_column_scale(B)
+  B_work <- sweep(B, 2L, bs, `/`)
+  if (qr(B_work, tol = 1e-10)$rank < ncol(B))
     stop("the explanatory design matrix is not full column rank")
   pairs <- .pair_counts(X, m)
   .pcml_check_connected(pairs, L, inames)
   weak <- .pcml_weak_thresholds(X, m, thr, inames)
   st <- .start_tau(X, thr)
-  beta0 <- tryCatch(qr.solve(B, st, tol = 1e-10), error = function(e)
-    rep(0, ncol(B)))
+  beta0 <- tryCatch(qr.solve(B_work, st, tol = 1e-10) / bs,
+                    error = function(e) rep(0, ncol(B)))
   beta0[!is.finite(beta0)] <- 0
   sol <- .pcml_solve(X, thr, m, B, beta0, maxit = maxit, tol = tol,
-                     pairs = pairs)
+                     pairs = pairs, cluster = cluster)
+  repeated <- !is.null(sol$cluster_support) &&
+    isTRUE(sol$cluster_support$repeated)
+  if (isTRUE(sol$converged) && isTRUE(sol$cluster_inference) && repeated) {
+    cov_small <- .pcml_linearised_cluster_cov(
+      X, thr, m, sol$tau, pairs, B, sol$H_beta, cluster)
+    if (is.null(cov_small)) {
+      sol$cluster_inference <- FALSE
+      sol$cov_beta[,] <- NA_real_
+      sol$cov_tau[,] <- NA_real_
+      sol$se_tau[] <- NA_real_
+      sol$cluster_note <- paste(
+        "item-parameter uncertainty withheld: deleting at least one person",
+        "cluster leaves the explanatory calibration unidentified")
+      sol$cluster_support$correction <- "withheld"
+    } else {
+      sol$cov_beta <- cov_small
+      sol$cov_tau <- B %*% cov_small %*% t(B)
+      sol$se_tau <- sqrt(pmax(diag(sol$cov_tau), 0))
+      sol$cluster_support$correction <-
+        "linearised delete-one-person jackknife"
+    }
+  } else if (!is.null(sol$cluster_support)) {
+    sol$cluster_support$correction <- if (repeated) "CR1" else "none"
+  }
   names(sol$beta) <- parameter_names
   dimnames(sol$cov_beta) <- list(parameter_names, parameter_names)
+  # Do not turn the curvature at an unfinished optimisation iterate into
+  # apparently valid coefficient or threshold inference.  Point estimates
+  # remain available to diagnose the failed fit.
+  if (!isTRUE(sol$converged)) {
+    sol$se_tau[] <- NA_real_
+    sol$cov_tau[,] <- NA_real_
+    sol$cov_beta[,] <- NA_real_
+  }
   thr$tau <- sol$tau
   thr$se <- sol$se_tau
   thr$anchored <- FALSE
   thr$weak <- weak$flag
   thr$se[thr$weak] <- NA_real_
   se <- sqrt(pmax(diag(sol$cov_beta), 0))
-  z <- sol$beta / se
+  stat <- .wald_ratio(sol$beta, se)
+  # The sandwich rests on the same finite count of independent person units
+  # whether or not identifiers repeat, so both cases take the finite t
+  # reference. Reading those units as a limiting normal merely because each
+  # contributes one response row rejects a true null far more often than the
+  # printed probability states: at the smallest supported counts the normal
+  # reference rejects at roughly 1.7 times the nominal rate.
+  n_units <- sol$cluster_support$n
+  ref_df <- if (isTRUE(sol$cluster_inference) && length(n_units) == 1L &&
+                is.finite(n_units) && n_units >= 2) n_units - 1L else NA_real_
   coef <- data.frame(term = parameter_names, estimate = sol$beta, se = se,
-                     z = z, p = 2 * stats::pnorm(abs(z), lower.tail = FALSE),
+                     t = stat, df = ref_df,
+                     p = 2 * stats::pt(-abs(stat), df = ref_df),
                      stringsAsFactors = FALSE)
-  coef$p_adj <- stats::p.adjust(coef$p, method = "holm")
+  coef$p_adj <- .p_adjust_family(coef$p, method = "holm")
   rownames(coef) <- coef$term
   list(model = "explanatory", thr = thr, cov_tau = sol$cov_tau,
        loglik = sol$loglik, iterations = sol$iterations,
        converged = sol$converged, m = m, anchors = NULL,
        n_parameters = ncol(B), B = B, beta = sol$beta,
        coefficients = coef, cov_beta = sol$cov_beta,
-       H_beta = sol$H_beta, notes = weak$notes)
+       H_beta = sol$H_beta,
+       notes = c(weak$notes, sol$cluster_note),
+       cluster_inference = sol$cluster_inference,
+       cluster_support = sol$cluster_support)
 }
 
 .pcml_nested_test <- function(full, restricted) {
   if (!isTRUE(full$converged) || !isTRUE(restricted$converged))
     stop("both conditional calibrations must converge before comparison")
-  Bf <- full$B; Br <- restricted$B
+  sf <- .design_column_scale(full$B)
+  Bf <- sweep(full$B, 2L, sf, `/`)
+  Br <- sweep(restricted$B, 2L, .design_column_scale(restricted$B), `/`)
   if (nrow(Bf) != nrow(Br))
     stop("the compared models do not describe the same thresholds")
   M <- nrow(Bf)
@@ -190,56 +298,71 @@
                       chisq_kent = NA_real_, p_kent = NA_real_,
                       lambda = numeric(0)))
   C <- sa$u[, seq_len(r), drop = FALSE]
-  Hinv <- solve(-full$H_beta)
-  num <- crossprod(C, full$cov_beta %*% C)
-  den <- crossprod(C, Hinv %*% C)
-  lambda <- Re(eigen(solve(den, num), only.values = TRUE)$values)
-  kent <- W * r / sum(lambda)
+  Hinv <- tryCatch(solve(-full$H_beta / outer(sf, sf)),
+                   error = function(e) NULL)
+  kc <- if (is.null(Hinv))
+    list(chisq = NA_real_, p = NA_real_, lambda = numeric(0)) else
+    .kent_calibration(W, C, full$cov_beta * outer(sf, sf), Hinv)
   list(chisq = W, df = r, p = stats::pchisq(W, r, lower.tail = FALSE),
-       chisq_kent = kent,
-       p_kent = stats::pchisq(kent, r, lower.tail = FALSE),
-       lambda = lambda)
+       chisq_kent = kc$chisq, p_kent = kc$p, lambda = kc$lambda)
 }
 
-.btl_explanatory_design <- function(predictors, formula, objects) {
+.btl_explanatory_design <- function(predictors, formula, objects,
+                                    known = objects) {
   if (!is.data.frame(predictors) || !"object" %in% names(predictors))
     stop("`predictors` must be a data frame with an `object` column")
+  .check_column_names(predictors)
   if (!inherits(formula, "formula") || length(formula) != 2L)
     stop("`formula` must be one-sided, for example ~ domain + format")
-  predictors$object <- as.character(predictors$object)
+  predictors$object <- .role_text_values(predictors$object)
+  if (anyNA(predictors$object) || any(!nzchar(predictors$object)))
+    stop("predictor object names must be non-missing and non-empty")
   if (anyDuplicated(predictors$object))
     stop("object predictors need exactly one row per object")
   missing <- setdiff(objects, predictors$object)
   if (length(missing))
     stop("object predictors are missing: ", paste(missing, collapse = ", "))
+  # a predictor row for an object the comparisons never mention is an error;
+  # a row for an object that WAS compared but was set aside at a response
+  # boundary is not, and is simply not part of the design
+  extra <- setdiff(predictors$object, known)
+  if (length(extra))
+    stop("predictor row(s) for object(s) not present in the comparisons: ",
+         paste(extra, collapse = ", "))
   meta <- predictors[match(objects, predictors$object), , drop = FALSE]
-  for (nm in setdiff(names(meta), "object"))
+  for (nm in setdiff(names(meta), "object")) {
     if (is.character(meta[[nm]]) || is.logical(meta[[nm]]))
       meta[[nm]] <- factor(meta[[nm]])
-  model_meta <- meta
-  for (nm in setdiff(names(model_meta), "object"))
-    if (is.ordered(model_meta[[nm]]))
-      contrasts(model_meta[[nm]]) <-
-        .explanatory_ordinal_contrasts(model_meta[[nm]])
-  mf <- tryCatch(stats::model.frame(formula, data = model_meta,
+    # a level no calibrated object carries would add an all-zero column
+    else if (is.factor(meta[[nm]])) meta[[nm]] <- droplevels(meta[[nm]])
+  }
+  mf <- tryCatch(stats::model.frame(formula, data = meta,
                                     na.action = stats::na.fail),
     error = function(e) stop("cannot construct the explanatory object model: ",
                              conditionMessage(e), call. = FALSE))
+  if (length(attr(attr(mf, "terms"), "offset")))
+    stop("formula offsets are not supported by explanatory models; remove offset() terms",
+         call. = FALSE)
+  # Unused metadata must not constrain the requested model.
+  for (nm in setdiff(names(mf), "object"))
+    if (is.ordered(mf[[nm]]))
+      contrasts(mf[[nm]]) <- .explanatory_ordinal_contrasts(mf[[nm]])
   mm <- tryCatch(stats::model.matrix(formula, data = mf),
     error = function(e) stop("cannot construct the explanatory object model ",
                              "matrix: ", conditionMessage(e), call. = FALSE))
   if (any(!is.finite(mm)))
     stop("the explanatory object predictors produce non-finite model-matrix values")
-  C <- diag(length(objects)) - 1 / length(objects)
-  B0 <- C %*% mm
-  keep <- sqrt(colSums(B0^2)) >= 1e-10
+  mm <- .explanatory_unique_columns(mm)
+  B0 <- .explanatory_centre(mm)
+  keep <- colSums(B0 != 0) > 0L
   bad <- colnames(mm)[!keep & colnames(mm) != "(Intercept)"]
   if (length(bad))
     stop("predictor(s) have no estimable variation after fixing the scale origin: ",
          paste(bad, collapse = ", "))
   B <- B0[, keep, drop = FALSE]
   if (!ncol(B)) stop("the explanatory formula contains only an intercept")
-  if (qr(B, tol = 1e-10)$rank < ncol(B))
+  if (qr(sweep(B, 2L, .design_column_scale(B), `/`),
+         tol = 1e-10)$rank < ncol(B))
     stop("the explanatory object design is not identified")
   rownames(B) <- objects
   list(B = B, offset = stats::setNames(numeric(length(objects)), objects),
@@ -253,7 +376,10 @@
   if (!identical(as.character(full$objects$object),
                  as.character(restricted$objects$object)))
     stop("the compared models do not contain the same objects")
-  Bf <- full$location_design; Br <- restricted$location_design
+  sf <- .design_column_scale(full$location_design)
+  Bf <- sweep(full$location_design, 2L, sf, `/`)
+  Br <- sweep(restricted$location_design, 2L,
+              .design_column_scale(restricted$location_design), `/`)
   K <- nrow(Bf)
   S <- cbind(Br, rep(1, K))
   ss <- svd(S); rs <- sum(ss$d > max(1e-10, max(ss$d) * 1e-8))
@@ -267,21 +393,22 @@
   Cobj <- sa$u[, seq_len(r), drop = FALSE]
   C <- rbind(Cobj,
              matrix(0, nrow(full$sensitivity) - nrow(Cobj), r))
-  Hinv <- solve(full$sensitivity)
-  num <- crossprod(C, full$cov_parameters %*% C)
-  den <- crossprod(C, Hinv %*% C)
-  lambda <- Re(eigen(solve(den, num), only.values = TRUE)$values)
-  kent <- W * r / sum(lambda)
   available <- isTRUE(full$cl$inference_available)
+  sp <- c(sf, rep(1, nrow(full$sensitivity) - length(sf)))
+  scale_outer <- outer(sp, sp)
+  Hinv <- if (available)
+    tryCatch(solve(full$sensitivity / scale_outer),
+             error = function(e) NULL) else NULL
+  kc <- if (is.null(Hinv))
+    list(chisq = NA_real_, p = NA_real_, lambda = numeric(0)) else
+    .kent_calibration(W, C, full$cov_parameters * scale_outer, Hinv)
   list(chisq = W, df = r,
        p = stats::pchisq(W, r, lower.tail = FALSE),
-       chisq_kent = if (available) kent else NA_real_,
-       p_kent = if (available)
-         stats::pchisq(kent, r, lower.tail = FALSE) else NA_real_,
-       lambda = if (available) lambda else rep(NA_real_, length(lambda)))
+       chisq_kent = kc$chisq, p_kent = kc$p, lambda = kc$lambda)
 }
 
 .btl_explanatory_refit <- function(fit, B, relaxations) {
+  B <- .explanatory_unique_columns(B)
   spec <- fit$explanatory$refit_spec
   design <- list(B = B,
                  offset = stats::setNames(numeric(nrow(B)), rownames(B)),
@@ -310,8 +437,12 @@
 #' are continuous, unordered factors are categorical, and ordered factors use
 #' successive contrasts between adjacent levels. Character predictors are
 #' converted to unordered factors. Selected
-#' interactions may be included in \code{formula}. A free calibration is
-#' retained for \code{explanatory_test()}. Standard errors use the same
+#' interactions may be included in \code{formula}.
+#' Design columns are centred and rescaled internally for numerical stability; reported
+#' coefficients and standard errors use the supplied predictor units.
+#' Coincident coefficient labels receive numeric suffixes; this does not
+#' change the predictor design.
+#' A free calibration is retained for \code{explanatory_test()}. Standard errors use the same
 #' sandwich covariance as \code{btl()}; when judges are identified, coefficient
 #' tests use the judge-clustered covariance and a \eqn{t} reference with
 #' judge-cluster degrees of freedom. Holm adjustment covers the coefficient
@@ -319,9 +450,10 @@
 #'
 #' @inheritParams btl
 #' @param predictors Data frame with one row per object, an \code{object}
-#'   column, and the predictors named in \code{formula}.
+#'   column, and the predictors named in \code{formula}. Column names must be
+#'   unique.
 #' @param formula One-sided explanatory formula, including selected
-#'   interactions if required.
+#'   interactions if required. Formula offsets (\code{offset()}) are not supported.
 #' @return An object of class \code{"rasch_btl_explanatory"}, inheriting from
 #'   \code{"rasch_btl"}.
 #' @references Bradley, R. A. and Terry, M. E. (1952). Rank analysis of
@@ -355,16 +487,21 @@ btl_explanatory <- function(data, predictors, formula, object_a, object_b,
                             thresholds = c("free", "pc"), maxit = 60,
                             tol = 1e-8) {
   ties <- match.arg(ties); thresholds <- match.arg(thresholds)
-  if (!is.data.frame(data) ||
-      !all(c(object_a, object_b) %in% names(data)))
+  if (!is.data.frame(data))
     stop("`object_a` and `object_b` must name columns in `data`")
+  .check_reshape_column(data, object_a, "object_a")
+  .check_reshape_column(data, object_b, "object_b")
   if (!is.data.frame(predictors) || !"object" %in% names(predictors))
     stop("`predictors` must be a data frame with an `object` column")
-  observed_objects <- unique(c(trimws(as.character(data[[object_a]])),
-                               trimws(as.character(data[[object_b]]))))
+  .check_column_names(predictors)
+  observed_objects <- unique(c(.role_text_values(data[[object_a]]),
+                               .role_text_values(data[[object_b]])))
   observed_objects <- observed_objects[!is.na(observed_objects) &
                                          nzchar(observed_objects)]
-  unknown <- setdiff(as.character(predictors$object), observed_objects)
+  predictor_objects <- .role_text_values(predictors$object)
+  if (anyNA(predictor_objects) || any(!nzchar(predictor_objects)))
+    stop("predictor object names must be non-missing and non-empty")
+  unknown <- setdiff(predictor_objects, observed_objects)
   if (length(unknown))
     stop("predictor object(s) are not present in the comparison data: ",
          paste(unknown, collapse = ", "))
@@ -373,8 +510,23 @@ btl_explanatory <- function(data, predictors, formula, object_a, object_b,
                count = count, order = order, position = position,
                ties = ties, thresholds = thresholds, maxit = maxit, tol = tol)
   reference <- do.call(btl, c(list(data = data), args))
-  design <- .btl_explanatory_design(predictors, formula,
-                                    as.character(reference$objects$object))
+  if (!isTRUE(reference$converged))
+    stop("the unrestricted comparative judgement calibration did not ",
+         "converge; an explanatory restriction cannot be assessed against it",
+         call. = FALSE)
+  usable_objects <- unique(c(
+    as.character(reference$observed_comparisons$object_a),
+    as.character(reference$observed_comparisons$object_b)))
+  usable_objects <- usable_objects[!is.na(usable_objects) & nzchar(usable_objects)]
+  # objects set aside at a response boundary are not fitted, so centring the
+  # design over them would leave the fitted locations off the sum-zero
+  # origin the model and the reference fit both use
+  all_objects <- as.character(reference$objects$object)
+  calibrated <- all_objects
+  if (!is.null(reference$objects$extreme))
+    calibrated <- calibrated[!reference$objects$extreme %in% TRUE]
+  design <- .btl_explanatory_design(predictors, formula, calibrated,
+                                    known = usable_objects)
   fit <- do.call(btl, c(list(data = data), args,
                         list(.object_design = design)))
   fit$reference_fit <- reference
@@ -396,7 +548,23 @@ btl_explanatory <- function(data, predictors, formula, object_a, object_b,
 relax_btl_explanatory <- function(fit, object) {
   if (!inherits(fit, "rasch_btl_explanatory"))
     stop("relax_btl_explanatory() needs an explanatory comparative judgement fit")
-  objects <- as.character(fit$objects$object)
+  if (!isTRUE(fit$converged))
+    stop("the explanatory comparative judgement calibration did not converge; it cannot be relaxed",
+         call. = FALSE)
+  if (!is.atomic(object) || !is.null(dim(object)) || length(object) != 1L ||
+      is.na(object))
+    stop("`object` must name exactly one object")
+  object <- .role_text_values(object)
+  if (!nzchar(object)) stop("`object` must name exactly one object")
+  obj_tab <- fit$objects
+  if ("extreme" %in% names(obj_tab)) {
+    at <- match(object, obj_tab$object)
+    if (!is.na(at) && isTRUE(obj_tab$extreme[at]))
+      .refuse(object, " was set aside at a response boundary; its location ",
+              "is an extrapolation for display and cannot be relaxed")
+    obj_tab <- obj_tab[!(obj_tab$extreme %in% TRUE), ]
+  }
+  objects <- as.character(obj_tab$object)
   j <- match(object, objects)
   if (is.na(j)) stop("object not found in the explanatory fit: ", object)
   D <- diag(length(objects))[, j, drop = FALSE]
@@ -410,7 +578,11 @@ relax_btl_explanatory <- function(fit, object) {
                                component = "Object location",
                                parameters_added = 1L,
                                stringsAsFactors = FALSE))
-  .btl_explanatory_refit(fit, cbind(B, D), rel)
+  out <- .btl_explanatory_refit(fit, cbind(B, D), rel)
+  if (!isTRUE(out$converged))
+    stop("the relaxed explanatory comparative judgement calibration did not converge",
+         call. = FALSE)
+  out
 }
 
 #' @export
@@ -421,7 +593,7 @@ print.rasch_btl_explanatory <- function(x, ...) {
 }
 
 .explanatory_attach <- function(out, reference, design, formula, level,
-                                relaxations, n_groups_requested, adjust_N,
+                                relaxations, n_groups_requested,
                                 maxit, tol) {
   out$reference_fit <- reference
   out$mc <- reference$mc
@@ -433,7 +605,7 @@ print.rasch_btl_explanatory <- function(x, ...) {
     source_predictors = design$source_predictors,
     relaxations = relaxations)
   out$refit_spec <- list(model = "PCM", n_groups = n_groups_requested,
-    adjust_N = adjust_N, anchors = NULL,
+    anchors = NULL,
     na_codes = reference$refit_spec$na_codes %||% -1,
     key = reference$refit_spec$key,
     pc_components = NULL, maxit = maxit, tol = tol,
@@ -463,27 +635,45 @@ print.rasch_btl_explanatory <- function(x, ...) {
 #' factors. The reserved factor
 #' \code{threshold} identifies the within-item threshold number;
 #' \code{threshold_number} supplies its integer value.
+#' Design columns are centred and rescaled internally for numerical stability; reported
+#' coefficients and standard errors use the supplied predictor units.
+#' Coincident coefficient labels receive numeric suffixes; this does not
+#' change the predictor design.
 #'
 #' A free PCM reference is fitted to the same prepared responses and retained
 #' on the object. \code{\link{explanatory_test}} applies the first-order Kent
-#' calibration required for the pairwise composite likelihood.
+#' calibration required for the pairwise composite likelihood. When an
+#' identifier occurs on more than one response row, coefficient covariance is
+#' clustered by person. A linearised delete-one-person correction accounts for
+#' finite-cluster leverage without refitting the model once per person.
+#' Supported fits use a \eqn{t} reference with degrees of freedom equal to
+#' the number of independent person units contributing conditional
+#' information minus one, whether or not identifiers repeat; inference is
+#' withheld when the calibration lacks enough independent information.
+#' Holm adjustment covers the coefficient family.
+#' With few persons and unequal numbers of response rows, these approximate
+#' tests can still be mildly liberal; the correction does not guarantee nominal
+#' coverage in small samples.
 #'
-#' @param data,items,id,factors,n_groups,adjust_N,na_codes,key,maxit,tol As in
+#' @param data,items,id,factors,n_groups,na_codes,key,maxit,tol As in
 #'   \code{\link{rasch}}.
 #' @param predictors Data frame containing an \code{item} column and the
 #'   predictors named in \code{formula}. With \code{level = "threshold"}, it
 #'   must also contain \code{threshold}, with one row for every fitted item
-#'   threshold.
+#'   threshold. Column names must be unique.
 #' @param formula One-sided explanatory formula. For example,
 #'   \code{~ format + operation + format:operation}. The reserved
 #'   \code{threshold} factor permits threshold-specific effects.
+#'   Formula offsets (\code{offset()}) are not supported.
 #' @param level Whether \code{predictors} contains one row per \code{"item"}
 #'   or per \code{"threshold"}. Item rows are expanded over their thresholds.
 #' @return An object of class \code{"rasch_explanatory"} inheriting from
 #'   \code{"rasch"}. Standard item, person, fit and diagnostic components use
 #'   the explanatory thresholds. The \code{explanatory} component contains the
 #'   formula, metadata and design matrices; \code{reference_fit} is the free
-#'   PCM calibration.
+#'   PCM calibration. \code{est$coefficients} reports the estimates, standard
+#'   errors, \eqn{t} statistics, reference degrees of freedom, raw
+#'   probabilities and Holm-adjusted probabilities.
 #' @references
 #' Fischer, G. H. (1973). The linear logistic test model as an instrument in
 #' educational research. Acta Psychologica, 37, 359--374.
@@ -510,17 +700,22 @@ print.rasch_btl_explanatory <- function(x, ...) {
 #' @export
 rasch_explanatory <- function(data, predictors, formula, items = NULL,
                               level = c("item", "threshold"), id = NULL,
-                              factors = NULL, n_groups = NULL, adjust_N = NA,
+                              factors = NULL, n_groups = NULL,
                               na_codes = -1, key = NULL, maxit = 60,
                               tol = 1e-8) {
   level <- match.arg(level)
   reference <- rasch(data, model = "PCM", id = id, factors = factors,
-                     items = items, n_groups = n_groups, adjust_N = adjust_N,
+                     items = items, n_groups = n_groups,
                      na_codes = na_codes, key = key, maxit = maxit, tol = tol)
+  if (!isTRUE(reference$est$converged))
+    stop("the unrestricted Rasch calibration did not converge; an ",
+         "explanatory restriction cannot be assessed against it",
+         call. = FALSE)
   design <- .explanatory_metadata(predictors, formula, reference$X, level)
   est <- .pcml_design(reference$X, design$B,
                       parameter_names = colnames(design$B),
-                      maxit = maxit, tol = tol)
+                      maxit = maxit, tol = tol,
+                      cluster = reference$person$id)
   if (!isTRUE(est$converged))
     warning("the explanatory calibration did not converge; estimates, ",
             "diagnostics and probabilities are unreliable", call. = FALSE)
@@ -530,11 +725,11 @@ rasch_explanatory <- function(data, predictors, formula, items = NULL,
                      paste(deparse(formula), collapse = " ")),
              est$notes)
   out <- .assemble_fit("PCM", reference$X, est, reference$person$id,
-                       reference$factors, n_groups, adjust_N, notes)
+                       reference$factors, n_groups, notes)
   out$explanatory_model <- kind
   .explanatory_attach(out, reference, design, formula, level,
                       relaxations = data.frame(),
-                      n_groups_requested = n_groups, adjust_N = adjust_N,
+                      n_groups_requested = n_groups,
                       maxit = maxit, tol = tol)
 }
 
@@ -543,7 +738,9 @@ rasch_explanatory <- function(data, predictors, formula, items = NULL,
 #' Tests explanatory item, threshold or object restrictions against the
 #' corresponding free calibration of the same responses. The inferential
 #' result uses the first-order Kent calibration for the fitted likelihood and
-#' sandwich covariance. The calibration coefficient of determination is
+#' sandwich covariance. This multivariate comparison is asymptotic; unlike
+#' the individual coefficient tests, it has no finite-person-cluster \eqn{t}
+#' correction. The calibration coefficient of determination is
 #' \deqn{R^2_{cal}=1-\frac{\sum_j(\hat\eta^{free}_j-
 #' \hat\eta^{expl}_j-\bar d)^2}{\sum_j(\hat\eta^{free}_j-
 #' \bar\eta^{free})^2},}
@@ -575,9 +772,19 @@ rasch_explanatory <- function(data, predictors, formula, items = NULL,
 #' @export
 explanatory_test <- function(fit) {
   if (inherits(fit, "rasch_btl_explanatory")) {
+    if (!isTRUE(fit$converged))
+      stop("the explanatory comparative judgement calibration did not converge; model comparison is unavailable",
+           call. = FALSE)
+    if (is.null(fit$reference_fit) || !isTRUE(fit$reference_fit$converged))
+      stop("the unrestricted comparative judgement reference fit did not ",
+           "converge; model comparison is unavailable", call. = FALSE)
     z <- .btl_explanatory_nested_test(fit$reference_fit, fit)
     free <- fit$reference_fit$objects
     active <- fit$objects
+    # an extrapolated boundary row is not a calibrated location; the design
+    # rows span the calibrated objects only
+    if ("extreme" %in% names(active)) active <- active[!(active$extreme %in% TRUE), ]
+    if ("extreme" %in% names(free)) free <- free[!(free$extreme %in% TRUE), ]
     f <- free$location[match(active$object, free$object)]
     a <- active$location
     ok <- is.finite(f) & is.finite(a)
@@ -604,6 +811,13 @@ explanatory_test <- function(fit) {
   }
   if (!inherits(fit, "rasch_explanatory"))
     stop("explanatory_test() needs an explanatory Rasch fit")
+  if (!isTRUE(fit$est$converged))
+    stop("the explanatory calibration did not converge; model comparison is unavailable",
+         call. = FALSE)
+  if (is.null(fit$reference_fit) ||
+      !isTRUE(fit$reference_fit$est$converged))
+    stop("the unrestricted Rasch reference fit did not converge; model ",
+         "comparison is unavailable", call. = FALSE)
   z <- .pcml_nested_test(fit$reference_fit$est, fit$est)
   free <- fit$reference_fit$est$thr$tau
   active <- fit$est$thr$tau
@@ -656,7 +870,63 @@ explanatory_test <- function(fit) {
 }
 
 .explanatory_addable <- function(B, D) {
-  qr(cbind(B, D), tol = 1e-10)$rank - qr(B, tol = 1e-10)$rank
+  b_scale <- .design_column_scale(B)
+  augmented <- cbind(B, D)
+  a_scale <- .design_column_scale(augmented)
+  qr(sweep(augmented, 2L, a_scale, `/`), tol = 1e-10)$rank -
+    qr(sweep(B, 2L, b_scale, `/`), tol = 1e-10)$rank
+}
+
+# Keep a stable subset of a candidate block that adds exactly its remaining
+# directions to the active design. A predictor may already span only part of
+# a polytomous item's threshold block; appending the whole block would then
+# make the refit rank deficient even though a genuine departure remains.
+.explanatory_addition <- function(B, D) {
+  # Rank decisions are made after column normalisation, while the returned
+  # residuals retain the caller's units. This separates a nearly represented
+  # added direction before the refitter scales its columns. Keeping the
+  # residual in D's units also keeps the reported departure coefficient on
+  # the same scale as the requested fixed departure.
+  current <- B
+  current_rank <- qr(sweep(current, 2L, .design_column_scale(current), `/`),
+                     tol = 1e-10)$rank
+  stable <- matrix(numeric(0), nrow = nrow(D), ncol = 0L,
+                   dimnames = list(rownames(D), NULL))
+  raw_map <- matrix(numeric(0), nrow = ncol(D), ncol = 0L)
+  keep <- integer(0)
+  for (j in seq_len(ncol(D))) {
+    d <- D[, j, drop = FALSE]
+    ds <- .design_column_scale(d)[1L]
+    d_work <- d / ds
+    current_scale <- .design_column_scale(current)
+    current_work <- sweep(current, 2L, current_scale, `/`)
+    q_current <- qr(current_work, tol = 1e-10)
+    candidate_rank <- qr(cbind(current_work, d_work),
+                         tol = 1e-10)$rank
+    if (candidate_rank > current_rank) {
+      # This residual spans the same augmented model as d. It is deliberately
+      # not normalised here: the coefficient remains the requested
+      # departure, while the downstream fit scales the column internally.
+      residual <- qr.resid(q_current, d)
+      coef <- qr.coef(q_current, d)
+      raw <- numeric(ncol(D)); raw[j] <- 1
+      if (ncol(raw_map)) {
+        n_active <- ncol(B)
+        previous <- coef[seq.int(n_active + 1L, length(coef))] /
+          current_scale[seq.int(n_active + 1L, length(current_scale))]
+        raw <- raw - drop(raw_map %*% previous)
+      }
+      stable <- cbind(stable, residual)
+      raw_map <- cbind(raw_map, raw)
+      keep <- c(keep, j)
+      current <- cbind(current, residual)
+      current_rank <- candidate_rank
+    }
+  }
+  colnames(stable) <- colnames(D)[keep]
+  stable <- .explanatory_unique_columns(stable, colnames(B))
+  attr(stable, "raw_map") <- raw_map
+  stable
 }
 
 #' Diagnose fixed departures from an explanatory model
@@ -664,17 +934,37 @@ explanatory_test <- function(fit) {
 #' Fits each available item-location, polytomous threshold-structure or
 #' comparative-judgement object departure separately from the active model.
 #' Probabilities use Kent calibration and Holm adjustment over the complete
-#' candidate family.
+#' candidate family. The Kent departure tests are first-order asymptotic
+#' comparisons and do not use the finite-person-cluster correction applied to
+#' individual coefficients.
+#' A candidate with a withheld probability, including a refit that errors or
+#' fails to converge, remains in that family.
 #'
 #' @param fit A fitted explanatory Rasch or comparative judgement model.
 #' @param p_adjust Multiplicity adjustment over the candidate departures.
-#' @return A data frame ordered by adjusted probability.
+#' @return A data frame ordered by adjusted probability. For item fits, a
+#'   \code{weak} column marks items whose thresholds the calibration flags
+#'   as weakly identified; their probabilities are withheld, since the
+#'   departure test rests on the same sparse categories, and a note on the
+#'   table records the withholding. The \code{converged} column identifies
+#'   candidate refits that converged. Statistics from a failed or
+#'   non-convergent candidate are withheld, but it remains in the
+#'   multiplicity family.
 #' @export
 explanatory_diagnostics <- function(fit, p_adjust = "holm") {
+  if (!is.character(p_adjust) || length(p_adjust) != 1L ||
+      !is.null(dim(p_adjust)) || !is.null(oldClass(p_adjust)) ||
+      is.na(p_adjust))
+    stop("`p_adjust` must name one method in stats::p.adjust.methods")
   if (inherits(fit, "rasch_btl_explanatory")) {
+    if (!isTRUE(fit$converged))
+      stop("the explanatory comparative judgement calibration did not converge; diagnostics are unavailable",
+           call. = FALSE)
     if (!p_adjust %in% stats::p.adjust.methods)
       stop("p_adjust must name a method in stats::p.adjust.methods")
-    objects <- as.character(fit$objects$object)
+    obj_tab <- fit$objects
+    if ("extreme" %in% names(obj_tab)) obj_tab <- obj_tab[!(obj_tab$extreme %in% TRUE), ]
+    objects <- as.character(obj_tab$object)
     B <- fit$explanatory$active_B
     rows <- list()
     for (j in seq_along(objects)) {
@@ -682,62 +972,149 @@ explanatory_diagnostics <- function(fit, p_adjust = "holm") {
       D <- (diag(length(objects)) - 1 / length(objects)) %*% D
       rownames(D) <- objects
       colnames(D) <- paste0("departure[", objects[j], "]")
-      if (qr(cbind(B, D), tol = 1e-10)$rank == qr(B, tol = 1e-10)$rank)
+      D <- tryCatch(.explanatory_addition(B, D),
+                    error = function(e) e)
+      if (inherits(D, "error")) {
+        rows[[length(rows) + 1L]] <- data.frame(
+          object = objects[j], component = "Object location",
+          parameters_added = 1L, departure = NA_real_,
+          deviance_reduction = NA_real_, df = NA_integer_, p = NA_real_,
+          converged = FALSE, stringsAsFactors = FALSE)
         next
-      cand <- .btl_explanatory_refit(fit, cbind(B, D),
-                                     fit$explanatory$relaxations)
-      tst <- .btl_explanatory_nested_test(cand, fit)
+      }
+      if (!ncol(D))
+        next
+      cand <- tryCatch(
+        .btl_explanatory_refit(fit, cbind(B, D),
+                               fit$explanatory$relaxations),
+        error = function(e) e)
+      converged <- !inherits(cand, "error") && isTRUE(cand$converged)
+      if (inherits(cand, "error")) {
+        tst <- list(chisq = NA_real_, df = NA_integer_, p_kent = NA_real_)
+      } else if (converged) {
+        tst <- tryCatch(.btl_explanatory_nested_test(cand, fit),
+                        error = function(e) {
+                          converged <<- FALSE
+                          list(chisq = NA_real_, df = NA_integer_,
+                               p_kent = NA_real_)
+                        })
+      } else {
+        tst <- list(chisq = NA_real_, df = NA_integer_, p_kent = NA_real_)
+      }
       rows[[length(rows) + 1L]] <- data.frame(
         object = objects[j], component = "Object location",
         parameters_added = 1L,
-        departure = utils::tail(cand$object_coefficients$estimate, 1L),
+        departure = if (converged && !inherits(cand, "error"))
+          utils::tail(cand$object_coefficients$estimate, 1L) else NA_real_,
         deviance_reduction = tst$chisq, df = tst$df, p = tst$p_kent,
-        stringsAsFactors = FALSE)
+        converged = converged, stringsAsFactors = FALSE)
     }
     if (!length(rows)) return(.tag_tables(data.frame(
       object = character(0), component = character(0),
       parameters_added = integer(0), departure = numeric(0),
       deviance_reduction = numeric(0), df = integer(0), p = numeric(0),
-      p_adj = numeric(0))))
+      converged = logical(0), p_adj = numeric(0))))
     out <- do.call(rbind, rows)
-    out$p_adj <- stats::p.adjust(out$p, method = p_adjust)
+    out$p_adj <- .p_adjust_family(out$p, method = p_adjust)
     out <- out[order(out$p_adj, -out$deviance_reduction), , drop = FALSE]
     rownames(out) <- NULL
     attr(out, "p_adjust") <- p_adjust
+    if (any(!out$converged))
+      attr(out, "note") <- paste("statistics are withheld for failed or",
+        "non-convergent candidate refits; those candidates remain in the",
+        "adjustment family")
     return(.tag_tables(out))
   }
   if (!inherits(fit, "rasch_explanatory"))
     stop("explanatory_diagnostics() needs an explanatory Rasch fit")
+  if (!isTRUE(fit$est$converged))
+    stop("the explanatory calibration did not converge; diagnostics are unavailable",
+         call. = FALSE)
   if (!p_adjust %in% stats::p.adjust.methods)
     stop("p_adjust must name a method in stats::p.adjust.methods")
   B <- fit$est$B; rows <- list()
   spec <- fit$refit_spec
+  # Candidate construction, refitting and nested testing are deliberately
+  # isolated below. One singular candidate must remain an unavailable member
+  # of the Holm family rather than aborting all later departures.
   for (item in colnames(fit$X)) for (component in c("location", "thresholds")) {
-    if (component == "thresholds" && fit$m[match(item, colnames(fit$X))] < 2L)
+    ii <- match(item, colnames(fit$X))
+    nominal_add <- if (component == "location") 1L else
+      max(fit$m[ii] - 1L, 0L)
+    if (component == "thresholds" && fit$m[ii] < 2L)
       next
-    D <- .explanatory_candidate(fit, item, component)
-    add <- .explanatory_addable(B, D)
-    if (!add) next
-    candB <- cbind(B, D)
-    est <- .pcml_design(fit$X, candB, colnames(candB),
-                        maxit = spec$maxit, tol = spec$tol)
-    tst <- .pcml_nested_test(est, fit$est)
-    b <- utils::tail(est$beta, ncol(D))
-    departure <- if (component == "location") unname(b[1L]) else
-      max(abs(drop(D %*% b)))
+    D_raw <- tryCatch(.explanatory_candidate(fit, item, component),
+      error = function(e) e)
+    D <- if (inherits(D_raw, "error")) D_raw else
+      tryCatch(.explanatory_addition(B, D_raw),
+      error = function(e) e)
+    if (inherits(D, "error")) {
+      add <- nominal_add
+      est <- D
+    } else {
+      add <- ncol(D)
+      if (!add) next
+      candB <- cbind(B, D)
+      est <- tryCatch(.pcml_design(fit$X, candB, colnames(candB),
+                                  maxit = spec$maxit, tol = spec$tol,
+                                  cluster = fit$person$id),
+                      error = function(e) e)
+    }
+    converged <- !inherits(est, "error") && isTRUE(est$converged)
+    if (inherits(est, "error")) {
+      tst <- list(chisq = NA_real_, df = NA_integer_, p_kent = NA_real_)
+    } else if (converged) {
+      tst <- tryCatch(.pcml_nested_test(est, fit$est),
+                      error = function(e) {
+                        converged <<- FALSE
+                        list(chisq = NA_real_, df = NA_integer_,
+                             p_kent = NA_real_)
+                      })
+    } else {
+      tst <- list(chisq = NA_real_, df = NA_integer_, p_kent = NA_real_)
+    }
+    departure <- NA_real_
+    if (converged && !inherits(est, "error")) {
+      b <- utils::tail(est$beta, ncol(D))
+      raw_map <- attr(D, "raw_map")
+      b_raw <- if (is.null(raw_map)) b else drop(raw_map %*% b)
+      departure <- if (component == "location") unname(b_raw[1L]) else
+        max(abs(drop(D_raw %*% b_raw)))
+    }
+    # a departure test rests on the same sparse categories that made the
+    # item's thresholds weak; the probability is withheld there, as the
+    # threshold standard errors already are, and the departure stays
+    # descriptive
+    weak_item <- isTRUE(any(fit$thresholds$weak[fit$thresholds$item == ii]))
     rows[[length(rows) + 1L]] <- data.frame(
       item = item, component = if (component == "location")
         "Item location" else "Threshold structure",
       parameters_added = add, departure = departure,
       deviance_reduction = tst$chisq, df = tst$df,
-      p = tst$p_kent, stringsAsFactors = FALSE)
+      p = if (weak_item) NA_real_ else tst$p_kent,
+      weak = weak_item, converged = converged,
+      stringsAsFactors = FALSE)
   }
   if (!length(rows)) return(.tag_tables(data.frame(
     item = character(0), component = character(0), parameters_added = integer(0),
     departure = numeric(0), deviance_reduction = numeric(0), df = integer(0),
-    p = numeric(0), p_adj = numeric(0))))
+    p = numeric(0), weak = logical(0), converged = logical(0),
+    p_adj = numeric(0))))
   out <- do.call(rbind, rows)
-  out$p_adj <- stats::p.adjust(out$p, method = p_adjust)
+  usable <- is.finite(out$p)
+  out$p_adj <- NA_real_
+  out$p_adj[usable] <- stats::p.adjust(
+    out$p[usable], method = p_adjust, n = nrow(out))
+  notes <- character(0)
+  if (any(out$weak))
+    notes <- c(notes, paste("departure probabilities are withheld for",
+      "item(s) with weak thresholds:",
+      paste(unique(out$item[out$weak]), collapse = ", ")))
+  if (any(!out$converged))
+    notes <- c(notes, paste("statistics are withheld for failed or",
+      "non-convergent candidate refits; those candidates remain in the",
+      "adjustment family"))
+  if (length(notes)) attr(out, "note") <- paste(notes, collapse = "; ")
   out <- out[order(out$p_adj, -out$deviance_reduction), , drop = FALSE]
   rownames(out) <- NULL
   attr(out, "p_adjust") <- p_adjust
@@ -746,10 +1123,12 @@ explanatory_diagnostics <- function(fit, p_adjust = "holm") {
 
 #' Relax a nominated explanatory restriction
 #'
-#' Adds either one fixed item-location departure or a fixed block describing
-#' an item's threshold structure, then repeats the complete conditional
-#' calibration and downstream Rasch analysis. The departure is fixed rather
-#' than random; raw-score sufficiency and the common discrimination remain.
+#' Adds either one fixed item-location departure or the part of an item's
+#' threshold-structure block not already represented by the predictor design,
+#' then repeats the complete conditional calibration and downstream Rasch
+#' analysis. The departure is fixed rather than random; raw-score sufficiency
+#' and the common discrimination remain.
+#' Earlier DIF splits and superitem definitions are retained.
 #'
 #' @param fit A fitted explanatory Rasch model.
 #' @param item Item name.
@@ -760,15 +1139,24 @@ relax_explanatory <- function(fit, item,
                               component = c("location", "thresholds")) {
   if (!inherits(fit, "rasch_explanatory"))
     stop("relax_explanatory() needs an explanatory Rasch fit")
+  if (!isTRUE(fit$est$converged))
+    stop("the explanatory calibration did not converge; it cannot be relaxed",
+         call. = FALSE)
+  if (!is.atomic(item) || !is.null(dim(item)) || length(item) != 1L ||
+      is.na(item))
+    stop("`item` must name exactly one item")
+  item <- .explanatory_match_items(item, colnames(fit$X))
+  if (!nzchar(trimws(item))) stop("`item` must name exactly one item")
   component <- match.arg(component)
-  D <- .explanatory_candidate(fit, item, component)
-  add <- .explanatory_addable(fit$est$B, D)
+  D <- .explanatory_addition(
+    fit$est$B, .explanatory_candidate(fit, item, component))
+  add <- ncol(D)
   if (!add)
     stop("that departure is already represented by the active explanatory model")
   B <- cbind(fit$est$B, D)
   spec <- fit$refit_spec
   est <- .pcml_design(fit$X, B, colnames(B), maxit = spec$maxit,
-                      tol = spec$tol)
+                      tol = spec$tol, cluster = fit$person$id)
   if (!isTRUE(est$converged))
     stop("the relaxed explanatory calibration did not converge")
   rel <- fit$explanatory$relaxations
@@ -778,9 +1166,10 @@ relax_explanatory <- function(fit, item,
                     parameters_added = add, stringsAsFactors = FALSE)
   rel <- rbind(rel, new)
   out <- .assemble_fit("PCM", fit$X, est, fit$person$id, fit$factors,
-                       fit$n_groups, spec$adjust_N,
-                       c(fit$notes, sprintf("fixed explanatory departure: %s, %s",
-                         item, tolower(new$component))))
+                       .refit_n_groups(fit),
+                       unique(c(fit$notes, est$notes,
+                         sprintf("fixed explanatory departure: %s, %s",
+                                 item, tolower(new$component)))))
   out$explanatory_model <- fit$explanatory_model
   design <- list(B = fit$explanatory$base_B,
                  matrix = fit$explanatory$model_matrix,
@@ -789,22 +1178,32 @@ relax_explanatory <- function(fit, item,
                  threshold_index = fit$explanatory$threshold_index)
   out <- .explanatory_attach(out, fit$reference_fit, design,
                       fit$explanatory$formula, fit$explanatory$level, rel,
-                      n_groups_requested = fit$n_groups,
-                      adjust_N = spec$adjust_N, maxit = spec$maxit,
-                      tol = spec$tol)
+                      n_groups_requested = .refit_n_groups(fit),
+                      maxit = spec$maxit, tol = spec$tol)
   out$mc <- fit$mc
+  # Relaxation changes restrictions, not response columns or their history.
+  out$split_map <- fit$split_map
+  out$subtest_map <- fit$subtest_map
+  out$subtest_binary <- fit$subtest_binary
   out
 }
 
 .explanatory_inherit_mc <- function(fit, source, inherit,
-                                    exclude = character(0)) {
+                                    exclude = character(0),
+                                    person_rows = seq_len(nrow(source))) {
   if (is.null(fit$mc) || is.null(fit$mc$raw)) return(NULL)
   items <- colnames(source)
   old <- unname(inherit[items])
   keep <- items[old %in% colnames(fit$mc$raw) & !items %in% exclude]
   if (!length(keep)) return(NULL)
   raw <- vapply(keep, function(it) {
-    value <- fit$mc$raw[, unname(inherit[it])]
+    old_item <- unname(inherit[it])
+    old_score <- fit$X[person_rows, old_item]
+    observed <- !is.na(source[, it])
+    if (any(observed & (is.na(old_score) | source[, it] != old_score)))
+      stop("cannot inherit observed multiple-choice answers for changed ",
+           "scores; simulated refits must use inherit_mc = FALSE", call. = FALSE)
+    value <- fit$mc$raw[person_rows, old_item]
     value[is.na(source[, it])] <- NA_character_
     value
   }, character(nrow(source)))
@@ -818,8 +1217,22 @@ relax_explanatory <- function(fit, item,
 
 .explanatory_refit_modified <- function(fit, source, inherit = NULL,
                                         location_relaxed = character(0),
-                                        fully_relaxed = character(0)) {
+                                        fully_relaxed = character(0),
+                                        person_rows = NULL, inherit_mc = TRUE) {
   source <- as.matrix(source)
+  .check_flag(inherit_mc, "inherit_mc")
+  # a source holding a SUBSET of the fitted persons must carry the matching
+  # identifiers and person factors: passing the full-length vectors would
+  # fail on row alignment, and every caller catching that error would report
+  # a failure whose cause is invisible
+  if (is.null(person_rows)) person_rows <- seq_len(nrow(source))
+  if (length(person_rows) != nrow(source))
+    stop("`person_rows` must give one fitted row per row of `source`")
+  if (!is.numeric(person_rows) || is.complex(person_rows) ||
+      !is.null(dim(person_rows)) || !is.null(oldClass(person_rows)) ||
+      any(!is.finite(person_rows)) || any(person_rows != floor(person_rows)) ||
+      any(person_rows < 1L | person_rows > nrow(fit$X)))
+    stop("`person_rows` must contain valid fitted row indices")
   new_items <- colnames(source)
   old_items <- colnames(fit$X)
   if (is.null(inherit))
@@ -858,10 +1271,16 @@ relax_explanatory <- function(fit, item,
   spec <- fit$refit_spec
   out <- rasch_explanatory(source, predictors = pred,
     formula = fit$explanatory$formula, level = level,
-    id = fit$person$id, factors = fit$factors,
-    n_groups = spec$n_groups %||% fit$n_groups,
-    adjust_N = spec$adjust_N %||% NA_real_, maxit = spec$maxit %||% 60,
+    id = fit$person$id[person_rows],
+    factors = if (is.null(fit$factors)) NULL else
+      fit$factors[person_rows, , drop = FALSE],
+    n_groups = .refit_n_groups(fit), maxit = spec$maxit %||% 60,
     tol = spec$tol %||% 1e-8)
+  expected_max <- stats::setNames(fit$m[match(inherit[new_items], old_items)],
+                                  new_items)
+  expected_max[intersect(fully_relaxed, new_items)] <-
+    m_new[intersect(fully_relaxed, new_items)]
+  .require_fitted_score_structure(out, expected_max, "the explanatory refit")
 
   # Preserve prior analyst-approved departures on items that survive or are
   # replaced by inherited copies. A split copy receives the source item's
@@ -893,8 +1312,10 @@ relax_explanatory <- function(fit, item,
         out <- relax_explanatory(out, it, "thresholds")
     }
   }
-  out$mc <- .explanatory_inherit_mc(
-    fit, source, inherit, exclude = unique(fully_relaxed))
+  # Simulated scores have no observed answer-option identities to inherit.
+  out$mc <- if (inherit_mc) .explanatory_inherit_mc(
+    fit, source, inherit, exclude = unique(fully_relaxed),
+    person_rows = person_rows) else NULL
   out
 }
 
@@ -906,6 +1327,10 @@ print.rasch_explanatory <- function(x, ...) {
   cat(sprintf("Conditional calibration: %d explanatory parameter(s), %d fixed departure(s)\n",
               nrow(x$est$coefficients),
               nrow(x$explanatory$relaxations)))
+  if (!isTRUE(x$est$converged)) {
+    cat("Free calibration comparison: unavailable because the explanatory calibration did not converge\n")
+    return(invisible(x))
+  }
   tst <- explanatory_test(x)
   if (tst$df > 0L)
     cat(sprintf("Free calibration comparison: adjusted chi-square %.3f on %d df, p = %s\n",

@@ -1,6 +1,6 @@
 ---
 title: "The Extended Frame of Reference model"
-author: "Josh McGrane"
+author: "Joshua A. McGrane"
 output: rmarkdown::html_vignette
 vignette: >
   %\VignetteIndexEntry{The Extended Frame of Reference model}
@@ -11,6 +11,7 @@ vignette: >
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 options(digits = 4)
+source("precomputed.R")
 ```
 
 ```{r library}
@@ -33,15 +34,24 @@ P(X_{ni}=x)=
 \rho_{sg}=\alpha_s\phi_g .
 \]
 
-The item-set unit is \(\alpha_s\), and the person-group unit is
-\(\phi_g\). The partial credit model holds within each frame in its natural
-unit. Dichotomous items are the one-threshold case.
+Following Humphry and Andrich (2008, eq. 15), the multiplicative parameter
+of a frame is the ratio of the common reference unit to the frame's own unit:
+\(\alpha_s\) carries that ratio for item set \(s\), and \(\phi_g\) for
+person group \(g\). Their geometric means are fixed at one; no observed set
+or group is the reference. A set with \(\alpha_s = 1.3\) has a smaller
+natural unit than the geometric-mean set unit, so its response curves are
+steeper on the common scale. Two observed sets can be compared directly by
+the ratio \(\alpha_s/\alpha_t\). The partial credit model holds within each
+frame in its natural unit; dichotomous items are the one-threshold case.
 
 Use this model when variation in the unit is part of the measurement account.
 Poor fit to an equal-unit model is not by itself evidence for a
 frame-dependent unit.
 
 ## Fit the model
+
+The distributed vignette uses a precomputed fit, including its bootstrap
+uncertainty. The code below reproduces the calculation.
 
 ```{r simulate}
 d <- simulate_efrm(
@@ -52,28 +62,53 @@ d <- simulate_efrm(
   seed = 25
 )
 truth <- attr(d, "truth")
+d$site <- rep(c("A", "B"), length.out = nrow(d))
+d
 ```
 
-```{r fit}
+The simulated data carry the units the fit below has to recover: a set-unit
+ratio of 1.30 and a group-unit ratio of 1.10.
+
+```{r fit, eval = recompute}
 fit <- rasch_efrm(
   d,
   item_sets = truth$item_sets,
   groups = "group",
   id = "id",
-  boot_reps = 30,
-  workers = 1
+  factors = "site",
+  boot_reps = 50,
+  workers = 1,
+  seed = 25
 )
 fit
+```
+
+```{r fit-precomputed, echo = FALSE}
+if (!recompute) {
+  fit <- vignette_result("extended-frame-reference")$fit
+  fit
+}
 ```
 
 The principal model-specific tables are:
 
 ```{r tables}
 fit$phi_table       # person-group units
-fit$alpha_table     # item-set units
+fit$alpha_table     # item-set unit ratios (reference unit / set unit)
 fit$set_table       # linked set locations
 fit$frames          # complete frame units
 fit$linking         # set-linking design
+```
+
+The frame-defining group is part of the model and is not retested as DIF.
+Other person factors can be examined with `dif_anova()`. Its bootstrap
+conditions on each person's subtotal within each observed item set, then
+repeats the Extended Frames fit and the complete DIF analysis. Its familywise
+probabilities refer to the fitted global invariant null.
+
+```{r dif-bootstrap, eval = FALSE}
+dif <- dif_anova(fit)
+dif_bootstrap(fit, dif, B = 999, seed = 2026)$summary
 ```
 
 Person-group units are estimated from common threshold patterns across
@@ -121,7 +156,8 @@ fit_crossed$phi_factorial_tests
 ```
 
 The factorial tables give the GLS decomposition of the estimated log group
-units. They do not replace the frame-level estimates.
+units. Use `p_adj`, which applies Holm's correction across the factorial
+terms, for decisions. The tables do not replace the frame-level estimates.
 
 ## Uncertainty and equal-unit comparisons
 
@@ -142,32 +178,75 @@ completed batches, or cancel the process without replacing the current
 analysis. R scripts can supply `progress` and `cancel` callbacks for the same
 controls.
 
+The fit records the requested, usable and failed bootstrap counts. The requested
+number must exceed the free directions in the largest covariance block used by
+the fit. The stored bootstrap row contains several constrained blocks and is not
+treated as one covariance. Once estimation begins, the linking covariance needs
+at least 30 usable replicates and a majority of those requested; otherwise the
+fit stops. A numerical failure or non-convergence on any supported link
+invalidates the whole replicate. Pairs without enough informative common
+persons can be omitted only if the remaining links connect all sets.
+Full-bootstrap refits with unidentified group units are also discarded.
+The conditional calibration checks the exact likelihood curvature as well as
+the score. Stationary saddles and flat solutions are refused; the same check
+applies to bootstrap refits.
+Saved frame fits without a current likelihood-check record must be refitted
+before reopening in the app. So must an extended frame fit whose stored score
+curves predate the shared design enumeration, since their designs and labels
+are no longer the ones `test_information()` and the curve plots would give.
+Neither refusal alters the source file.
+The alpha--phi cross-covariance has the same usable-draw rule and is
+withheld if it cannot be estimated. A full bootstrap that falls below its
+minimum returns hybrid standard errors instead, retaining its attempted, usable
+and failed counts in `full_boot_reps_*`.
+
 ```{r comparison}
 fit$efrm_vs_rasch$unit_omnibus
 fit$efrm_vs_rasch$unit_tests
 ```
 
-The omnibus Wald tests assess the set- and group-unit families. Individual
-unit contrasts are Holm-adjusted follow-ups. The raw composite-likelihood
-difference is descriptive and compares the group-unit stage only. Set units
-are identified in the linking stage and are assessed by their Wald test.
+The omnibus Wald tests assess the set- and group-unit families. Their
+probabilities are adjusted together by Holm's method. Individual unit
+contrasts form a separate Holm-adjusted follow-up family. The raw
+composite-likelihood difference is descriptive and compares the group-unit
+stage only. Set units are identified in the linking stage and are assessed by
+their Wald test.
+`compare_fits()` withholds generic likelihood differences involving EFRM:
+its calibration likelihood uses within-set pairs, whereas ordinary PCM also
+uses cross-set pairs. The matched group-unit comparison is retained in
+`fit$efrm_vs_rasch`.
 Probabilities require at least 50 persons or effective persons in every group
-and at least 50 common persons on every set-link edge. Sparse designs retain
-the unit estimates without an inferential probability.
+and a path between each pair of sets whose links each have at least 50
+informative common persons. A person
+at the same extreme tail in both sets remains in the likelihood but does not
+count as link support. Sparse designs retain the unit estimates without an
+inferential probability.
 
-Simulation under normal, bimodal and deliberately different group
+Two-set simulations under normal, bimodal and deliberately different group
 distributions gave set-unit bias within 0.004 log-units, empirical-to-reported
 SE ratios from 0.97 to 1.05, and null rejection from 4.0 to 5.0 per cent for
 the hybrid method. The complete person bootstrap was mildly conservative in
 the corresponding null design. Sets with only three dichotomous items were
-not identified; four-item sets were recovered without bias.
+not identified; four-item sets were recovered without bias in adequately
+supported samples.
+
+A separate null study checked the complete decision families. With 200
+persons per group and six items per set, 489 of 500 fits were analysed. The
+Holm familywise rejection rates were 3.5 per cent for the omnibus tests and
+1.6 per cent for the individual unit contrasts. A boundary design with 100
+persons per group and four items per set refused 493 of 1,000 fits and did not
+converge in another 24. Among the 483 analysed fits, the corresponding rates
+were 5.2 and 2.5 per cent. A design should not be used merely because it is
+formally identifiable.
 
 ## Item invariance across frames
 
 The fitted EFRM gives an item one location across its frames, scaled by the
 frame unit. `frame_invariance()` examines that restriction by calibrating
-each frame separately. Each compared frame needs at least 50 persons with two
-or more responses. Items with weak separate-frame standard errors are excluded
+each frame separately. Each compared set and frame needs at least 50 distinct
+persons contributing an informative item pair: not both zero or both at their
+item maxima after any item removal or category recoding in that frame's
+separate calibration. Items with weak separate-frame standard errors are excluded
 from the comparison.
 
 For frame \(f\), the common-scale item location is
@@ -189,7 +268,10 @@ inv$locations
 inv$discrimination
 ```
 
-A person-within-frame bootstrap includes uncertainty in the fitted units:
+A whole-person bootstrap within person group retains each sampled row's
+item-set response pattern and includes uncertainty in the fitted units. A
+replicate is used only if it retains the same item-comparison family, and
+therefore the same centred frame origin, as the observed analysis:
 
 ```{r invariance-bootstrap, eval = FALSE}
 inv_boot <- frame_invariance(
@@ -227,6 +309,8 @@ items provide the defensible reference.
 continues to contribute to person measurement but no longer links those
 frames. `drop_items()` removes it. Both functions refit the model and update
 the frame, item and person estimates.
+Each set must retain common items linking its groups' origins; a unit link
+through another set is not sufficient.
 
 ```{r repair, eval = FALSE}
 resolved <- resolve_frames(fit, "S1I02")

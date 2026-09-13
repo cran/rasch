@@ -29,13 +29,18 @@ frame but no longer constrains the link between those frames. Its versions
 are named \code{"item (frame)"}. The remaining common items and the linked
 set design must still identify the frame units; otherwise the refit is
 refused by the model's connectivity and rank checks.
+Each set must also retain links between its groups of item versions to
+identify their relative origins. A unit link supplied by another set
+cannot replace these origin links.
 
 Resolve an item when its within-frame measurement remains defensible but
 its cross-frame location does not. This refit does not estimate a separate
 discrimination and therefore does not resolve a discrimination-only flag
 from \code{\link{frame_invariance}}. Review or remove such an item instead.
 Use \code{\link{drop_items}} when the item should no longer contribute to
-measurement.
+measurement. Each resolved version must observe every score category of the
+source item. If it does not, the refit is refused rather than renumbering
+that frame's scores.
 }
 \examples{
 d <- simulate_efrm(n_per_group = 200, items_per_set = 6, n_sets = 2,

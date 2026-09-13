@@ -12,6 +12,7 @@ test_that("anchored estimation holds anchors and recovers the uncentred scale", 
   est <- fit$thresholds$tau
   expect_identical(est[c(1, 10)], dtrue[c(1, 10)])
   expect_identical(fit$thresholds$se[c(1, 10)], c(0, 0))
+  expect_equal(fit$isi$n, 8L)
   expect_lt(sqrt(mean((est[-c(1, 10)] - dtrue[-c(1, 10)])^2)), 0.15)
   # person measures land on the anchored (uncentred) metric
   expect_equal(mean(fit$person$theta, na.rm = TRUE), 0.7, tolerance = 0.15)
@@ -19,6 +20,97 @@ test_that("anchored estimation holds anchors and recovers the uncentred scale", 
                      anchors = data.frame(item = "I01", k = 1, tau = 0)),
                "PCM only")
   expect_error(rasch(X, anchors = data.frame(item = "NOPE", k = 1, tau = 0)))
+})
+
+test_that("average item anchoring shifts the free calibration onto the anchor origin", {
+  set.seed(4); N <- 500
+  dtrue <- seq(-1.6, 1.6, length.out = 8) + 0.7
+  X <- matrix(rbinom(N * 8, 1, plogis(outer(rnorm(N), dtrue, "-"))), N, 8)
+  colnames(X) <- sprintf("I%02d", 1:8)
+  free <- rasch(X)
+  anc <- data.frame(item = c("I01", "I02", "I03"), k = NA,
+                    tau = dtrue[1:3] + c(0.1, -0.1, 0), average = TRUE)
+  fit <- rasch(X, anchors = anc)
+  # RUMM's average item anchoring: the anchor items' mean location sits at
+  # the mean anchor value, and every item keeps its free relative position
+  expect_equal(mean(fit$items$location[1:3]), mean(anc$tau), tolerance = 1e-9)
+  shift <- mean(anc$tau) - mean(free$items$location[1:3])
+  expect_equal(fit$thresholds$tau, free$thresholds$tau + shift, tolerance = 1e-9)
+  expect_equal(fit$person$theta, free$person$theta + shift, tolerance = 1e-8)
+  # no item is fixed: the anchors keep a sampling variance on the new origin
+  expect_true(all(fit$items$se[1:3] > 0))
+  expect_false(any(fit$thresholds$anchored))
+  expect_equal(fit$isi$n, ncol(X))
+  expect_match(paste(fit$notes, collapse = " "), "average location of 3 anchor")
+  # the covariance follows the re-identification, so the anchor mean has
+  # (numerically) no variance while the other items keep theirs
+  a <- rep(0, 8); a[1:3] <- 1 / 3
+  expect_lt(abs(drop(t(a) %*% fit$est$cov_tau %*% a)), 1e-12)
+  expect_gt(fit$est$cov_tau[8, 8], 0)
+  # an average = FALSE column is the ordinary table
+  expect_equal(rasch(X, anchors = transform(anc[1, ], average = FALSE))$items$se[1], 0)
+  expect_error(rasch(X, anchors = transform(anc, average = c(TRUE, TRUE, FALSE))),
+               "whole anchor set")
+  expect_error(rasch(X, anchors = transform(anc, k = c(1, NA, NA))),
+               "k = NA")
+  expect_error(rasch(X, anchors = transform(anc, average = c(TRUE, NA, TRUE))),
+               "TRUE or FALSE")
+  # the anchor set survives an item drop and a bootstrap refit
+  fd <- drop_items(fit, "I08")
+  expect_equal(mean(fd$items$location[1:3]), mean(anc$tau), tolerance = 1e-9)
+})
+
+test_that("average anchoring is a pure re-identification with mixed score ranges", {
+  set.seed(9301)
+  m <- c(1L, 2L, 3L, 2L, 1L, 3L, 2L, 3L)
+  location <- seq(-1.4, 1.4, length.out = length(m)) + 0.4
+  tau <- Map(function(mi, di)
+    di + if (mi == 1L) 0 else seq(-0.7, 0.7, length.out = mi),
+    m, location)
+  theta <- rnorm(800, 0.4, 1.1)
+  draw <- function(th, tt) vapply(th, function(z) {
+    score <- 0:length(tt)
+    lp <- score * z - c(0, cumsum(tt))
+    sample(score, 1L, prob = exp(lp - max(lp)))
+  }, 0L)
+  X <- sapply(tau, function(tt) draw(theta, tt))
+  colnames(X) <- sprintf("I%02d", seq_along(m))
+
+  free <- rasch(X)
+  anchors <- data.frame(item = c("I01", "I04", "I07"), k = NA_real_,
+                        tau = c(-0.8, 0.2, 1.1), average = TRUE)
+  anchored <- rasch(X, anchors = anchors)
+  shift <- mean(anchors$tau) -
+    mean(free$items$location[match(anchors$item, free$items$item)])
+
+  expect_equal(anchored$thresholds$tau, free$thresholds$tau + shift,
+               tolerance = 1e-9)
+  expect_equal(anchored$person$theta, free$person$theta + shift,
+               tolerance = 1e-7)
+  expect_equal(anchored$est$loglik, free$est$loglik, tolerance = 1e-9)
+  expect_equal(mean(anchored$items$location[
+    match(anchors$item, anchored$items$item)]), mean(anchors$tau),
+    tolerance = 1e-9)
+})
+
+test_that("tailored step 3 equates the origin by average item anchoring", {
+  set.seed(5); N <- 600
+  d0 <- seq(-2, 2.5, length.out = 10); th <- rnorm(N)
+  X <- matrix(rbinom(N * 10, 1, 0.25 + 0.75 * plogis(outer(th, d0, "-"))), N, 10)
+  colnames(X) <- paste0("I", 1:10)
+  fit <- rasch(X)
+  ta <- tailored_analysis(fit, chance = 0.25)
+  tab <- ta$table
+  anc <- tab$item %in% ta$anchor_items
+  # the origin-equated calibration is the initial one moved onto the
+  # tailored origin: the anchor items themselves are not held fixed
+  shift <- mean(tab$tailored[anc]) - mean(tab$initial[anc])
+  expect_equal(tab$origin_equated, tab$initial + shift, tolerance = 1e-9)
+  expect_equal(mean(tab$origin_equated[anc]), mean(tab$tailored[anc]),
+               tolerance = 1e-9)
+  expect_false(all(tab$shift[anc] == 0))
+  expect_equal(sum(tab$shift[anc]), 0, tolerance = 1e-9)
+  expect_true(all(ta$origin_equated$items$se > 0))
 })
 
 test_that("MFRM recovers facet severities and item locations", {
@@ -50,6 +142,11 @@ test_that("MFRM recovers facet severities and item locations", {
   # the full diagnostic object works at the virtual-item level
   expect_equal(ncol(fit$residuals), 20)
   expect_false(is.na(fit$psi$PSI))
+  no_se <- fit
+  no_se$facet_effects$rater$se[1L] <- NA_real_
+  grDevices::pdf(NULL)
+  expect_no_error(plot_facets(no_se, "rater"))
+  grDevices::dev.off()
 })
 
 test_that("MFRM flags an erratic rater through pooled fit", {
@@ -90,6 +187,25 @@ test_that("the -1 missing-data code matches NA exactly", {
   expect_equal(sum(is.na(f_keep$X)), length(miss))
 })
 
+test_that("text missing codes are removed before score conversion", {
+  set.seed(19)
+  X <- matrix(rbinom(360 * 6, 1, .5), 360, 6,
+              dimnames = list(NULL, paste0("I", 1:6)))
+  hit <- c(11L, 208L, 907L)
+  Xna <- X
+  Xna[hit] <- NA
+  Xcode <- matrix(as.character(X), nrow(X), dimnames = dimnames(X))
+  Xcode[hit] <- c("09", ".", "1.5")
+
+  f_na <- rasch(Xna)
+  f_code <- rasch(Xcode, na_codes = c("09", ".", "1.5"))
+  expect_equal(f_code$X, f_na$X)
+  expect_equal(f_code$items$location, f_na$items$location,
+               tolerance = 1e-10)
+  expect_true(any(grepl("3 cell(s) with a missing-data code",
+                        f_code$notes, fixed = TRUE)))
+})
+
 test_that("MFRM honours the -1 missing code", {
   set.seed(2)
   simP <- function(th, tau) { x <- 0:length(tau); p <- exp(x * th - c(0, cumsum(tau))); p / sum(p) }
@@ -109,6 +225,37 @@ test_that("MFRM honours the -1 missing code", {
                f_code$facet_effects$rater$severity, tolerance = 1e-8)
 })
 
+test_that("MFRM honours text missing codes in long and wide data", {
+  d <- simulate_mfrm(45, 3, 3, seed = 29)
+  hit <- c(4L, 57L, 211L)
+  d_na <- d
+  d_na$score[hit] <- NA
+  d_code <- d
+  d_code$score <- as.character(d_code$score)
+  d_code$score[hit] <- c("09", ".", "1.5")
+  f_na <- rasch_mfrm(d_na, "person", "item", "score", facets = "rater")
+  f_code <- rasch_mfrm(d_code, "person", "item", "score", facets = "rater",
+                       na_codes = c("09", ".", "1.5"))
+  expect_equal(f_code$facet_effects$rater$severity,
+               f_na$facet_effects$rater$severity, tolerance = 1e-8)
+
+  wide <- reshape(d, idvar = c("person", "rater"), timevar = "item",
+                  direction = "wide")
+  names(wide) <- sub("^score\\.", "", names(wide))
+  item_names <- paste0("I", 1:3)
+  wide_na <- wide
+  wide_na[1L, item_names[1L]] <- NA
+  wide_code <- wide
+  wide_code[[item_names[1L]]] <- as.character(wide_code[[item_names[1L]]])
+  wide_code[1L, item_names[1L]] <- "."
+  fw_na <- rasch_mfrm(wide_na, person = "person", facets = "rater",
+                      items = item_names)
+  fw_code <- rasch_mfrm(wide_code, person = "person", facets = "rater",
+                        items = item_names, na_codes = ".")
+  expect_equal(fw_code$facet_effects$rater$severity,
+               fw_na$facet_effects$rater$severity, tolerance = 1e-8)
+})
+
 test_that("Guttman reproducibility is high for near-deterministic data", {
   set.seed(11); Np <- 300; L <- 10
   d <- seq(-3, 3, length.out = L)
@@ -122,6 +269,9 @@ test_that("Guttman reproducibility is high for near-deterministic data", {
   expect_equal(dim(g$matrix), c(Np, L))
   # items ordered easy to hard across columns
   expect_equal(colnames(g$matrix), rasch(X)$items$item[order(rasch(X)$items$location)])
+  failed <- rasch(X)
+  failed$est$converged <- FALSE
+  expect_error(guttman_table(failed), "did not converge")
 })
 
 test_that("the whole-item Guttman display rejects polytomous scales", {
@@ -152,6 +302,9 @@ test_that("subtests absorb local dependence", {
   fl2 <- residual_correlations(fit2, flag = 0.2)$flagged
   expect_false(any(grepl("U04", fl2$item_a) | grepl("U04", fl2$item_b)))
   expect_true(any(grepl("subtest formed", fit2$notes)))
+  fit_factor <- combine_items(fit, list(factor(c("U04", "U05"))))
+  expect_equal(fit_factor$X[, "U04+U05"],
+               rowSums(fit$X[, c("U04", "U05"), drop = FALSE]))
   expect_error(combine_items(fit, list("U01")), "at least two")
   expect_error(combine_items(fit, list(c("U01", "ZZ"))), "not in the fit")
 })

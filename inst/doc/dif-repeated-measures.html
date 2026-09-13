@@ -10,7 +10,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-<meta name="author" content="Josh McGrane" />
+<meta name="author" content="Joshua A. McGrane" />
 
 
 <title>DIF with several person factors and repeated measures</title>
@@ -340,7 +340,7 @@ code > span.er { color: #a61717; background-color: #e3d2d2; }
 
 <h1 class="title toc-ignore">DIF with several person factors and
 repeated measures</h1>
-<h4 class="author">Josh McGrane</h4>
+<h4 class="author">Joshua A. McGrane</h4>
 
 
 
@@ -388,7 +388,18 @@ interaction.</p>
 <span id="cb2-20"><a href="#cb2-20" tabindex="-1"></a>  X,</span>
 <span id="cb2-21"><a href="#cb2-21" tabindex="-1"></a>  <span class="at">group =</span> <span class="fu">rep</span>(group, <span class="dv">2</span>),</span>
 <span id="cb2-22"><a href="#cb2-22" tabindex="-1"></a>  <span class="at">occasion =</span> <span class="fu">rep</span>(<span class="fu">c</span>(<span class="st">&quot;T1&quot;</span>, <span class="st">&quot;T2&quot;</span>), <span class="at">each =</span> N)</span>
-<span id="cb2-23"><a href="#cb2-23" tabindex="-1"></a>)</span></code></pre></div>
+<span id="cb2-23"><a href="#cb2-23" tabindex="-1"></a>)</span>
+<span id="cb2-24"><a href="#cb2-24" tabindex="-1"></a></span>
+<span id="cb2-25"><a href="#cb2-25" tabindex="-1"></a><span class="co"># the same three persons at each occasion: the identifier repeats down the</span></span>
+<span id="cb2-26"><a href="#cb2-26" tabindex="-1"></a><span class="co"># rows, which is what makes the design repeated measures</span></span>
+<span id="cb2-27"><a href="#cb2-27" tabindex="-1"></a>dat[<span class="fu">c</span>(<span class="dv">1</span><span class="sc">:</span><span class="dv">3</span>, N <span class="sc">+</span> <span class="dv">1</span><span class="sc">:</span><span class="dv">3</span>), <span class="fu">c</span>(<span class="st">&quot;pid&quot;</span>, <span class="st">&quot;I01&quot;</span>, <span class="st">&quot;I02&quot;</span>, <span class="st">&quot;I03&quot;</span>, <span class="st">&quot;group&quot;</span>, <span class="st">&quot;occasion&quot;</span>)]</span>
+<span id="cb2-28"><a href="#cb2-28" tabindex="-1"></a><span class="co">#&gt;      pid I01 I02 I03 group occasion</span></span>
+<span id="cb2-29"><a href="#cb2-29" tabindex="-1"></a><span class="co">#&gt; 1   P001   1   1   0     A       T1</span></span>
+<span id="cb2-30"><a href="#cb2-30" tabindex="-1"></a><span class="co">#&gt; 2   P002   1   1   1     A       T1</span></span>
+<span id="cb2-31"><a href="#cb2-31" tabindex="-1"></a><span class="co">#&gt; 3   P003   1   1   1     A       T1</span></span>
+<span id="cb2-32"><a href="#cb2-32" tabindex="-1"></a><span class="co">#&gt; 321 P001   0   1   0     A       T2</span></span>
+<span id="cb2-33"><a href="#cb2-33" tabindex="-1"></a><span class="co">#&gt; 322 P002   1   1   0     A       T2</span></span>
+<span id="cb2-34"><a href="#cb2-34" tabindex="-1"></a><span class="co">#&gt; 323 P003   1   1   1     A       T2</span></span></code></pre></div>
 </div>
 <div id="fit-once-and-test-both-factors" class="section level2">
 <h2>Fit once and test both factors</h2>
@@ -402,6 +413,13 @@ Greenhouse–Geisser correction when a factor has more than two levels.
 This mixed-design analysis extends the single-factor residual analysis
 of variance described by Andrich and Marais (2019). Its F references are
 large-sample approximations.</p>
+<p>With incomplete panels, between-person tests fit the occasion and
+person factors jointly, giving each person total weight one. They use
+person-cluster CR3 covariance for both uniform and non-uniform terms,
+including uncertainty in the occasion adjustment. This avoids confusing
+unequal occasion coverage with differences in the composition of the
+person groups. Within-person contrasts still require complete
+panels.</p>
 <div class="sourceCode" id="cb3"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">rasch</span>(dat, <span class="at">id =</span> <span class="st">&quot;pid&quot;</span>, <span class="at">factors =</span> <span class="fu">c</span>(<span class="st">&quot;group&quot;</span>, <span class="st">&quot;occasion&quot;</span>),</span>
 <span id="cb3-2"><a href="#cb3-2" tabindex="-1"></a>             <span class="at">items =</span> <span class="fu">sprintf</span>(<span class="st">&quot;I%02d&quot;</span>, <span class="dv">1</span><span class="sc">:</span><span class="dv">8</span>))</span>
 <span id="cb3-3"><a href="#cb3-3" tabindex="-1"></a>da <span class="ot">&lt;-</span> <span class="fu">dif_anova</span>(fit, <span class="at">within =</span> <span class="st">&quot;occasion&quot;</span>, <span class="at">effects =</span> <span class="st">&quot;factorial&quot;</span>, <span class="at">sizes =</span> <span class="cn">TRUE</span>)</span>
@@ -491,6 +509,35 @@ but the <code>superseded</code> flag records that the interaction
 absorbs it, and the follow-ups report the interaction rather than its
 components. Read adjusted probabilities with effect sizes before
 changing an item.</p>
+<p><code>dif_bootstrap()</code> repeats this design under the fitted
+invariant model. Ordinary and explanatory Rasch models and Multiple
+Ratings condition on each person’s score. Extended Frames conditions
+within each item set, where the frame unit is common. Comparative
+Judgement instead draws outcomes from its fitted model while retaining
+judges and the comparison design. Every replicate repeats the
+calibration and the full DIF family. The result is a sensitivity
+analysis; the adjusted residual ANOVA remains primary. Its familywise
+probabilities describe the fitted global invariant null, not otherwise
+invariant items when another item has DIF.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a>db <span class="ot">&lt;-</span> <span class="fu">dif_bootstrap</span>(fit, da, <span class="at">B =</span> <span class="dv">999</span>, <span class="at">workers =</span> <span class="dv">4</span>, <span class="at">seed =</span> <span class="dv">2026</span>)</span>
+<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a>db<span class="sc">$</span>summary[, <span class="fu">c</span>(<span class="st">&quot;item&quot;</span>, <span class="st">&quot;term&quot;</span>, <span class="st">&quot;p_uniform_boot_adj&quot;</span>,</span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a>               <span class="st">&quot;p_nonuniform_boot_adj&quot;</span>)]</span></code></pre></div>
+<p>In a four-occasion validation study, familywise error under the
+balanced Rasch null was 6.9% for the primary analysis and 4.9% for the
+bootstrap over 350 datasets. For uniform occasion DIF the bootstrap was
+slightly less powerful than the primary analysis. Adjusted non-uniform
+power was weak for both procedures in this seven-item, 180-person
+design. The bootstrap therefore remains a sensitivity analysis rather
+than the default test.</p>
+<p>The earlier panel-loss results used the superseded marginal
+adjustment. For the current joint adjustment, a known-residual study
+with correlated person factors and unequal panels gave uniform and
+non-uniform null rejection rates of 5.7% and 5.3% over 3,000 replicates
+(Monte Carlo SEs 0.42 and 0.41 percentage points). A separate end-to-end
+Rasch check gave 3.0% over 200 datasets for a null group effect on an
+item carrying DIF for another factor. These checks assess the primary
+tests, not the full bootstrap family’s error rate under every
+incomplete-panel design.</p>
 </div>
 <div id="quantify-the-departure" class="section level2">
 <h2>Quantify the departure</h2>
@@ -499,42 +546,41 @@ size of the departure in logits. <code>dif_size</code> resolves an item
 by a between-person factor. <code>dif_contrasts</code> provides planned
 contrasts and uses person-level differencing for within-person
 questions.</p>
-<div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a><span class="fu">dif_size</span>(fit, <span class="st">&quot;I03&quot;</span>, <span class="at">by =</span> <span class="st">&quot;group&quot;</span>)</span>
-<span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a><span class="co">#&gt; DIF size for I03 by group (resolved locations, logits)</span></span>
-<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a><span class="co">#&gt;  level location se weak   n</span></span>
-<span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a><span class="co">#&gt;      A   -0.518       0 320</span></span>
-<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a><span class="co">#&gt;      B    0.227       0 320</span></span>
-<span id="cb4-6"><a href="#cb4-6" tabindex="-1"></a><span class="co">#&gt;  level_a level_b difference se z p p_adj lower upper significant practical  ets</span></span>
-<span id="cb4-7"><a href="#cb4-7" tabindex="-1"></a><span class="co">#&gt;        A       B     -0.745                                        &gt;= 0.50 &lt;NA&gt;</span></span>
-<span id="cb4-8"><a href="#cb4-8" tabindex="-1"></a><span class="co">#&gt;  signed_area</span></span>
-<span id="cb4-9"><a href="#cb4-9" tabindex="-1"></a><span class="co">#&gt;             </span></span>
-<span id="cb4-10"><a href="#cb4-10" tabindex="-1"></a><span class="co">#&gt; p adjusted by holm over 1 pairwise comparison(s); practical criterion 0.50 logits</span></span>
-<span id="cb4-11"><a href="#cb4-11" tabindex="-1"></a><span class="co">#&gt; notes: person identifiers repeat across response rows: resolved point differences remain descriptive, but sampling SEs, confidence intervals and Wald tests are withheld; use dif_contrasts for person-level inference or a whole-person bootstrap</span></span>
-<span id="cb4-12"><a href="#cb4-12" tabindex="-1"></a>dc <span class="ot">&lt;-</span> <span class="fu">dif_contrasts</span>(fit, <span class="at">items =</span> <span class="fu">c</span>(<span class="st">&quot;I03&quot;</span>, <span class="st">&quot;I06&quot;</span>), <span class="at">within =</span> <span class="st">&quot;occasion&quot;</span>)</span>
-<span id="cb4-13"><a href="#cb4-13" tabindex="-1"></a>dc<span class="sc">$</span>table</span>
-<span id="cb4-14"><a href="#cb4-14" tabindex="-1"></a><span class="co">#&gt;  item                         contrast within estimate se statistic      df</span></span>
-<span id="cb4-15"><a href="#cb4-15" tabindex="-1"></a><span class="co">#&gt;   I03                     group: B - A           0.737        4.044 316.916</span></span>
-<span id="cb4-16"><a href="#cb4-16" tabindex="-1"></a><span class="co">#&gt;   I03                occasion: T2 - T1      *   -0.258       -0.876 313.935</span></span>
-<span id="cb4-17"><a href="#cb4-17" tabindex="-1"></a><span class="co">#&gt;   I03 group(B - A) x occasion(T2 - T1)      *   -0.258       -1.397 313.935</span></span>
-<span id="cb4-18"><a href="#cb4-18" tabindex="-1"></a><span class="co">#&gt;   I06                     group: B - A          -0.434       -2.138 308.822</span></span>
-<span id="cb4-19"><a href="#cb4-19" tabindex="-1"></a><span class="co">#&gt;   I06                occasion: T2 - T1      *    0.906        4.438 298.364</span></span>
-<span id="cb4-20"><a href="#cb4-20" tabindex="-1"></a><span class="co">#&gt;   I06 group(B - A) x occasion(T2 - T1)      *    0.134        1.220 298.364</span></span>
-<span id="cb4-21"><a href="#cb4-21" tabindex="-1"></a><span class="co">#&gt;        p   p_adj lower upper significant practical</span></span>
-<span id="cb4-22"><a href="#cb4-22" tabindex="-1"></a><span class="co">#&gt;  &lt; 0.001 &lt; 0.001                       *         *</span></span>
-<span id="cb4-23"><a href="#cb4-23" tabindex="-1"></a><span class="co">#&gt;    0.382   0.490                                  </span></span>
-<span id="cb4-24"><a href="#cb4-24" tabindex="-1"></a><span class="co">#&gt;    0.163   0.490                                  </span></span>
-<span id="cb4-25"><a href="#cb4-25" tabindex="-1"></a><span class="co">#&gt;    0.033   0.133                                  </span></span>
-<span id="cb4-26"><a href="#cb4-26" tabindex="-1"></a><span class="co">#&gt;  &lt; 0.001 &lt; 0.001                       *         *</span></span>
-<span id="cb4-27"><a href="#cb4-27" tabindex="-1"></a><span class="co">#&gt;    0.223   0.490</span></span>
-<span id="cb4-28"><a href="#cb4-28" tabindex="-1"></a>da<span class="sc">$</span>posthoc</span>
-<span id="cb4-29"><a href="#cb4-29" tabindex="-1"></a><span class="co">#&gt;  item           term item.1        contrast within estimate se statistic</span></span>
-<span id="cb4-30"><a href="#cb4-30" tabindex="-1"></a><span class="co">#&gt;   I03          group    I03           B - A           0.737        4.044</span></span>
-<span id="cb4-31"><a href="#cb4-31" tabindex="-1"></a><span class="co">#&gt;   I05 group:occasion    I05 B - A x T2 - T1      *    2.140        5.137</span></span>
-<span id="cb4-32"><a href="#cb4-32" tabindex="-1"></a><span class="co">#&gt;   I06       occasion    I06         T2 - T1      *    0.906        4.438</span></span>
-<span id="cb4-33"><a href="#cb4-33" tabindex="-1"></a><span class="co">#&gt;       df       p   p_adj lower upper significant practical</span></span>
-<span id="cb4-34"><a href="#cb4-34" tabindex="-1"></a><span class="co">#&gt;  316.916 &lt; 0.001 &lt; 0.001                       *         *</span></span>
-<span id="cb4-35"><a href="#cb4-35" tabindex="-1"></a><span class="co">#&gt;  317.916 &lt; 0.001 &lt; 0.001                       *         *</span></span>
-<span id="cb4-36"><a href="#cb4-36" tabindex="-1"></a><span class="co">#&gt;  298.364 &lt; 0.001 &lt; 0.001                       *         *</span></span></code></pre></div>
+<div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a><span class="fu">dif_size</span>(fit, <span class="st">&quot;I03&quot;</span>, <span class="at">by =</span> <span class="st">&quot;group&quot;</span>)</span>
+<span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a><span class="co">#&gt; DIF size for I03 by group (resolved locations, logits)</span></span>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a><span class="co">#&gt;  level location    se weak   n</span></span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a><span class="co">#&gt;      A   -0.518 0.129    0 160</span></span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a><span class="co">#&gt;      B    0.227 0.128    0 160</span></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a><span class="co">#&gt;  level_a level_b difference    se      t  df       p   p_adj  lower  upper</span></span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a><span class="co">#&gt;        A       B     -0.745 0.203 -3.667 316 &lt; 0.001 &lt; 0.001 -1.145 -0.345</span></span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a><span class="co">#&gt;  significant practical p_beyond_A p_beyond_A_adj ets signed_area</span></span>
+<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a><span class="co">#&gt;            *   &gt;= 0.50      0.058          0.058  B-            </span></span>
+<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a><span class="co">#&gt; p adjusted by holm over 1 pairwise comparison(s); practical criterion 0.50 logits</span></span>
+<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a>dc <span class="ot">&lt;-</span> <span class="fu">dif_contrasts</span>(fit, <span class="at">items =</span> <span class="fu">c</span>(<span class="st">&quot;I03&quot;</span>, <span class="st">&quot;I06&quot;</span>), <span class="at">within =</span> <span class="st">&quot;occasion&quot;</span>)</span>
+<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a>dc<span class="sc">$</span>table</span>
+<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a><span class="co">#&gt;  item                         contrast within estimate se statistic      df</span></span>
+<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a><span class="co">#&gt;   I03                     group: B - A           0.737        4.044 316.916</span></span>
+<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a><span class="co">#&gt;   I03                occasion: T2 - T1      *   -0.258       -0.876 313.935</span></span>
+<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a><span class="co">#&gt;   I03 group(B - A) x occasion(T2 - T1)      *   -0.258       -1.397 313.935</span></span>
+<span id="cb5-17"><a href="#cb5-17" tabindex="-1"></a><span class="co">#&gt;   I06                     group: B - A          -0.434       -2.138 308.822</span></span>
+<span id="cb5-18"><a href="#cb5-18" tabindex="-1"></a><span class="co">#&gt;   I06                occasion: T2 - T1      *    0.906        4.438 298.364</span></span>
+<span id="cb5-19"><a href="#cb5-19" tabindex="-1"></a><span class="co">#&gt;   I06 group(B - A) x occasion(T2 - T1)      *    0.134        1.220 298.364</span></span>
+<span id="cb5-20"><a href="#cb5-20" tabindex="-1"></a><span class="co">#&gt;        p   p_adj lower upper significant practical</span></span>
+<span id="cb5-21"><a href="#cb5-21" tabindex="-1"></a><span class="co">#&gt;  &lt; 0.001 &lt; 0.001                       *         *</span></span>
+<span id="cb5-22"><a href="#cb5-22" tabindex="-1"></a><span class="co">#&gt;    0.382   0.490                                  </span></span>
+<span id="cb5-23"><a href="#cb5-23" tabindex="-1"></a><span class="co">#&gt;    0.163   0.490                                  </span></span>
+<span id="cb5-24"><a href="#cb5-24" tabindex="-1"></a><span class="co">#&gt;    0.033   0.133                                  </span></span>
+<span id="cb5-25"><a href="#cb5-25" tabindex="-1"></a><span class="co">#&gt;  &lt; 0.001 &lt; 0.001                       *         *</span></span>
+<span id="cb5-26"><a href="#cb5-26" tabindex="-1"></a><span class="co">#&gt;    0.223   0.490</span></span>
+<span id="cb5-27"><a href="#cb5-27" tabindex="-1"></a>da<span class="sc">$</span>posthoc</span>
+<span id="cb5-28"><a href="#cb5-28" tabindex="-1"></a><span class="co">#&gt;  item           term item.1        contrast within estimate se statistic</span></span>
+<span id="cb5-29"><a href="#cb5-29" tabindex="-1"></a><span class="co">#&gt;   I03          group    I03           B - A           0.737        4.044</span></span>
+<span id="cb5-30"><a href="#cb5-30" tabindex="-1"></a><span class="co">#&gt;   I05 group:occasion    I05 B - A x T2 - T1      *    2.140        5.137</span></span>
+<span id="cb5-31"><a href="#cb5-31" tabindex="-1"></a><span class="co">#&gt;   I06       occasion    I06         T2 - T1      *    0.906        4.438</span></span>
+<span id="cb5-32"><a href="#cb5-32" tabindex="-1"></a><span class="co">#&gt;       df       p   p_adj lower upper significant practical</span></span>
+<span id="cb5-33"><a href="#cb5-33" tabindex="-1"></a><span class="co">#&gt;  316.916 &lt; 0.001 &lt; 0.001                       *         *</span></span>
+<span id="cb5-34"><a href="#cb5-34" tabindex="-1"></a><span class="co">#&gt;  317.916 &lt; 0.001 &lt; 0.001                       *         *</span></span>
+<span id="cb5-35"><a href="#cb5-35" tabindex="-1"></a><span class="co">#&gt;  298.364 &lt; 0.001 &lt; 0.001                       *         *</span></span></code></pre></div>
 <p><code>dif_posthoc()</code> is the general follow-up for a significant
 term. A main effect with more than two levels is reported as pairwise
 marginal differences over the other fitted factors. An interaction is
@@ -551,11 +597,11 @@ residual contrast scores with the same design-cell weights as the
 resolved estimate. Other fitted factors are averaged equally over their
 complete cells, including when their sample sizes differ, and the
 independent between-person cells use a Welch–Satterthwaite reference.
-The resolved logit difference remains the magnitude, but its
-row-independent calibration covariance is not a repeated-measures
-standard error; the package therefore withholds the logit SE and
-interval in this case. The fitted person identifier is used unless
-<code>id</code> is supplied explicitly.</p>
+The resolved logit difference remains the magnitude. Its standard error
+uses the person-clustered calibration covariance, whereas
+<code>dif_contrasts()</code> tests a nominated within-person comparison
+directly from person-level contrasts. The fitted person identifier is
+used unless <code>id</code> is supplied explicitly.</p>
 <p>For a many-facet fit, follow-ups may name the underlying item; its
 virtual facet cells are pooled with common weights so facet severity
 cancels from the group contrast. Extended-frame fits support the

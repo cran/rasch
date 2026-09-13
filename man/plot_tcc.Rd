@@ -4,7 +4,7 @@
 \alias{plot_tcc}
 \title{Plot the test characteristic curve}
 \usage{
-plot_tcc(fit, grid = seq(-6, 6, 0.05))
+plot_tcc(fit, grid = NULL)
 }
 \arguments{
 \item{fit}{A fitted object from \code{\link{rasch}}.}
@@ -16,7 +16,8 @@ Called for its plotting side effect; invisibly \code{NULL}.
 }
 \description{
 Expected total score against person location. Structural fits draw one
-curve for each administrable frame or facet design.
+curve for each observed item pattern within the frame or facet design,
+as defined by \code{\link{test_information}}.
 }
 \examples{
 set.seed(1)

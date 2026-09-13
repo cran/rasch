@@ -60,6 +60,7 @@ test_that("an item with no variation has no discrimination", {
 })
 
 test_that("frame_invariance results print without scientific notation", {
+  skip_on_cran()
   # every other analysis entry point tags its tables; this one did not, so a
   # user reading inv$locations saw the exponents print.rasch_table removes
   d <- simulate_efrm(n_per_group = 300, items_per_set = 6, n_sets = 2,
@@ -74,11 +75,16 @@ test_that("frame_invariance results print without scientific notation", {
   expect_false(any(grepl("e[-+][0-9]", capture.output(print(inv$locations)))))
   # the returned elements match what the documentation claims
   expect_setequal(names(inv), c("locations", "discrimination", "summary",
-                                "excluded", "alpha", "adjust", "se_method",
-                                "boot_reps_used"))
+                                "excluded", "algorithm", "alpha", "adjust",
+                                "se_method",
+                                "family_n", "boot_reps", "boot_reps_used",
+                                "boot_reps_nonconverged", "boot_reps_errors",
+                                "boot_minimum_usable", "bootstrap_stratified",
+                                "seed", "fit_signature", "result_signature"))
 })
 
 test_that("a frame model's virtual item name resolves to its source item", {
+  skip_on_cran()
   # the application selects an item from fit$items, which for a frame model
   # names it by the frame that took it; drop_items() works on the source item
   d <- simulate_efrm(n_per_group = 300, items_per_set = 6, n_sets = 2,
@@ -119,13 +125,22 @@ test_that("the report and saved outputs carry the invariance test", {
 
   html <- tempfile(fileext = ".html")
   on.exit(unlink(html), add = TRUE)
-  report_html(f, html)
+  report_warnings <- character(0)
+  withCallingHandlers(
+    report_html(f, html),
+    warning = function(w) {
+      report_warnings <<- c(report_warnings, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+  expect_gt(length(report_warnings), 0L)
+  expect_true(all(grepl("residual PCA is undefined", report_warnings)))
   x <- readLines(html, warn = FALSE)
   expect_true(any(grepl("Item invariance across frames", x)))
   # the section reports whichever way the test came out; which branch fires
   # is a question about power, tested elsewhere, not about the report
   expect_true(any(grepl("Locations differing across frames", x)) ||
-                any(grepl("No item's location differs", x)))
+                any(grepl("No available item-location comparison differs", x)))
   expect_true(any(grepl("Descriptive discrimination comparisons", x)))
   expect_true(any(grepl("bootstrap", x, ignore.case = TRUE)))
   expect_true(any(grepl("<th>rmsd</th>", x, fixed = TRUE))) # summary is there
@@ -133,7 +148,16 @@ test_that("the report and saved outputs carry the invariance test", {
 
   dir <- tempfile(); dir.create(dir)
   on.exit(unlink(dir, recursive = TRUE), add = TRUE)
-  invisible(save_outputs(f, dir, formats = "png", item_plots = FALSE))
+  save_warnings <- character(0)
+  withCallingHandlers(
+    save_outputs(f, dir, formats = "png", item_plots = FALSE),
+    warning = function(w) {
+      save_warnings <<- c(save_warnings, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    }
+  )
+  expect_gt(length(save_warnings), 0L)
+  expect_true(all(grepl("residual PCA is undefined", save_warnings)))
   saved <- list.files(dir, pattern = "invariance", recursive = TRUE,
                       full.names = TRUE)
   expect_length(saved, 3L)

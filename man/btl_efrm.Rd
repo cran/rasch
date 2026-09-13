@@ -29,7 +29,8 @@ btl_efrm(
 \item{data}{A data frame with one comparison per row.}
 
 \item{object_a, object_b}{Names of the columns holding the two compared
-objects.}
+objects. Columns used for objects, winners, judges, and panel membership
+must be distinct.}
 
 \item{winner}{Name of the winner column. A value must match one of the two
 objects in that row. \code{"tie"} and \code{"draw"} mark ties; other
@@ -39,10 +40,14 @@ values are treated as missing.}
 errors and defines the panels when \code{panels} is a judge attribute).}
 
 \item{panels}{Either the name of a judge-attribute column in \code{data} or
-a named vector mapping judge to panel.}
+a named vector mapping every judge in the comparisons exactly once to a
+panel.}
 
 \item{object_sets}{A named list mapping set names to character vectors of
-object names; every compared object must belong to exactly one set.}
+object names. Set names must be unique, and every compared object must
+occur exactly once in exactly one set. The alphabetically first set is
+the reference, with \eqn{\alpha=1} and \eqn{\kappa=0}. Changing this
+reference can change the cross-set unit restriction, not just the labels.}
 
 \item{response}{Not supported: this first implementation fits dichotomous
 winner data only. Supplying it raises an informative error.}
@@ -58,14 +63,19 @@ through sufficient cross-set pairs raise an error.}
 dependence among a judge's comparisons. \code{"bootstrap"} instead
 draws independent outcomes from fitted probabilities. Both stages are
 refitted. \code{"conditional"} uses
-analytic stage-one standard errors for \code{beta} and \code{phi}, and
+analytic stage-one standard errors for \code{beta} and \code{phi}; the
+panel-unit covariance retains dependence across sets judged by the same
+people. It uses
 inverse observed information for \code{alpha} and \code{kappa}
 conditional on the stage-one estimates. It is faster, but does not
 propagate stage-one uncertainty into the linking parameters; unit
 probabilities and omnibus tests are therefore withheld.}
 
 \item{boot_reps}{Number of replicates for \code{se_method = "bootstrap"}
-or \code{"judge_bootstrap"}; at least 30 are required.}
+or \code{"judge_bootstrap"}; at least 30 are required. Inference is
+returned only when at least 30 and more than half of the requested
+replicates are usable, and the requested count must exceed the number of
+independent directions in the largest covariance block used by the fit.}
 
 \item{workers}{Number of judge-bootstrap workers. The default is four,
 reduced when the system limit is lower. The parametric bootstrap remains
@@ -81,13 +91,21 @@ total)} during estimation.}
 batches. Returning \code{TRUE} stops with a \code{rasch_cancelled}
 condition.}
 
-\item{maxit, tol}{Newton iteration cap and convergence tolerance.}
+\item{maxit, tol}{Scoring iteration cap and convergence tolerance.}
 }
 \value{
 An object of class \code{"rasch_btl_efrm"}. It contains the object
   estimates, group- and set-unit tables, origin shifts, omnibus unit tests,
   unit-specific judge support, frame definitions, convergence information,
-  and analysis notes.
+  and analysis notes. \code{n_cross} records each set-pair count and whether
+  it met \code{min_link} and entered the fit. \code{boot_reps_requested},
+  \code{boot_reps_used}
+  and \code{boot_reps_failed} report the bootstrap accounting.
+  \code{total_chisq} and \code{total_df} describe the pooled pair residuals;
+  \code{total_p} is \code{NA} because the corresponding row-independent
+  chi-square reference is not valid for repeated comparisons by judges.
+  A non-converged fit retains its final estimates and residual patterns for
+  diagnosis but withholds standard errors and inferential probabilities.
 }
 \description{
 Fits paired comparisons when judges belong to panels and objects belong to
@@ -99,7 +117,9 @@ structure.
 For object \eqn{k} in set \eqn{s}, let
 \deqn{v_k=\alpha_s\beta_k+\kappa_s,}
 where \eqn{\beta_k} is its within-set location, \eqn{\alpha_s>0} is the set
-unit, and \eqn{\kappa_s} is the set origin. A comparison in panel \eqn{g}
+unit --- in Humphry and Andrich's (2008) sense a unit \emph{ratio}, the
+reference unit over the set's own, so a value above one means the finer
+natural unit --- and \eqn{\kappa_s} is the set origin. A comparison in panel \eqn{g}
 has logit
 \deqn{\phi_g(\beta_a-\beta_b)}
 for objects in the same set, and
@@ -110,11 +130,24 @@ have geometric mean one.
 
 Estimation has two stages. Within-set comparisons estimate object locations
 and panel-unit ratios. Weighted least squares reconciles the ratios over the
-panel-by-set linking graph. Cross-set comparisons then estimate the set
+panel-by-set linking graph, using each set's covariance for its precision
+weight. The analytic covariance of the reconciled panel units is a joint
+judge-cluster sandwich: influence contributions with the same judge label
+are aligned across sets, while disjoint judge pools have zero cross-set
+covariance. Cross-set comparisons then estimate the set
 units and origins. Unlike the person-by-item EFRM, this linking step uses
 only comparison outcomes and does not require a distribution of persons.
 The paired-comparison form is an extension of Humphry's model implemented in
 this package.
+A within-set panel-ratio fit must have a small score and negative curvature
+of the exact likelihood Hessian in all free directions. Failed fits do not
+enter the panel-unit reconciliation; the remaining sets must link all panels.
+The same rule applies to bootstrap refits. It checks an identified local
+maximum, not a global maximum.
+Cross-set outcomes are checked for complete and quasi-complete separation,
+including designs where only some comparisons become deterministic.
+Separated links have no finite estimate. Reaching \code{maxit} without
+satisfying the convergence criterion is reported as non-convergence.
 
 The default judge bootstrap resamples judges within panels and refits both
 stages. The parametric bootstrap draws independent outcomes from the fitted
@@ -124,14 +157,42 @@ errors and conditions the linking errors on stage one; it is intended for
 preliminary inspection. Its unit probabilities and omnibus tests are
 withheld because it does not propagate stage-one uncertainty. Bootstrap
 failures and boundary estimates are reported in \code{notes}.
+The total pairwise chi-square and its nominal degrees of freedom are retained
+as descriptive summaries. Its row-based chi-square probability is withheld
+because judges are the sampling units and contribute repeated comparisons.
 
 With one set, the model contains panel units only. With one set and one
-panel, it reduces to \code{\link{btl}}. Omnibus Wald tests provide inference
-for the unit families; individual contrasts are Holm-adjusted follow-ups.
+panel, its likelihood and finite interior estimates reduce to
+\code{\link{btl}}. Boundary handling differs: \code{btl()} can set aside an
+undefeated or winless object and report an extrapolated location, whereas
+\code{btl_efrm()} treats every declared object as part of the frame design
+and refuses a within-set outcome separation rather than deleting or
+extrapolating an object. Omnibus Wald probabilities are
+Holm-adjusted across the panel-unit, set-unit and set-origin families.
+Individual estimated units form a separate Holm-adjusted follow-up family
+across all three parameter types. Structurally fixed reference coordinates
+are not hypotheses. With two panels the centring constraint makes the two
+reported panel units a single hypothesis: it enters that family once, and
+both rows report its adjusted probability. An unavailable estimated unit
+remains in its predeclared family; an omnibus is withheld rather than
+reduced when one of its requested coordinates is unavailable.
 Judge-bootstrap probabilities require at least six judges and 5.5 effective
-judges in every contributing panel, and eight of each on a set link. The
-support is returned in \code{unit_support}; estimates remain descriptive
-when a probability is withheld.
+judges in every contributing panel. Each non-reference set also requires
+eight judges and eight effective judges along a supported path to the
+reference set. With redundant links, the path with the strongest bottleneck
+is used. The support is returned in \code{unit_support}; estimates remain
+descriptive when a probability is withheld. Fits with fewer than eight
+effective judges per panel or 9.5 along a set's reference path retain
+probabilities but report a caution.
+Set-unit estimates can also be attenuated when each object pair has little
+comparison information. In simulation, log-unit bias declined from about
+-0.11 with 10 repetitions per pair to less than -0.01 with 100 repetitions.
+A set whose within-set locations have no numerical spread has an
+unidentified unit: its reported unit is \code{NA}, and the conventional
+unit one is used only to place its objects. In contrast, a positive linking
+unit driven to zero by the cross-set outcomes is an unsupported boundary
+link and raises an error. Such boundary links are also rejected in
+bootstrap refits; they are never replaced by unit one.
 }
 \examples{
 \donttest{

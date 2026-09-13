@@ -4,12 +4,18 @@
 \alias{test_information}
 \title{Test information function}
 \usage{
-test_information(fit, grid = seq(-6, 6, by = 0.1))
+test_information(fit, grid = NULL, items = NULL)
 }
 \arguments{
 \item{fit}{A fitted object from \code{\link{rasch}}.}
 
 \item{grid}{Logit grid over which to evaluate the information.}
+
+\item{items}{Optional item selection: item names or indices. Every design
+block is restricted to the named items, so a restricted person-item map
+can carry the information of its own selection. The \code{design} labels
+are those of the restricted blocks, and blocks that differ only outside
+the selection are returned once.}
 }
 \value{
 A data frame with \code{theta}, \code{info}, and \code{sem}. For
@@ -19,13 +25,19 @@ A data frame with \code{theta}, \code{info}, and \code{sem}. For
 \description{
 Fisher information over a grid of person locations, with the corresponding
 standard error of measurement. Ordinary Rasch fits return one whole-test
-curve. EFRM fits return one curve per person group and per item-set
+curve. EFRM fits return one curve per person group and per item
 administration pattern actually observed within that group (in a linking
 design, persons who took only the core set get a core-only curve, and the
-linking subsample gets the pooled one). MFRM fits return one curve per set
-of facet conditions observed together for a person, so ratings that jointly
+linking subsample gets the pooled one). MFRM fits return one curve per
+observed item-by-facet pattern for a person, so ratings that jointly
 inform the same person measure are added and mutually exclusive designs
-remain separate.
+remain separate. Partly answered sets or facet conditions contribute only
+their observed items; a missing response is not treated as an administered
+item when defining these patterns. Where item nonresponse leaves nearly
+every person a pattern of their own, that is what these fits return:
+an unanswered item carries no information about the person who left it,
+so no pattern is merged into a fuller one and no curve of theirs is
+drawn over a design nobody was administered.
 }
 \details{
 For an administrable block \eqn{\mathcal A}, the information and standard
@@ -35,6 +47,8 @@ error of measurement are
 \operatorname{SEM}(\theta)=I(\theta)^{-1/2},}
 where \eqn{d_i} is the frame unit or discrimination multiplier. For an
 ordinary Rasch fit, \eqn{d_i=1}.
+Information is returned only for a converged calibration. Comparative
+Judgement designs use \code{\link{btl_information}} instead.
 }
 \examples{
 set.seed(1)

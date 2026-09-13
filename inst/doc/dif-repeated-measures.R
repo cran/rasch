@@ -30,11 +30,20 @@ dat <- data.frame(
   occasion = rep(c("T1", "T2"), each = N)
 )
 
+# the same three persons at each occasion: the identifier repeats down the
+# rows, which is what makes the design repeated measures
+dat[c(1:3, N + 1:3), c("pid", "I01", "I02", "I03", "group", "occasion")]
+
 ## ----analysis-----------------------------------------------------------------
 fit <- rasch(dat, id = "pid", factors = c("group", "occasion"),
              items = sprintf("I%02d", 1:8))
 da <- dif_anova(fit, within = "occasion", effects = "factorial", sizes = TRUE)
 da$summary
+
+## ----bootstrap-sensitivity, eval = FALSE--------------------------------------
+# db <- dif_bootstrap(fit, da, B = 999, workers = 4, seed = 2026)
+# db$summary[, c("item", "term", "p_uniform_boot_adj",
+#                "p_nonuniform_boot_adj")]
 
 ## ----magnitude----------------------------------------------------------------
 dif_size(fit, "I03", by = "group")

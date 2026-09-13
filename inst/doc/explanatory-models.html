@@ -10,6 +10,7 @@
 
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 
+<meta name="author" content="Joshua A. McGrane" />
 
 
 <title>Explanatory Rasch models</title>
@@ -338,6 +339,7 @@ code > span.er { color: #a61717; background-color: #e3d2d2; }
 
 
 <h1 class="title toc-ignore">Explanatory Rasch models</h1>
+<h4 class="author">Joshua A. McGrane</h4>
 
 
 
@@ -358,6 +360,9 @@ permits the effect of one characteristic to differ according to another.
 The scale origin is fixed at mean item location zero, as in
 <code>rasch()</code>; the formula intercept is therefore absorbed by the
 origin constraint.</p>
+<p>Design columns are centred and rescaled internally for numerical
+stability. Coefficients and standard errors are reported in the supplied
+predictor units, for both Rasch and comparative judgement models.</p>
 <div id="item-predictors" class="section level2">
 <h2>Item predictors</h2>
 <p>Item-level metadata contain one row per item. This example explains
@@ -372,21 +377,37 @@ response format.</p>
 <span id="cb1-7"><a href="#cb1-7" tabindex="-1"></a></span>
 <span id="cb1-8"><a href="#cb1-8" tabindex="-1"></a>difficulty <span class="ot">&lt;-</span> <span class="fl">0.8</span> <span class="sc">*</span> (item_design<span class="sc">$</span>operation <span class="sc">==</span> <span class="st">&quot;inference&quot;</span>) <span class="sc">+</span></span>
 <span id="cb1-9"><a href="#cb1-9" tabindex="-1"></a>  <span class="fl">0.4</span> <span class="sc">*</span> (item_design<span class="sc">$</span>format <span class="sc">==</span> <span class="st">&quot;constructed&quot;</span>)</span>
-<span id="cb1-10"><a href="#cb1-10" tabindex="-1"></a>theta <span class="ot">&lt;-</span> <span class="fu">rnorm</span>(<span class="dv">500</span>)</span>
-<span id="cb1-11"><a href="#cb1-11" tabindex="-1"></a>X <span class="ot">&lt;-</span> <span class="fu">sapply</span>(difficulty, <span class="cf">function</span>(delta)</span>
-<span id="cb1-12"><a href="#cb1-12" tabindex="-1"></a>  <span class="fu">rbinom</span>(<span class="fu">length</span>(theta), <span class="dv">1</span>, <span class="fu">plogis</span>(theta <span class="sc">-</span> delta)))</span>
-<span id="cb1-13"><a href="#cb1-13" tabindex="-1"></a><span class="fu">colnames</span>(X) <span class="ot">&lt;-</span> item_design<span class="sc">$</span>item</span>
-<span id="cb1-14"><a href="#cb1-14" tabindex="-1"></a></span>
-<span id="cb1-15"><a href="#cb1-15" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">rasch_explanatory</span>(</span>
-<span id="cb1-16"><a href="#cb1-16" tabindex="-1"></a>  X,</span>
-<span id="cb1-17"><a href="#cb1-17" tabindex="-1"></a>  <span class="at">predictors =</span> item_design,</span>
-<span id="cb1-18"><a href="#cb1-18" tabindex="-1"></a>  <span class="at">formula =</span> <span class="sc">~</span> operation <span class="sc">+</span> format,</span>
-<span id="cb1-19"><a href="#cb1-19" tabindex="-1"></a>  <span class="at">level =</span> <span class="st">&quot;item&quot;</span></span>
-<span id="cb1-20"><a href="#cb1-20" tabindex="-1"></a>)</span>
-<span id="cb1-21"><a href="#cb1-21" tabindex="-1"></a>fit<span class="sc">$</span>est<span class="sc">$</span>coefficients</span>
-<span id="cb1-22"><a href="#cb1-22" tabindex="-1"></a><span class="co">#&gt;             term estimate    se       z       p   p_adj</span></span>
-<span id="cb1-23"><a href="#cb1-23" tabindex="-1"></a><span class="co">#&gt;  operationrecall   -0.825 0.072 -11.414 &lt; 0.001 &lt; 0.001</span></span>
-<span id="cb1-24"><a href="#cb1-24" tabindex="-1"></a><span class="co">#&gt;   formatselected   -0.350 0.073  -4.797 &lt; 0.001 &lt; 0.001</span></span></code></pre></div>
+<span id="cb1-10"><a href="#cb1-10" tabindex="-1"></a>group <span class="ot">&lt;-</span> <span class="fu">factor</span>(<span class="fu">rep</span>(<span class="fu">c</span>(<span class="st">&quot;A&quot;</span>, <span class="st">&quot;B&quot;</span>), <span class="at">each =</span> <span class="dv">250</span>))</span>
+<span id="cb1-11"><a href="#cb1-11" tabindex="-1"></a>theta <span class="ot">&lt;-</span> <span class="fu">rnorm</span>(<span class="dv">500</span>) <span class="sc">+</span> <span class="fu">ifelse</span>(group <span class="sc">==</span> <span class="st">&quot;B&quot;</span>, <span class="fl">0.3</span>, <span class="dv">0</span>)</span>
+<span id="cb1-12"><a href="#cb1-12" tabindex="-1"></a>X <span class="ot">&lt;-</span> <span class="fu">sapply</span>(difficulty, <span class="cf">function</span>(delta)</span>
+<span id="cb1-13"><a href="#cb1-13" tabindex="-1"></a>  <span class="fu">rbinom</span>(<span class="fu">length</span>(theta), <span class="dv">1</span>, <span class="fu">plogis</span>(theta <span class="sc">-</span> delta)))</span>
+<span id="cb1-14"><a href="#cb1-14" tabindex="-1"></a><span class="fu">colnames</span>(X) <span class="ot">&lt;-</span> item_design<span class="sc">$</span>item</span>
+<span id="cb1-15"><a href="#cb1-15" tabindex="-1"></a></span>
+<span id="cb1-16"><a href="#cb1-16" tabindex="-1"></a>fit <span class="ot">&lt;-</span> <span class="fu">rasch_explanatory</span>(</span>
+<span id="cb1-17"><a href="#cb1-17" tabindex="-1"></a>  X,</span>
+<span id="cb1-18"><a href="#cb1-18" tabindex="-1"></a>  <span class="at">predictors =</span> item_design,</span>
+<span id="cb1-19"><a href="#cb1-19" tabindex="-1"></a>  <span class="at">formula =</span> <span class="sc">~</span> operation <span class="sc">+</span> format,</span>
+<span id="cb1-20"><a href="#cb1-20" tabindex="-1"></a>  <span class="at">level =</span> <span class="st">&quot;item&quot;</span>,</span>
+<span id="cb1-21"><a href="#cb1-21" tabindex="-1"></a>  <span class="at">factors =</span> <span class="fu">data.frame</span>(<span class="at">group =</span> group)</span>
+<span id="cb1-22"><a href="#cb1-22" tabindex="-1"></a>)</span>
+<span id="cb1-23"><a href="#cb1-23" tabindex="-1"></a>fit<span class="sc">$</span>est<span class="sc">$</span>coefficients</span>
+<span id="cb1-24"><a href="#cb1-24" tabindex="-1"></a><span class="co">#&gt;             term estimate    se       t  df       p   p_adj</span></span>
+<span id="cb1-25"><a href="#cb1-25" tabindex="-1"></a><span class="co">#&gt;  operationrecall   -0.851 0.069 -12.294 461 &lt; 0.001 &lt; 0.001</span></span>
+<span id="cb1-26"><a href="#cb1-26" tabindex="-1"></a><span class="co">#&gt;   formatselected   -0.327 0.071  -4.606 461 &lt; 0.001 &lt; 0.001</span></span></code></pre></div>
+<p>If the same person contributes more than one response row, the
+coefficient covariance is clustered by person. Supported repeated-person
+fits use a linearised delete-one-person covariance correction. Every
+supported fit takes a <span class="math inline">\(t\)</span> reference
+with degrees of freedom equal to the number of independent person units
+contributing conditional information minus one, whether or not
+identifiers repeat: one response row per person still leaves a finite
+count of sampling units, and reading that count as a limiting normal
+rejects a true null more often than the printed probability states.
+Coefficient inference is withheld when the calibration lacks enough
+independent information. Holm adjustment covers the coefficient family.
+With few persons and unequal numbers of response rows, these approximate
+tests can still be mildly liberal. The correction does not guarantee
+nominal small-sample coverage.</p>
 <p>Predictors may be continuous, categorical or ordinal. Numeric vectors
 are continuous and unordered factors are categorical. An ordered factor
 is scored with successive contrasts: each coefficient is the change
@@ -403,8 +424,9 @@ category. For example:</p>
 not fit polynomial contrasts. Use an unordered factor for comparisons
 with a single reference category, or a numeric predictor when the
 spacing has a substantive scale. Selected interactions can be added, for
-example
-<code>~ demand + format + complexity + format:complexity</code>.</p>
+example <code>~ demand + format + complexity + format:complexity</code>.
+Formula offsets (<code>offset()</code>) are not supported in explanatory
+Rasch or CJ models.</p>
 </div>
 <div id="threshold-predictors" class="section level2">
 <h2>Threshold predictors</h2>
@@ -432,13 +454,14 @@ estimation produces a composite likelihood, so the reported inferential
 result is the first-order Kent-adjusted chi-square rather than an
 ordinary likelihood-ratio test. The same table reports calibration <span class="math inline">\(R^2\)</span>, the proportion of variation in the
 free threshold calibration reproduced by the explanatory thresholds.
-Comparative judgement uses the corresponding free object
-calibration.</p>
+Comparative judgement uses the corresponding free object calibration.
+The Kent comparison is asymptotic and does not use the
+finite-person-cluster correction applied to individual coefficients.</p>
 <div class="sourceCode" id="cb4"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" tabindex="-1"></a><span class="fu">explanatory_test</span>(fit)</span>
 <span id="cb4-2"><a href="#cb4-2" tabindex="-1"></a><span class="co">#&gt;  model parameters free_parameters r_squared r_squared_adj              r2_basis</span></span>
-<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a><span class="co">#&gt;   LLTM          2               7     0.967         0.954 threshold calibration</span></span>
+<span id="cb4-3"><a href="#cb4-3" tabindex="-1"></a><span class="co">#&gt;   LLTM          2               7     0.974         0.964 threshold calibration</span></span>
 <span id="cb4-4"><a href="#cb4-4" tabindex="-1"></a><span class="co">#&gt;   chisq df p_naive chisq_kent     p p_kent</span></span>
-<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a><span class="co">#&gt;  19.917  5   0.001      5.191 0.393  0.393</span></span></code></pre></div>
+<span id="cb4-5"><a href="#cb4-5" tabindex="-1"></a><span class="co">#&gt;  16.526  5   0.005      4.245 0.515  0.515</span></span></code></pre></div>
 <p>A non-significant result does not establish that the explanatory
 structure is true. It indicates that the free calibration has not
 detected a departure at the available precision. Coefficients should be
@@ -456,20 +479,20 @@ each available departure separately and adjusts the complete family of
 probabilities by Holm’s method.</p>
 <div class="sourceCode" id="cb5"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" tabindex="-1"></a>departures <span class="ot">&lt;-</span> <span class="fu">explanatory_diagnostics</span>(fit)</span>
 <span id="cb5-2"><a href="#cb5-2" tabindex="-1"></a><span class="fu">head</span>(departures)</span>
-<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a><span class="co">#&gt;  item     component parameters_added departure deviance_reduction df     p</span></span>
-<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a><span class="co">#&gt;    I6 Item location                1     0.205              9.201  1 0.128</span></span>
-<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a><span class="co">#&gt;    I8 Item location                1    -0.195              8.582  1 0.138</span></span>
-<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a><span class="co">#&gt;    I1 Item location                1     0.141              4.645  1 0.257</span></span>
-<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a><span class="co">#&gt;    I3 Item location                1    -0.135              4.272  1 0.283</span></span>
-<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a><span class="co">#&gt;    I5 Item location                1    -0.097              2.247  1 0.455</span></span>
-<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a><span class="co">#&gt;    I7 Item location                1     0.093              2.056  1 0.465</span></span>
-<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a><span class="co">#&gt;  p_adj</span></span>
-<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a><span class="co">#&gt;  1.000</span></span>
-<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a><span class="co">#&gt;  1.000</span></span>
-<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a><span class="co">#&gt;  1.000</span></span>
-<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a><span class="co">#&gt;  1.000</span></span>
-<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a><span class="co">#&gt;  1.000</span></span>
-<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a><span class="co">#&gt;  1.000</span></span></code></pre></div>
+<span id="cb5-3"><a href="#cb5-3" tabindex="-1"></a><span class="co">#&gt;  item     component parameters_added departure deviance_reduction df     p weak</span></span>
+<span id="cb5-4"><a href="#cb5-4" tabindex="-1"></a><span class="co">#&gt;    I1 Item location                1     0.184              8.142  1 0.144     </span></span>
+<span id="cb5-5"><a href="#cb5-5" tabindex="-1"></a><span class="co">#&gt;    I3 Item location                1    -0.163              6.318  1 0.200     </span></span>
+<span id="cb5-6"><a href="#cb5-6" tabindex="-1"></a><span class="co">#&gt;    I6 Item location                1     0.167              6.248  1 0.200     </span></span>
+<span id="cb5-7"><a href="#cb5-7" tabindex="-1"></a><span class="co">#&gt;    I8 Item location                1    -0.141              4.539  1 0.283     </span></span>
+<span id="cb5-8"><a href="#cb5-8" tabindex="-1"></a><span class="co">#&gt;    I5 Item location                1    -0.041              0.422  1 0.746     </span></span>
+<span id="cb5-9"><a href="#cb5-9" tabindex="-1"></a><span class="co">#&gt;    I2 Item location                1    -0.037              0.353  1 0.767     </span></span>
+<span id="cb5-10"><a href="#cb5-10" tabindex="-1"></a><span class="co">#&gt;  converged p_adj</span></span>
+<span id="cb5-11"><a href="#cb5-11" tabindex="-1"></a><span class="co">#&gt;          * 1.000</span></span>
+<span id="cb5-12"><a href="#cb5-12" tabindex="-1"></a><span class="co">#&gt;          * 1.000</span></span>
+<span id="cb5-13"><a href="#cb5-13" tabindex="-1"></a><span class="co">#&gt;          * 1.000</span></span>
+<span id="cb5-14"><a href="#cb5-14" tabindex="-1"></a><span class="co">#&gt;          * 1.000</span></span>
+<span id="cb5-15"><a href="#cb5-15" tabindex="-1"></a><span class="co">#&gt;          * 1.000</span></span>
+<span id="cb5-16"><a href="#cb5-16" tabindex="-1"></a><span class="co">#&gt;          * 1.000</span></span></code></pre></div>
 <p>An item-location departure moves all thresholds of an item together.
 A threshold-structure departure changes their relative locations and is
 available only for polytomous items. A departure should be accepted on
@@ -484,6 +507,13 @@ explanatory structure and add the required fixed departures for changed
 items. Response-dependence resolution does the same for its resolved
 item copies. With keyed multiple-choice data, unchanged and split items
 retain their raw responses for distractor analysis.</p>
+<p>When person factors are supplied to <code>rasch_explanatory()</code>,
+DIF is tested in the usual way. The optional bootstrap conditions on
+each person’s score and refits the active explanatory model, including
+accepted fixed departures. Its familywise probabilities refer to the
+fitted global invariant null.</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a>dif <span class="ot">&lt;-</span> <span class="fu">dif_anova</span>(fit)</span>
+<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a><span class="fu">dif_bootstrap</span>(fit, dif, <span class="at">B =</span> <span class="dv">999</span>, <span class="at">seed =</span> <span class="dv">2026</span>)<span class="sc">$</span>summary</span></code></pre></div>
 <p>The same workflow is available under <strong>Explanatory</strong> in
 the Shiny application. Predictor type is selected explicitly in the
 application; ordinal predictors also require their level order. The
@@ -500,17 +530,17 @@ locations. Predictor metadata contain one row per object and an
 =\beta_a-\beta_b, \qquad
 \beta_i=\mathbf z_i^{\mathsf T}\gamma .
 \]</span></p>
-<div class="sourceCode" id="cb7"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" tabindex="-1"></a>cj <span class="ot">&lt;-</span> <span class="fu">btl_explanatory</span>(</span>
-<span id="cb7-2"><a href="#cb7-2" tabindex="-1"></a>  comparisons,</span>
-<span id="cb7-3"><a href="#cb7-3" tabindex="-1"></a>  <span class="at">predictors =</span> object_design,</span>
-<span id="cb7-4"><a href="#cb7-4" tabindex="-1"></a>  <span class="at">formula =</span> <span class="sc">~</span> domain <span class="sc">+</span> format <span class="sc">+</span> domain<span class="sc">:</span>format,</span>
-<span id="cb7-5"><a href="#cb7-5" tabindex="-1"></a>  <span class="at">object_a =</span> <span class="st">&quot;object_a&quot;</span>,</span>
-<span id="cb7-6"><a href="#cb7-6" tabindex="-1"></a>  <span class="at">object_b =</span> <span class="st">&quot;object_b&quot;</span>,</span>
-<span id="cb7-7"><a href="#cb7-7" tabindex="-1"></a>  <span class="at">winner =</span> <span class="st">&quot;winner&quot;</span>,</span>
-<span id="cb7-8"><a href="#cb7-8" tabindex="-1"></a>  <span class="at">judge =</span> <span class="st">&quot;judge&quot;</span></span>
-<span id="cb7-9"><a href="#cb7-9" tabindex="-1"></a>)</span>
-<span id="cb7-10"><a href="#cb7-10" tabindex="-1"></a><span class="fu">explanatory_test</span>(cj)</span>
-<span id="cb7-11"><a href="#cb7-11" tabindex="-1"></a><span class="fu">explanatory_diagnostics</span>(cj)</span></code></pre></div>
+<div class="sourceCode" id="cb8"><pre class="sourceCode r"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" tabindex="-1"></a>cj <span class="ot">&lt;-</span> <span class="fu">btl_explanatory</span>(</span>
+<span id="cb8-2"><a href="#cb8-2" tabindex="-1"></a>  comparisons,</span>
+<span id="cb8-3"><a href="#cb8-3" tabindex="-1"></a>  <span class="at">predictors =</span> object_design,</span>
+<span id="cb8-4"><a href="#cb8-4" tabindex="-1"></a>  <span class="at">formula =</span> <span class="sc">~</span> domain <span class="sc">+</span> format <span class="sc">+</span> domain<span class="sc">:</span>format,</span>
+<span id="cb8-5"><a href="#cb8-5" tabindex="-1"></a>  <span class="at">object_a =</span> <span class="st">&quot;object_a&quot;</span>,</span>
+<span id="cb8-6"><a href="#cb8-6" tabindex="-1"></a>  <span class="at">object_b =</span> <span class="st">&quot;object_b&quot;</span>,</span>
+<span id="cb8-7"><a href="#cb8-7" tabindex="-1"></a>  <span class="at">winner =</span> <span class="st">&quot;winner&quot;</span>,</span>
+<span id="cb8-8"><a href="#cb8-8" tabindex="-1"></a>  <span class="at">judge =</span> <span class="st">&quot;judge&quot;</span></span>
+<span id="cb8-9"><a href="#cb8-9" tabindex="-1"></a>)</span>
+<span id="cb8-10"><a href="#cb8-10" tabindex="-1"></a><span class="fu">explanatory_test</span>(cj)</span>
+<span id="cb8-11"><a href="#cb8-11" tabindex="-1"></a><span class="fu">explanatory_diagnostics</span>(cj)</span></code></pre></div>
 <p>An ordered <code>response</code> may be supplied instead of
 <code>winner</code>. Its symmetric response thresholds are estimated
 jointly with the explanatory object effects. Judge-clustered covariance
